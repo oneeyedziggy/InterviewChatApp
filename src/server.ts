@@ -22,15 +22,19 @@ nextApp
     const app: Express = express();
     const server: http.Server = http.createServer(app);
     const io: socketio.Server = new socketio.Server();
+    io.use((socket, next) => {
+      const token = socket.handshake.auth.token;
+      console.log('got auth token:', token);
+      if (true) {
+        next();
+      }
+    });
     io.attach(server);
     console.log('Connected io to server');
 
-    // app.get('/hello', async (_: Request, res: Response) => {
-    //   res.send('Hello World');
-    // });
-
+    //TODO break this into its own file to keep server.js clean, especially if this gailed additional routes
     io.on('connection', (socket: socketio.Socket) => {
-      console.log('connecting');
+      //console.log('connecting', socket);
       //socket.emit === back to requester
       socket.emit('status', 'Hello from Socket.io');
       socket.emit('initialData', { messages, rooms });
@@ -59,6 +63,7 @@ nextApp
       });
 
       socket.on('disconnect', () => {
+        //TODO do some logout stuff
         console.log('client disconnected');
       });
     });
