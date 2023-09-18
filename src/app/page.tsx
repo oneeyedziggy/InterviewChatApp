@@ -11,7 +11,7 @@ import * as SimpleMarkdown from 'simple-markdown';
 
 import { type Messages } from '../types/types';
 import { LoginDialog } from '../components/LoginDialog';
-import { RoomList } from '../components/RoomList';
+import { SelectableList } from '../components/SelectableList';
 import { ScrollableDiv } from '../components/styled/ScrollableDiv';
 
 const mdParse = SimpleMarkdown.defaultBlockParse;
@@ -23,9 +23,6 @@ let socket: Socket;
 const BlockInput = styled.input`
   display: block;
 `;
-const BlockSelect = styled.select`
-  display: block;
-`;
 const SideFlexColumn = styled.div`
   display: flex;
   flex-direction: column;
@@ -35,6 +32,7 @@ const MiddleFlexColumn = styled.div`
   display: flex;
   flex-direction: column;
   flex-basis: 70%;
+  height: 100vh;
 `;
 const FlexRow = styled.div`
   display: flex;
@@ -55,15 +53,13 @@ const FlexDiv = styled.div`
 `;
 
 const transformMessages = (messages: Messages, currentRoom: string) => {
-  console.log({ who: 'transforming', messages, currentRoom });
   if (currentRoom && Object.keys(messages).length && messages[currentRoom]) {
     return (
-      <ScrollableDiv flexDirection="column-reverse">
+      <ScrollableDiv $flexDirection="column-reverse">
         {messages[currentRoom].map((message, dontUseIndex) => {
-          console.log({ message, content: message.content });
           return (
             <div key={dontUseIndex}>
-              {mdStringToReact(`${message.username}:${message.content}`)}
+              {mdStringToReact(`${message.username}: ${message.content}`)}
             </div>
           );
         })}
@@ -72,12 +68,17 @@ const transformMessages = (messages: Messages, currentRoom: string) => {
   }
 };
 
+// TODO: break this up into more components to reduce the complexity and number of dependencies in this file
 const Home = () => {
-  const [userDraftMessage, setUserDraftMessage] = useState(
-    'test **markdown** with <script>alert("hax")</script> `cool` *stuff*'
-  );
+  const [userDraftMessage, setUserDraftMessage] = useState('');
+  // this "old" chatValues is almost certainly not the best way to acheive this, but there appears to be a timing issue trying to do the diff in the socket.on serverMessage
+  const [oldChatValues, setOldChatValues] = useState<Messages>({});
   const [chatValues, setChatValues] = useState<Messages>({});
+  const [userList, setUserList] = useState<string[]>([]);
   const [roomList, setRoomList] = useState<string[]>([]);
+  const [roomNotifications, setRoomNotifications] = useState<{
+    [key: string]: string;
+  }>({});
   const [currentRoom, setCurrentRoom] = useState<string>('');
   const [newRoomName, setNewRoomName] = useState<string>('');
 
@@ -85,37 +86,85 @@ const Home = () => {
   const [username, setUsername] = useState<string>('');
 
   useEffect(() => {
+    setRoomNotifications((rn) => {
+      const baseRoomName = currentRoom?.replace(/-\(\d+ NEW!\)/, '');
+      const newobj = {
+        ...rn,
+        [baseRoomName]: '',
+      };
+      return newobj;
+    });
+  }, [currentRoom]);
+
+  useEffect(() => {
     if (authToken) {
       socketInitializer(authToken);
     }
-  }, [authToken]);
+  }, [authToken]); // don't trust this warning, following the advise will infinite loop
 
   useEffect(() => {
-    setCurrentRoom(roomList[0]);
-  }, [roomList]);
+    !currentRoom && setCurrentRoom(roomList[0]);
+  }, [roomList]); // don't trust this warning, following the advise will infinite loop
+
+  useEffect(() => {
+    oldChatValues &&
+      setRoomNotifications(
+        Object.fromEntries(
+          Object.keys(oldChatValues).map((roomName: string) => {
+            return chatValues[roomName]?.length >
+              oldChatValues[roomName]?.length && !(roomName === currentRoom)
+              ? [
+                  roomName,
+                  `(${
+                    chatValues[roomName]?.length -
+                    oldChatValues[roomName]?.length
+                  } NEW!)`,
+                ]
+              : [roomName, ''];
+          })
+        )
+      );
+    setOldChatValues(chatValues);
+  }, [chatValues]);
 
   const socketInitializer = async (authToken: string) => {
     socket = io({
       auth: {
         token: authToken,
+        username,
       },
     });
 
     socket.on('connect', () => {
-      console.log('connected for real');
+      socket.emit('clientMessage', {
+        username,
+        room: '#general', // TODO find better solution to this than hardcoding, probably just plumb a distinct non-message event
+        content: '<-- has entered the room',
+      });
       socket.on('initialData', (data) => {
-        console.log('received initialData', data);
+        data.messages && setChatValues(data.messages);
+        data.rooms && setRoomList(data.rooms);
+        data.users && setUserList(data.users);
+      });
+      socket.on('serverMessage', (data) => {
+        data.messages && setChatValues(data.messages);
+        data.users && setUserList(data.users);
+      });
+      socket.on('serverNewRoom', (data) => {
         setChatValues(data.messages);
         setRoomList(data.rooms);
       });
-      socket.on('serverMessage', (messages) => {
-        console.log('received serverMessage', messages);
-        setChatValues(messages);
+      socket.on('serverUserListUpdate', (users) => {
+        users && setUserList(users);
       });
-      socket.on('serverNewRoomResponse', (data) => {
-        console.log('received serverNewRoomResponse', data);
-        setChatValues(data.messages);
-        setRoomList(data.rooms);
+      socket.on('disconnecting', (msg) => {
+        socket.emit('clientMessage', {
+          username,
+          room: '#general', // TODO find better solution to this than hard coding, probably just plumb a distinct non-message event
+          content: 'says "smell ya\' later" -->',
+        });
+        socket.emit('clientDisconnecting', authToken);
+        setAuthToken('');
       });
       socket.on('status', (msg) => {
         console.log('status', msg);
@@ -124,7 +173,6 @@ const Home = () => {
   };
 
   const doSend = () => {
-    console.log('doSend emitting clientMessage', userDraftMessage);
     socket.emit('clientMessage', {
       username,
       room: currentRoom,
@@ -136,35 +184,30 @@ const Home = () => {
   const userDraftMessageOnChangeHandler = (
     e: ChangeEvent<HTMLInputElement>
   ) => {
-    //const target = e.target as HTMLInputElement;
-    console.log('userDraftMessageOnChangeHandler', e.target.value);
     setUserDraftMessage(e.target.value);
   };
 
-  const onKeyDownHandler = (e: KeyboardEvent<HTMLInputElement>) => {
+  const onDraftKeyDownHandler = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
-      e.preventDefault();
-      console.log('onKeyDownHandler Enter');
       doSend();
     }
   };
 
-  // const onRoomSelectionChange = (e: ChangeEvent<HTMLSelectElement>) => {
-  //   console.log({ newRoom: e.target.value });
-  //   setCurrentRoom(e.target.value);
-  // };
-  const onRoomSelectionChange = (newRoom: string) => {
-    console.log({ newRoom });
-    setCurrentRoom(newRoom);
+  const makeNewRoom = () => {
+    socket.emit('clientNewRoom', newRoomName);
   };
 
-  const makeNewRoom = () => {
-    console.log({ newRoomName });
-    socket.emit('clientNewRoomRequest', newRoomName);
+  const onNewRoomKeyDownHandler = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      makeNewRoom();
+    }
+  };
+
+  const onRoomSelectionChange = (newRoom: string) => {
+    setCurrentRoom(newRoom?.replace(/-\(\d+ NEW!\)/, ''));
   };
 
   const newRoomNameOnChangeHandler = (e: ChangeEvent<HTMLInputElement>) => {
-    console.log('newRoomNameOnChangeHandler', e.target.value);
     setNewRoomName(e.target.value);
   };
 
@@ -181,23 +224,16 @@ const Home = () => {
       {authToken && (
         <FlexDiv>
           <SideFlexColumn>
-            {/* 
-            <label htmlFor="roomSelection">Room:</label>
-            <BlockSelect
+            <SelectableList
               id="roomSelection"
+              label={'Rooms'}
               value={currentRoom}
-              onChange={onRoomSelectionChange}
-            >
-              {roomList.map((room) => (
-                <option value={room} key={room}>
-                  {room}
-                </option>
-              ))}
-            </BlockSelect> */}
-            <RoomList
-              id="roomSelection"
-              value={currentRoom}
-              roomList={roomList}
+              options={roomList.map(
+                (room) =>
+                  `${room}${
+                    roomNotifications[room] ? '-' + roomNotifications[room] : ''
+                  }`
+              )}
               onSelect={onRoomSelectionChange}
             />
             <hr />
@@ -207,6 +243,7 @@ const Home = () => {
               id="newRoomNameInput"
               value={newRoomName}
               onChange={newRoomNameOnChangeHandler}
+              onKeyDown={onNewRoomKeyDownHandler}
             />
             <WiderButton
               type="button"
@@ -224,14 +261,23 @@ const Home = () => {
                 placeholder="Type something"
                 value={userDraftMessage}
                 onChange={userDraftMessageOnChangeHandler}
-                onKeyDown={onKeyDownHandler}
+                onKeyDown={onDraftKeyDownHandler}
               />
               <WiderButton type="button" onClick={doSend}>
                 Send
               </WiderButton>
             </FlexRow>
           </MiddleFlexColumn>
-          <SideFlexColumn>Users:</SideFlexColumn>
+          <SideFlexColumn>
+            <SelectableList
+              id="userSelection"
+              label={'Users'}
+              value={username}
+              // TODO: this filter is a hack fix, given more time I'd go keep 'undefined' from getting in the list in the first place
+              options={userList.filter((user) => user !== 'undefined')}
+              onSelect={() => {}}
+            />
+          </SideFlexColumn>
         </FlexDiv>
       )}
     </>

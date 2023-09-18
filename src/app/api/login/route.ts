@@ -1,13 +1,8 @@
 import { type NextRequest, NextResponse } from 'next/server';
-import NodeCache from 'node-cache';
 import { v4 as uuidv4 } from 'uuid';
 import { scryptAsync } from '@noble/hashes/scrypt';
 
-// this is not a design usage I'd normally apply, but it's a pretty crunched timeline
-// to somplete this assignment around a full-time job and family obligations,
-// the data source can be swapped out or migrated, and scallability is not MVP...
-export const mySessionCache = new NodeCache({ stdTTL: 60 * 60 * 4 }); //default 4-hr session expirey
-export const myUserCache = new NodeCache();
+import { mySessionCache, myUserCache } from '../../../cache';
 
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 // This salt *should* be pulled from an env var or secret store but that would make handoff for this
@@ -17,18 +12,13 @@ export const myUserCache = new NodeCache();
 // the salt value is never put into source control
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 const salt = uuidv4();
-export const minPasswordLength = 8;
-export const minUsernameLength = 8;
-
-type LoginResponseType = {
-  sessionId?: string;
-  error?: string;
-};
+const minPasswordLength = 8;
+const minUsernameLength = 8;
 
 type DoSuccessProps = {
   NextResponse: typeof NextResponse;
   username: string;
-  hashedPassword: unknown; //TODO
+  hashedPassword: string;
   isUserNew?: boolean;
 };
 
@@ -60,7 +50,7 @@ const comparePasswords = async (a: string, b: string) => {
   return a === b;
 };
 
-export async function POST(request: NextRequest) {
+export const POST = async (request: NextRequest) => {
   const data = await request.json();
 
   if (data.username && data.password?.length >= 8) {
@@ -78,7 +68,11 @@ export async function POST(request: NextRequest) {
       // TODO: this might not be the most efficient... might be slightly faster to just try and get it then failout, but this works for now
       const cachedHashedPW = myUserCache.get(data.username) as string;
 
-      if (await comparePasswords(hashedPW, cachedHashedPW)) {
+      if (data.username.length < minUsernameLength) {
+        return doFailure(`Username must be at least ${minUsernameLength}`);
+      } else if (data.password.length < minPasswordLength) {
+        return doFailure(`Password must be at least ${minPasswordLength}`);
+      } else if (await comparePasswords(hashedPW, cachedHashedPW)) {
         return doSuccess({
           NextResponse,
           username: data.username,
@@ -98,4 +92,4 @@ export async function POST(request: NextRequest) {
   } else {
     return doFailure('Required parameters missing');
   }
-}
+};

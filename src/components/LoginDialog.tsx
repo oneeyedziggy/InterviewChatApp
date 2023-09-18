@@ -1,7 +1,12 @@
+// !!! login should be put on its own codesplit in code more serious than an interview example
+// so as not to serve out the whole app bundle and reveal anything about the site, not that security through
+// obscurity helps, but defence in depth does...
 import React, { useEffect, useState } from 'react';
 import { Input } from './Input';
-import { minPasswordLength, minUsernameLength } from '../app/api/login/route';
 import { styled } from 'styled-components';
+
+const minPasswordLength = 8;
+const minUsernameLength = 8;
 
 type LoginDialogProps = {
   username: string;
@@ -26,9 +31,16 @@ const getPasswordError = (password: string): string => {
 const InputError = styled.span`
   color: red;
 `;
-const BigDialog = styled.span`
+const BigDialog = styled.dialog<{ open: boolean }>`
   width: 100%;
   height: 100%;
+  padding-top: 15%;
+  text-align: center;
+`;
+const LoginButton = styled.button`
+  width: 245px;
+  margin-top: 5px;
+  margin-left: 5px;
 `;
 
 export const LoginDialog = ({
@@ -72,18 +84,15 @@ export const LoginDialog = ({
               setLoginError('');
               setAuthToken(bodyJson.sessionId);
               onSuccess(bodyJson.sessionId);
-              console.log('login success');
             } else {
               setLoginError(
                 bodyJson.error || // not-too unprofessional fallback message, TODO: show a cute vector-graphic of a warm beverage
                   snarkyFallbackError
               );
-              console.log('login error0: ', bodyJson.error);
             }
           })
           .catch((err) => {
             setLoginError(snarkyFallbackError);
-            console.error('login error1: ', err);
           });
       })
       //for now if this happens it could be anything
@@ -94,7 +103,7 @@ export const LoginDialog = ({
   };
 
   return (
-    <dialog id="successModal" open={open}>
+    <BigDialog id="successModal" open={open}>
       {loginError && <InputError>{loginError}</InputError>}
       <Input
         id="username"
@@ -116,13 +125,13 @@ export const LoginDialog = ({
         onChange={setPassword}
         required={true}
       />
-      <button
+      <LoginButton
         onClick={() => onSubmit(username, password)}
         type="button"
         disabled={isSubmitDisabled}
       >
         Login
-      </button>
-    </dialog>
+      </LoginButton>
+    </BigDialog>
   );
 };

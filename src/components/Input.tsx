@@ -23,10 +23,13 @@ const InputError = styled.span`
 `;
 const BlockInput = styled.input`
   display: block;
+  margin-top: 5px;
 `;
-const FlexRowWrapper = styled.label`
+const FlexRowWrapper = styled.div`
   display: flex;
   flex-direction: row;
+  justify-content: center;
+  align-items: center;
 `;
 
 export const Input = ({

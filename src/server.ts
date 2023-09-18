@@ -3,18 +3,13 @@ import * as http from 'http';
 import next, { NextApiHandler } from 'next';
 import * as socketio from 'socket.io';
 
-import { type Messages } from './types/types';
+import { setupSocketHandlers } from './socket';
+import { setUser } from './socket';
 
 const port: number = parseInt(process.env.PORT || '3000', 10);
 const dev: boolean = process.env.NODE_ENV !== 'production';
 const nextApp = next({ dev });
 const nextHandler: NextApiHandler = nextApp.getRequestHandler();
-
-const messages: Messages = {
-  alice: [],
-  bob: [],
-};
-const rooms: string[] = ['alice', 'bob'];
 
 nextApp
   .prepare()
@@ -24,7 +19,10 @@ nextApp
     const io: socketio.Server = new socketio.Server();
     io.use((socket, next) => {
       const token = socket.handshake.auth.token;
-      console.log('got auth token:', token);
+      const username = socket.handshake.auth.username;
+      // this is a bit of a hack to bypass some seemingly recent issues with the latest version of nextjs breaking the
+      // sharing of data between the custom server and api routes
+      setUser(username, token);
       if (true) {
         next();
       }
@@ -32,41 +30,7 @@ nextApp
     io.attach(server);
     console.log('Connected io to server');
 
-    //TODO break this into its own file to keep server.js clean, especially if this gailed additional routes
-    io.on('connection', (socket: socketio.Socket) => {
-      //console.log('connecting', socket);
-      //socket.emit === back to requester
-      socket.emit('status', 'Hello from Socket.io');
-      socket.emit('initialData', { messages, rooms });
-      socket.on('clientMessage', (msg) => {
-        //socket.broadcast.emit === to all but sender
-        messages[msg.room].unshift({
-          timestamp: new Date().getUTCDate(),
-          username: msg.username,
-          content: msg.content,
-        });
-        //io.emit === back to ALL
-        io.emit('serverMessage', messages);
-        console.log('received and echoing', msg);
-      });
-      socket.on('clientNewRoomRequest', (roomName) => {
-        if (!rooms.includes(roomName)) {
-          rooms.push(roomName);
-          messages[roomName] = [];
-        }
-        socket.emit('serverNewRoomResponse', {
-          messages,
-          rooms: rooms.sort((a, b) => {
-            return a.toLowerCase().localeCompare(b.toLowerCase());
-          }),
-        });
-      });
-
-      socket.on('disconnect', () => {
-        //TODO do some logout stuff
-        console.log('client disconnected');
-      });
-    });
+    setupSocketHandlers(io);
 
     app.all('*', (req: any, res: any) => nextHandler(req, res));
 
