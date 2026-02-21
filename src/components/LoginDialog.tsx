@@ -4,9 +4,7 @@
 import React, { useEffect, useState } from 'react';
 import { Input } from './Input';
 import { styled } from 'styled-components';
-
-const minPasswordLength = 8;
-const minUsernameLength = 8;
+import { VALIDATION } from '../constants';
 
 type LoginDialogProps = {
   username: string;
@@ -16,16 +14,16 @@ type LoginDialogProps = {
 };
 
 const getUsernameError = (username: string): string => {
-  return !username.length || username.length >= minUsernameLength
+  return !username.length || username.length >= VALIDATION.MIN_USERNAME_LENGTH
     ? ''
-    : `Username must be at least ${minUsernameLength} characters`; //Note: highly recommend stricter complexity requirement
+    : `Username must be at least ${VALIDATION.MIN_USERNAME_LENGTH} characters`; //Note: highly recommend stricter complexity requirement
 };
 
 const getPasswordError = (password: string): string => {
   //TODO this is not sufficient password complexity, but that's a whole thing and this is an interview app
-  return !password.length || password.length >= minPasswordLength
+  return !password.length || password.length >= VALIDATION.MIN_PASSWORD_LENGTH
     ? ''
-    : `Password must be at least ${minPasswordLength} characters`; //Note: highly recommend stricter complexity requirement
+    : `Password must be at least ${VALIDATION.MIN_PASSWORD_LENGTH} characters`; //Note: highly recommend stricter complexity requirement
 };
 
 const InputError = styled.span`
@@ -41,6 +39,29 @@ const LoginButton = styled.button`
   width: 245px;
   margin-top: 5px;
   margin-left: 5px;
+`;
+
+const QuickLoginButton = styled.button`
+  width: 245px;
+  margin-top: 5px;
+  margin-left: 5px;
+  background-color: #4a90e2;
+  color: white;
+  border: none;
+  padding: 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  &:hover {
+    background-color: #357abd;
+  }
+`;
+
+const QuickLoginContainer = styled.div`
+  margin-top: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: center;
 `;
 
 export const LoginDialog = ({
@@ -66,6 +87,15 @@ export const LoginDialog = ({
       !username || !password || !!localUsernameError || !!localPasswordError
     );
   }, [username, password]);
+
+  const handleQuickLogin = (defaultUsername: string, defaultPassword: string) => {
+    // Set the values directly and submit immediately
+    // The validation will pass since these are valid credentials
+    setUsername(defaultUsername);
+    setPassword(defaultPassword);
+    // Submit directly with the provided credentials
+    onSubmit(defaultUsername, defaultPassword);
+  };
 
   const onSubmit = (username: string, password: string) => {
     // not-too unprofessional fallback message, TODO: show a cute vector-graphic of a warm beverage
@@ -110,7 +140,7 @@ export const LoginDialog = ({
         label="username:"
         type="username"
         error={usernameError}
-        minLength={minUsernameLength}
+        minLength={VALIDATION.MIN_USERNAME_LENGTH}
         value={username}
         onChange={setUsername}
         required={true}
@@ -120,7 +150,7 @@ export const LoginDialog = ({
         label="password:"
         type="password"
         error={passwordError}
-        minLength={minPasswordLength}
+        minLength={VALIDATION.MIN_PASSWORD_LENGTH}
         value={password}
         onChange={setPassword}
         required={true}
@@ -132,6 +162,21 @@ export const LoginDialog = ({
       >
         Login
       </LoginButton>
+      <QuickLoginContainer>
+        <div>Quick Login:</div>
+        <QuickLoginButton
+          onClick={() => handleQuickLogin('testuser123', 'password123')}
+          type="button"
+        >
+          Login as testuser123
+        </QuickLoginButton>
+        <QuickLoginButton
+          onClick={() => handleQuickLogin('demoaccount', 'demoaccount123')}
+          type="button"
+        >
+          Login as demoaccount
+        </QuickLoginButton>
+      </QuickLoginContainer>
     </BigDialog>
   );
 };
