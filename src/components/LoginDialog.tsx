@@ -1,29 +1,40 @@
 // !!! login should be put on its own codesplit in code more serious than an interview example
 // so as not to serve out the whole app bundle and reveal anything about the site, not that security through
 // obscurity helps, but defence in depth does...
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Input } from './Input';
 import { styled } from 'styled-components';
 import { VALIDATION } from '../constants';
+import {
+  generateKeyPair,
+  storeKeys,
+  loadKeys,
+  clearKeys,
+  fetchServerPublicKey,
+  decryptMessage,
+  encryptForServer,
+  type StoredKeys,
+} from '../utils/gpg';
 
 type LoginDialogProps = {
   username: string;
-  setUsername: (val: any) => void; //this is the type TS suggested...
+  setUsername: (val: any) => void;
   open: boolean;
-  onSuccess: (authToken: string) => void;
+  onSuccess: (authToken: string, username: string) => void;
+  onLogout?: () => void;
 };
 
 const getUsernameError = (username: string): string => {
-  return !username.length || username.length >= VALIDATION.MIN_USERNAME_LENGTH
-    ? ''
-    : `Username must be at least ${VALIDATION.MIN_USERNAME_LENGTH} characters`; //Note: highly recommend stricter complexity requirement
-};
-
-const getPasswordError = (password: string): string => {
-  //TODO this is not sufficient password complexity, but that's a whole thing and this is an interview app
-  return !password.length || password.length >= VALIDATION.MIN_PASSWORD_LENGTH
-    ? ''
-    : `Password must be at least ${VALIDATION.MIN_PASSWORD_LENGTH} characters`; //Note: highly recommend stricter complexity requirement
+  if (!username.length) {
+    return '';
+  }
+  if (username.length < VALIDATION.MIN_USERNAME_LENGTH) {
+    return `Username must be at least ${VALIDATION.MIN_USERNAME_LENGTH} characters`;
+  }
+  if (/\s/.test(username)) {
+    return 'Username cannot contain whitespace';
+  }
+  return '';
 };
 
 const InputError = styled.span`
@@ -40,28 +51,19 @@ const LoginButton = styled.button`
   margin-top: 5px;
   margin-left: 5px;
 `;
-
-const QuickLoginButton = styled.button`
+const LogoutButton = styled.button`
   width: 245px;
   margin-top: 5px;
   margin-left: 5px;
-  background-color: #4a90e2;
+  background-color: #e24a4a;
   color: white;
   border: none;
   padding: 8px;
   border-radius: 4px;
   cursor: pointer;
   &:hover {
-    background-color: #357abd;
+    background-color: #c03939;
   }
-`;
-
-const QuickLoginContainer = styled.div`
-  margin-top: 15px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  align-items: center;
 `;
 
 export const LoginDialog = ({
@@ -69,114 +71,222 @@ export const LoginDialog = ({
   setUsername,
   open,
   onSuccess,
+  onLogout,
 }: LoginDialogProps) => {
   const [usernameError, setUsernameError] = useState<string>('');
-  const [password, setPassword] = useState<string>('');
-  const [passwordError, setPasswordError] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
-  const [authToken, setAuthToken] = useState<string>('');
   const [isSubmitDisabled, setIsSubmitDisabled] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [serverPublicKey, setServerPublicKey] = useState<string>('');
+
+  const checkAutoLogin = useCallback(async () => {
+    const storedKeys = loadKeys();
+    if (storedKeys && storedKeys.sessionId) {
+      console.log('[LoginDialog] Auto-login with stored keys');
+      setUsername(storedKeys.username);
+      onSuccess(storedKeys.sessionId, storedKeys.username);
+    }
+  }, [setUsername, onSuccess]);
+
+  // Check for auto-login on mount
+  useEffect(() => {
+    if (open) {
+      checkAutoLogin();
+      fetchServerPublicKey().then(setServerPublicKey).catch((err) => {
+        console.error('[LoginDialog] Failed to fetch server public key:', err);
+      });
+    }
+  }, [open, checkAutoLogin]);
 
   useEffect(() => {
     const localUsernameError = getUsernameError(username);
-    const localPasswordError = getPasswordError(password);
     setUsernameError(localUsernameError);
-    setPasswordError(localPasswordError);
-    // make this a separate flag so the messages don't display while the inputs are empty
-    setIsSubmitDisabled(
-      !username || !password || !!localUsernameError || !!localPasswordError
-    );
-  }, [username, password]);
+    setIsSubmitDisabled(!username || !!localUsernameError);
+  }, [username]);
 
-  const handleQuickLogin = (defaultUsername: string, defaultPassword: string) => {
-    // Set the values directly and submit immediately
-    // The validation will pass since these are valid credentials
-    setUsername(defaultUsername);
-    setPassword(defaultPassword);
-    // Submit directly with the provided credentials
-    onSubmit(defaultUsername, defaultPassword);
+  const handleLogout = () => {
+    clearKeys();
+    setUsername('');
+    if (onLogout) {
+      onLogout();
+    }
   };
 
-  const onSubmit = (username: string, password: string) => {
-    // not-too unprofessional fallback message, TODO: show a cute vector-graphic of a warm beverage
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter' && !isSubmitDisabled && !isLoading) {
+      event.preventDefault();
+      onSubmit(username);
+    }
+  };
+
+  const onSubmit = async (username: string) => {
+    setIsLoading(true);
+    setLoginError('');
+    
     const snarkyFallbackError =
       "Something went wrong at login, go grab a cup of tea, maybe we'll figure it out while you're gone";
-    fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    })
-      .then((response) => {
-        response
-          .json()
-          .then((bodyJson) => {
-            if (bodyJson.sessionId) {
-              setLoginError('');
-              setAuthToken(bodyJson.sessionId);
-              onSuccess(bodyJson.sessionId);
-            } else {
-              setLoginError(
-                bodyJson.error || // not-too unprofessional fallback message, TODO: show a cute vector-graphic of a warm beverage
-                  snarkyFallbackError
-              );
-            }
-          })
-          .catch((err) => {
-            setLoginError(snarkyFallbackError);
-          });
-      })
-      //for now if this happens it could be anything
-      .catch((err) => {
-        setLoginError(snarkyFallbackError);
-        console.error('login error2: ', err);
+
+    try {
+      // Check if we have stored keys for this username
+      const storedKeys = loadKeys();
+      let keys: StoredKeys;
+
+      if (storedKeys && storedKeys.username === username) {
+        // Use existing keys
+        console.log('[LoginDialog] Using existing keys for:', username);
+        keys = storedKeys;
+        
+        // Get server public key if we don't have it
+        if (!keys.serverPublicKey) {
+          keys.serverPublicKey = await fetchServerPublicKey();
+        }
+      } else {
+        // Generate new keys
+        console.log('[LoginDialog] Generating new keys for:', username);
+        const keyPair = await generateKeyPair(username);
+        
+        // Get server public key
+        const serverPubKey = serverPublicKey || await fetchServerPublicKey();
+        
+        keys = {
+          username,
+          privateKey: keyPair.privateKey,
+          publicKey: keyPair.publicKey,
+          serverPublicKey: serverPubKey,
+        };
+      }
+
+      // First login attempt - send username and public key
+      const loginResponse = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username,
+          publicKey: keys.publicKey,
+        }),
       });
+
+      const loginData = await loginResponse.json();
+
+      if (loginData.error) {
+        setLoginError(loginData.error);
+        setIsLoading(false);
+        return;
+      }
+
+      // If we got a challenge, this is an existing user - perform challenge-response
+      if (loginData.challenge) {
+        console.log('[LoginDialog] Received challenge, performing challenge-response');
+        
+        // Decrypt the challenge with our private key
+        const decryptedUUID = await decryptMessage(
+          loginData.challenge,
+          keys.privateKey
+        );
+        console.log('[LoginDialog] Decrypted UUID:', decryptedUUID);
+
+        // Encrypt the UUID with server's public key
+        const encryptedResponse = await encryptForServer(
+          decryptedUUID,
+          keys.serverPublicKey
+        );
+        console.log('[LoginDialog] Encrypted response for server');
+
+        // Send the encrypted response
+        const verifyResponse = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username,
+            encryptedUUID: encryptedResponse,
+          }),
+        });
+
+        const verifyData = await verifyResponse.json();
+
+        if (verifyData.error) {
+          setLoginError(verifyData.error);
+          setIsLoading(false);
+          return;
+        }
+
+        if (verifyData.sessionId) {
+          // Store keys with session ID
+          storeKeys({
+            ...keys,
+            sessionId: verifyData.sessionId,
+          });
+          setLoginError('');
+          onSuccess(verifyData.sessionId, username);
+        } else {
+          setLoginError(verifyData.error || snarkyFallbackError);
+        }
+      } else if (loginData.sessionId) {
+        // New user registration successful
+        console.log('[LoginDialog] New user registered successfully');
+        
+        // Store server public key if provided
+        if (loginData.serverPublicKey) {
+          keys.serverPublicKey = loginData.serverPublicKey;
+        }
+        
+        // Store keys with session ID
+        storeKeys({
+          ...keys,
+          sessionId: loginData.sessionId,
+        });
+        setLoginError('');
+        onSuccess(loginData.sessionId, username);
+      } else {
+        setLoginError(loginData.error || snarkyFallbackError);
+      }
+    } catch (err) {
+      console.error('[LoginDialog] Login error:', err);
+      setLoginError(snarkyFallbackError);
+    } finally {
+      setIsLoading(false);
+    }
   };
+
+  // Check if user is already logged in
+  const storedKeys = loadKeys();
+  const isLoggedIn = storedKeys && storedKeys.sessionId;
 
   return (
     <BigDialog id="successModal" open={open}>
       {loginError && <InputError>{loginError}</InputError>}
-      <Input
-        id="username"
-        label="username:"
-        type="username"
-        error={usernameError}
-        minLength={VALIDATION.MIN_USERNAME_LENGTH}
-        value={username}
-        onChange={setUsername}
-        required={true}
-      />
-      <Input
-        id="password"
-        label="password:"
-        type="password"
-        error={passwordError}
-        minLength={VALIDATION.MIN_PASSWORD_LENGTH}
-        value={password}
-        onChange={setPassword}
-        required={true}
-      />
-      <LoginButton
-        onClick={() => onSubmit(username, password)}
-        type="button"
-        disabled={isSubmitDisabled}
-      >
-        Login
-      </LoginButton>
-      <QuickLoginContainer>
-        <div>Quick Login:</div>
-        <QuickLoginButton
-          onClick={() => handleQuickLogin('testuser123', 'password123')}
-          type="button"
-        >
-          Login as testuser123
-        </QuickLoginButton>
-        <QuickLoginButton
-          onClick={() => handleQuickLogin('demoaccount', 'demoaccount123')}
-          type="button"
-        >
-          Login as demoaccount
-        </QuickLoginButton>
-      </QuickLoginContainer>
+      {isLoggedIn ? (
+        <>
+          <div>Logged in as: {storedKeys!.username}</div>
+          <LogoutButton onClick={handleLogout} type="button">
+            Logout
+          </LogoutButton>
+        </>
+      ) : (
+        <>
+          <Input
+            id="username"
+            label="username:"
+            type="text"
+            error={usernameError}
+            minLength={VALIDATION.MIN_USERNAME_LENGTH}
+            value={username}
+            onChange={setUsername}
+            onKeyDown={handleKeyDown}
+            required={true}
+          />
+          <LoginButton
+            onClick={() => onSubmit(username)}
+            type="button"
+            disabled={isSubmitDisabled || isLoading}
+          >
+            {isLoading ? 'Logging in...' : 'Login'}
+          </LoginButton>
+          <div style={{ marginTop: '10px', fontSize: '12px', color: '#666' }}>
+            GPG keys will be generated automatically on first login
+          </div>
+        </>
+      )}
     </BigDialog>
   );
 };

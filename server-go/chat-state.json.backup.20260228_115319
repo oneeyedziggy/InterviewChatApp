@@ -1,0 +1,23 @@
+{
+  "messages": {
+    "#cats": [],
+    "#general": [
+      {
+        "timestamp": 1772308028,
+        "username": "oneeyedziggy",
+        "content": "\u003c-- has entered the room",
+        "encryptedFor": null
+      }
+    ]
+  },
+  "rooms": [
+    "#general",
+    "#cats"
+  ],
+  "users": {
+    "oneeyedziggy": "2-iJqn_GAVur4pX2AAAB"
+  },
+  "userPubKeys": {
+    "oneeyedziggy": "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nxsBNBGmjQ8wBCADAKn76oXNOlrOeU6hs5NYYhPq7L+Hp4Y05s/b0+XccsrBh\ndXKF44KvGK8+uLly2vSEdhhyC+tKoWRBSgSEmunRXHjIVeK7nCPvjnaPezfr\nmoMnmcin6KSImTCQIGXV7ca/fl9hTrKOf0i0uATap+cka0HLxG9x9v9VrchZ\n8N7eB+XAYBnc4T0yeEPX7DT5xxsPVNWiMaduFa2solpGOdc4/wYscAQeW3Ck\nvXP+XwRId6Ldu8VIHxda+2Tki+zDhcmAqQtqK6Vn+JdqAXsvf2yyojOM8Ucn\nseszyM05fpfv9AmcgtNUsSJrnfYrgDhjT34jgT9rFJkBd5QS41fq1x7DABEB\nAAHNJm9uZWV5ZWR6aWdneSA8b25lZXllZHppZ2d5QGNoYXQubG9jYWw+wsDR\nBBMBCgCFBYJpo0PMAwsJBwkQyMuYaPl5J1hFFAAAAAAAHAAgc2FsdEBub3Rh\ndGlvbnMub3BlbnBncGpzLm9yZxE3GluIvcA8csPKsBrE+mQEUUcmff33zUxq\njoU/Yy+QBRUKCA4MBBYAAgECGQECmwMCHgEWIQQcPz5uKJr9/TzmqjvIy5ho\n+XknWAAAS/4IAL0oxCyY+T7YioqKskzuANab5O9EVV4R7HhMnaFUw10uzH3x\nfTqUcXf0DldKS/l14CeeXgJt7+cgM2d2joL+RhbVeuCqdZzDgEEW0vGFrM/8\nDERFuIfBq1SGrDRGyoWm/BGHRHk0fVdwMa7aJVwjF+2ngrV89FJJgjftkJyo\nJ4WieMYkNBZDUmOSs7QaZbN4TMGQrRABRB3EYHEl3xrAi5nDXOQqOw69rI+G\nfcc2uaEMcdnt7h2U96W081GNsfqnz2VBaASgCzGrME0mB9l2FX1Hv6U+1Em9\nYlbuV/FkesFOzhLv89Fd0i6kzR51V4yBizturpuRkwltX0oE37ZTv7rOwE0E\naaNDzAEIAPI1PzP8B2yJDgJRrUOMHNK6/0v+oR4WqsrqNXHixKhcErLuTWAk\nhtk7TDZ0kZsfJFej0MZ6PX+rIG15VkIEwYaJYyz4CneYt5dAD2M6H78azeII\nihBDd0tJqfBvuzDBsKFHcTBDJEo/RGp1Jk+ozZfFQRIn+pB8GT7c4rMdy7W1\npyiMXW5yKIK/YxVvGxEGnyoGJWCbz6ibKYyV75IZQm3Jy7pR+mcvoeSFEY/J\n5fvIzLG/DklhHHf7+0dBtAU4uO9ZjuAhKQhXpPDj6VIvHQTL86Ek24qZyeXZ\n6XQErRYvgTHp0CxhoO5krg10g7IGaYLId61FGybtdBPLYh92HsMAEQEAAcLA\nvAQYAQoAcAWCaaNDzAkQyMuYaPl5J1hFFAAAAAAAHAAgc2FsdEBub3RhdGlv\nbnMub3BlbnBncGpzLm9yZ3rCXox6kSJ5bDwkV4qxvIACGL4VqQKZRLuPd8TD\n5piZApsMFiEEHD8+biia/f085qo7yMuYaPl5J1gAANj9CAClPExJhdvllw8K\nqNpi+oXdKOCPrXtxJ/UKNFPrhGxM6drbzrIITcUF4BzOmP1SX9EnrgNioMKx\nQm/hFymN26cQOHdEllgicJqdphO6wPI/OvE3WYUEwA2Zt9YUiaSEpSDsuv9b\nNMCXuRkpKvpj0EV5zMVl05EPLl3volFUWyl3t+ezKfCw9cM6YRqvqQ5N9E7V\nhB6wi9YcHY2rkh6X5Pc9OHpi2js9okzMSxfrJ7OQBbNzCEEKtIvywVuABqJ5\nqTyP6eMrDQf3pe0iZ/PiQKgOsnGux6psP/iP5t6Aq7v/0ml4p/K9aUnipaEY\nKte8Fq8R1Y/SVcS0AJds8AaxC+n3\n=VBil\n-----END PGP PUBLIC KEY BLOCK-----\n"
+  }
+}

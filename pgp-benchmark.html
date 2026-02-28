@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PGP Key Generation & Encryption Benchmark</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/openpgp@6.3.0/dist/openpgp.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            margin-bottom: 10px;
+            color: #2c3e50;
+        }
+        
+        .subtitle {
+            color: #7f8c8d;
+            margin-bottom: 30px;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            padding: 12px 24px;
+            font-size: 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            background: #3498db;
+            color: white;
+            transition: background 0.2s;
+        }
+        
+        button:hover:not(:disabled) {
+            background: #2980b9;
+        }
+        
+        button:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+        }
+        
+        .status {
+            margin: 20px 0;
+            padding: 15px;
+            background: #ecf0f1;
+            border-radius: 6px;
+            border-left: 4px solid #3498db;
+        }
+        
+        .results {
+            margin-top: 30px;
+        }
+        
+        .section {
+            margin-bottom: 40px;
+        }
+        
+        .section h2 {
+            margin-bottom: 20px;
+            color: #2c3e50;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border: 1px solid #ddd;
+        }
+        
+        th {
+            background: #3498db;
+            color: white;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+        
+        tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+        
+        tr:hover {
+            background: #e8f4f8;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .stat-card {
+            background: #ecf0f1;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #7f8c8d;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin-bottom: 30px;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        .slider-container {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        
+        .slider-group {
+            margin-bottom: 20px;
+        }
+        
+        .slider-group:last-child {
+            margin-bottom: 0;
+        }
+        
+        .slider-label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+        
+        .slider-value {
+            background: #3498db;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            min-width: 100px;
+            text-align: center;
+        }
+        
+        .slider {
+            width: 100%;
+            height: 8px;
+            border-radius: 4px;
+            background: #ddd;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #3498db;
+            cursor: pointer;
+        }
+        
+        .slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #3498db;
+            cursor: pointer;
+            border: none;
+        }
+        
+        .slider-info {
+            font-size: 12px;
+            color: #7f8c8d;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 PGP Key Generation & Encryption Benchmark</h1>
+        <p class="subtitle">Benchmark PGP key generation and multi-key encryption performance</p>
+        
+        <div class="slider-container">
+            <div class="slider-group">
+                <div class="slider-label">
+                    <span>Message Size Range</span>
+                    <span class="slider-value" id="msgSizeRange">128 - 4,194,304 chars</span>
+                </div>
+                <input type="range" id="msgSizeMin" min="0" max="22" value="7" class="slider">
+                <input type="range" id="msgSizeMax" min="0" max="22" value="12" class="slider">
+                <div class="slider-info">Min: <span id="msgSizeMinVal">128</span> chars | Max: <span id="msgSizeMaxVal">4,096</span> chars</div>
+            </div>
+            
+            <div class="slider-group">
+                <div class="slider-label">
+                    <span>Key Count Range</span>
+                    <span class="slider-value" id="keyCountRange">1 - 65,536 keys</span>
+                </div>
+                <input type="range" id="keyCountMin" min="0" max="16" value="0" class="slider">
+                <input type="range" id="keyCountMax" min="0" max="16" value="8" class="slider">
+                <div class="slider-info">Min: <span id="keyCountMinVal">1</span> keys | Max: <span id="keyCountMaxVal">256</span> keys</div>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button id="btnKeyGen">Benchmark Key Generation</button>
+            <button id="btnEncryption">Benchmark Encryption</button>
+            <button id="btnFullBenchmark">Run Full Benchmark</button>
+            <button id="btnClear">Clear Results</button>
+        </div>
+        
+        <div id="status" class="status hidden"></div>
+        
+        <div id="results" class="results hidden">
+            <div id="keyGenResults" class="section hidden">
+                <h2>Key Generation Results (256 keys)</h2>
+                <div id="keyGenStats" class="stats-grid"></div>
+            </div>
+            
+            <div id="encryptionResults" class="section hidden">
+                <h2>Encryption Benchmark Results</h2>
+                <div id="encryptionTableContainer"></div>
+                <div id="chartsContainer"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script type="module">
+        const { generateKey, readKey, createMessage, encrypt } = openpgp;
+        
+        let keyGenResults = null;
+        let encryptionResults = null;
+        let generatedKeys = [];
+        
+        const statusEl = document.getElementById('status');
+        const resultsEl = document.getElementById('results');
+        const keyGenResultsEl = document.getElementById('keyGenResults');
+        const encryptionResultsEl = document.getElementById('encryptionResults');
+        
+        // Generate all possible message sizes (powers of 2 from 2^7=128 to 2^22=4194304)
+        const allMessageSizes = [];
+        for (let i = 7; i <= 22; i++) {
+            allMessageSizes.push(Math.pow(2, i));
+        }
+        
+        // Generate all possible key counts (powers of 2 from 2^0=1 to 2^16=65536)
+        const allKeyCounts = [];
+        for (let i = 0; i <= 16; i++) {
+            allKeyCounts.push(Math.pow(2, i));
+        }
+        
+        // Get filtered message sizes based on sliders
+        function getFilteredMessageSizes() {
+            const minExp = parseInt(document.getElementById('msgSizeMin').value);
+            const maxExp = parseInt(document.getElementById('msgSizeMax').value);
+            return allMessageSizes.filter(size => {
+                const exp = Math.log2(size);
+                return exp >= minExp && exp <= maxExp;
+            });
+        }
+        
+        // Get filtered key counts based on sliders
+        function getFilteredKeyCounts() {
+            const minExp = parseInt(document.getElementById('keyCountMin').value);
+            const maxExp = parseInt(document.getElementById('keyCountMax').value);
+            return allKeyCounts.filter(count => {
+                const exp = Math.log2(count);
+                return exp >= minExp && exp <= maxExp && count <= generatedKeys.length;
+            });
+        }
+        
+        // Update slider display values
+        function updateSliderDisplays() {
+            const msgSizeMinSlider = document.getElementById('msgSizeMin');
+            const msgSizeMaxSlider = document.getElementById('msgSizeMax');
+            let msgSizeMinExp = parseInt(msgSizeMinSlider.value);
+            let msgSizeMaxExp = parseInt(msgSizeMaxSlider.value);
+            
+            // Ensure min <= max
+            if (msgSizeMinExp > msgSizeMaxExp) {
+                msgSizeMinExp = msgSizeMaxExp;
+                msgSizeMinSlider.value = msgSizeMinExp;
+            }
+            if (msgSizeMaxExp < msgSizeMinExp) {
+                msgSizeMaxExp = msgSizeMinExp;
+                msgSizeMaxSlider.value = msgSizeMaxExp;
+            }
+            
+            const msgSizeMinVal = Math.pow(2, msgSizeMinExp);
+            const msgSizeMaxVal = Math.pow(2, msgSizeMaxExp);
+            
+            document.getElementById('msgSizeMinVal').textContent = msgSizeMinVal.toLocaleString();
+            document.getElementById('msgSizeMaxVal').textContent = msgSizeMaxVal.toLocaleString();
+            document.getElementById('msgSizeRange').textContent = `${msgSizeMinVal.toLocaleString()} - ${msgSizeMaxVal.toLocaleString()} chars`;
+            
+            const keyCountMinSlider = document.getElementById('keyCountMin');
+            const keyCountMaxSlider = document.getElementById('keyCountMax');
+            let keyCountMinExp = parseInt(keyCountMinSlider.value);
+            let keyCountMaxExp = parseInt(keyCountMaxSlider.value);
+            
+            // Ensure min <= max
+            if (keyCountMinExp > keyCountMaxExp) {
+                keyCountMinExp = keyCountMaxExp;
+                keyCountMinSlider.value = keyCountMinExp;
+            }
+            if (keyCountMaxExp < keyCountMinExp) {
+                keyCountMaxExp = keyCountMinExp;
+                keyCountMaxSlider.value = keyCountMaxExp;
+            }
+            
+            const keyCountMinVal = Math.pow(2, keyCountMinExp);
+            const keyCountMaxVal = Math.pow(2, keyCountMaxExp);
+            
+            document.getElementById('keyCountMinVal').textContent = keyCountMinVal.toLocaleString();
+            document.getElementById('keyCountMaxVal').textContent = keyCountMaxVal.toLocaleString();
+            document.getElementById('keyCountRange').textContent = `${keyCountMinVal.toLocaleString()} - ${keyCountMaxVal.toLocaleString()} keys`;
+        }
+        
+        // Setup slider event listeners
+        ['msgSizeMin', 'msgSizeMax', 'keyCountMin', 'keyCountMax'].forEach(id => {
+            document.getElementById(id).addEventListener('input', updateSliderDisplays);
+        });
+        
+        // Initialize slider displays
+        updateSliderDisplays();
+        
+        function showStatus(message, isLoading = false) {
+            statusEl.textContent = message;
+            statusEl.className = 'status';
+            if (isLoading) {
+                statusEl.innerHTML = message + '<span class="loading"></span>';
+            }
+        }
+        
+        function hideStatus() {
+            statusEl.className = 'status hidden';
+        }
+        
+        function showResults() {
+            resultsEl.className = 'results';
+        }
+        
+        // Calculate statistics
+        function calculateStats(times) {
+            if (times.length === 0) return null;
+            
+            const sorted = [...times].sort((a, b) => a - b);
+            const sum = times.reduce((a, b) => a + b, 0);
+            
+            return {
+                min: sorted[0],
+                max: sorted[sorted.length - 1],
+                avg: sum / times.length,
+                median: sorted.length % 2 === 0
+                    ? (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+                    : sorted[Math.floor(sorted.length / 2)]
+            };
+        }
+        
+        // Format time in milliseconds
+        function formatTime(ms) {
+            if (ms < 1) return (ms * 1000).toFixed(2) + ' μs';
+            if (ms < 1000) return ms.toFixed(2) + ' ms';
+            return (ms / 1000).toFixed(2) + ' s';
+        }
+        
+        // Benchmark key generation
+        async function benchmarkKeyGeneration() {
+            // Determine how many keys we need based on max key count slider
+            const maxKeyCountExp = parseInt(document.getElementById('keyCountMax').value);
+            const maxKeysNeeded = Math.pow(2, maxKeyCountExp);
+            const keysToGenerate = Math.min(maxKeysNeeded, 65536);
+            
+            showStatus(`Generating ${keysToGenerate.toLocaleString()} key pairs...`, true);
+            generatedKeys = [];
+            const times = [];
+            
+            for (let i = 0; i < keysToGenerate; i++) {
+                const start = performance.now();
+                try {
+                    const { privateKey, publicKey } = await generateKey({
+                        type: 'rsa',
+                        rsaBits: 2048,
+                        userIDs: [{ name: `User${i}`, email: `user${i}@benchmark.local` }],
+                        passphrase: '',
+                    });
+                    const end = performance.now();
+                    const duration = end - start;
+                    times.push(duration);
+                    generatedKeys.push({ privateKey, publicKey });
+                    
+                    if ((i + 1) % Math.max(1, Math.floor(keysToGenerate / 20)) === 0) {
+                        showStatus(`Generated ${(i + 1).toLocaleString()}/${keysToGenerate.toLocaleString()} keys...`, true);
+                    }
+                } catch (error) {
+                    console.error(`Error generating key ${i}:`, error);
+                }
+            }
+            
+            keyGenResults = calculateStats(times);
+            displayKeyGenResults();
+            hideStatus();
+            return keyGenResults;
+        }
+        
+        // Display key generation results
+        function displayKeyGenResults() {
+            if (!keyGenResults) return;
+            
+            const statsEl = document.getElementById('keyGenStats');
+            const keyCount = generatedKeys.length;
+            document.querySelector('#keyGenResults h2').textContent = `Key Generation Results (${keyCount.toLocaleString()} keys)`;
+            
+            statsEl.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-label">Min Time</div>
+                    <div class="stat-value">${formatTime(keyGenResults.min)}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Max Time</div>
+                    <div class="stat-value">${formatTime(keyGenResults.max)}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Average Time</div>
+                    <div class="stat-value">${formatTime(keyGenResults.avg)}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Median Time</div>
+                    <div class="stat-value">${formatTime(keyGenResults.median)}</div>
+                </div>
+            `;
+            
+            keyGenResultsEl.className = 'section';
+            showResults();
+        }
+        
+        // Benchmark encryption
+        async function benchmarkEncryption() {
+            if (generatedKeys.length === 0) {
+                showStatus('Please generate keys first!', false);
+                return;
+            }
+            
+            showStatus('Running encryption benchmarks...', true);
+            
+            const messageSizes = getFilteredMessageSizes();
+            const keyCounts = getFilteredKeyCounts();
+            
+            if (messageSizes.length === 0 || keyCounts.length === 0) {
+                showStatus('No valid message sizes or key counts selected. Adjust sliders.', false);
+                return;
+            }
+            
+            encryptionResults = {};
+            const totalTests = messageSizes.length * keyCounts.length;
+            let completedTests = 0;
+            
+            for (const msgSize of messageSizes) {
+                encryptionResults[msgSize] = {};
+                const message = 'A'.repeat(msgSize);
+                
+                for (const keyCount of keyCounts) {
+                    const times = [];
+                    
+                    // Run each test 5 times for better statistics
+                    for (let run = 0; run < 5; run++) {
+                        // Create message object fresh for each run
+                        const msgObj = await createMessage({ text: message });
+                        const publicKeys = generatedKeys.slice(0, keyCount).map(k => k.publicKey);
+                        const keys = await Promise.all(
+                            publicKeys.map(pk => readKey({ armoredKey: pk }))
+                        );
+                        
+                        const start = performance.now();
+                        try {
+                            await encrypt({
+                                message: msgObj,
+                                encryptionKeys: keys,
+                            });
+                            const end = performance.now();
+                            times.push(end - start);
+                        } catch (error) {
+                            console.error(`Error encrypting ${msgSize} chars with ${keyCount} keys:`, error);
+                        }
+                    }
+                    
+                    encryptionResults[msgSize][keyCount] = calculateStats(times);
+                    completedTests++;
+                    
+                    if (completedTests % 5 === 0) {
+                        showStatus(`Progress: ${completedTests}/${totalTests} test combinations...`, true);
+                    }
+                }
+                
+                showStatus(`Completed ${msgSize.toLocaleString()} char messages...`, true);
+            }
+            
+            displayEncryptionResults();
+            hideStatus();
+        }
+        
+        // Display encryption results
+        function displayEncryptionResults() {
+            if (!encryptionResults) return;
+            
+            const messageSizes = getFilteredMessageSizes();
+            const keyCounts = getFilteredKeyCounts();
+            
+            // Create table
+            let tableHTML = '<table><thead><tr><th>Message Size</th><th>Key Count</th><th>Min (ms)</th><th>Max (ms)</th><th>Avg (ms)</th><th>Median (ms)</th></tr></thead><tbody>';
+            
+            for (const msgSize of messageSizes) {
+                for (const keyCount of keyCounts) {
+                    const stats = encryptionResults[msgSize]?.[keyCount];
+                    if (stats) {
+                        tableHTML += `
+                            <tr>
+                                <td>${msgSize.toLocaleString()} chars</td>
+                                <td>${keyCount.toLocaleString()}</td>
+                                <td>${formatTime(stats.min)}</td>
+                                <td>${formatTime(stats.max)}</td>
+                                <td>${formatTime(stats.avg)}</td>
+                                <td>${formatTime(stats.median)}</td>
+                            </tr>
+                        `;
+                    }
+                }
+            }
+            
+            tableHTML += '</tbody></table>';
+            document.getElementById('encryptionTableContainer').innerHTML = tableHTML;
+            
+            // Create charts
+            createCharts();
+            
+            encryptionResultsEl.className = 'section';
+            showResults();
+        }
+        
+        // Create charts
+        function createCharts() {
+            const messageSizes = getFilteredMessageSizes();
+            const keyCounts = getFilteredKeyCounts();
+            
+            const chartsContainer = document.getElementById('chartsContainer');
+            chartsContainer.innerHTML = '';
+            
+            // Chart 1: Time by Message Size (for each key count)
+            const chart1Container = document.createElement('div');
+            chart1Container.className = 'chart-container';
+            chartsContainer.appendChild(chart1Container);
+            
+            const datasets1 = keyCounts.map((keyCount, idx) => {
+                const data = messageSizes.map(msgSize => {
+                    const stats = encryptionResults[msgSize]?.[keyCount];
+                    return stats ? stats.avg : null;
+                });
+                return {
+                    label: `${keyCount.toLocaleString()} key${keyCount !== 1 ? 's' : ''}`,
+                    data: data,
+                    borderColor: `hsl(${idx * 40}, 70%, 50%)`,
+                    backgroundColor: `hsla(${idx * 40}, 70%, 50%, 0.1)`,
+                    tension: 0.4
+                };
+            });
+            
+            new Chart(chart1Container, {
+                type: 'line',
+                data: {
+                    labels: messageSizes.map(s => `${s.toLocaleString()} chars`),
+                    datasets: datasets1
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Encryption Time by Message Size (Average)'
+                        },
+                        legend: {
+                            display: true
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Time (ms)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Message Size'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Chart 2: Time by Key Count (for each message size)
+            const chart2Container = document.createElement('div');
+            chart2Container.className = 'chart-container';
+            chartsContainer.appendChild(chart2Container);
+            
+            const datasets2 = messageSizes.map((msgSize, idx) => {
+                const data = keyCounts.map(keyCount => {
+                    const stats = encryptionResults[msgSize]?.[keyCount];
+                    return stats ? stats.avg : null;
+                });
+                return {
+                    label: `${msgSize.toLocaleString()} chars`,
+                    data: data,
+                    borderColor: `hsl(${idx * 60}, 70%, 50%)`,
+                    backgroundColor: `hsla(${idx * 60}, 70%, 50%, 0.1)`,
+                    tension: 0.4
+                };
+            });
+            
+            new Chart(chart2Container, {
+                type: 'line',
+                data: {
+                    labels: keyCounts.map(k => `${k.toLocaleString()} key${k !== 1 ? 's' : ''}`),
+                    datasets: datasets2
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Encryption Time by Key Count (Average)'
+                        },
+                        legend: {
+                            display: true
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Time (ms)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Number of Keys'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Chart 3: Min, Max, Avg, Median for all combinations
+            const chart3Container = document.createElement('div');
+            chart3Container.className = 'chart-container';
+            chartsContainer.appendChild(chart3Container);
+            
+            const allDataPoints = [];
+            for (const msgSize of messageSizes) {
+                for (const keyCount of keyCounts) {
+                    const stats = encryptionResults[msgSize]?.[keyCount];
+                    if (stats) {
+                        allDataPoints.push({
+                            label: `${msgSize.toLocaleString()}ch/${keyCount.toLocaleString()}k`,
+                            min: stats.min,
+                            max: stats.max,
+                            avg: stats.avg,
+                            median: stats.median
+                        });
+                    }
+                }
+            }
+            
+            new Chart(chart3Container, {
+                type: 'line',
+                data: {
+                    labels: allDataPoints.map(d => d.label),
+                    datasets: [
+                        {
+                            label: 'Min',
+                            data: allDataPoints.map(d => d.min),
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                            tension: 0.4
+                        },
+                        {
+                            label: 'Average',
+                            data: allDataPoints.map(d => d.avg),
+                            borderColor: 'rgb(54, 162, 235)',
+                            backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                            tension: 0.4
+                        },
+                        {
+                            label: 'Median',
+                            data: allDataPoints.map(d => d.median),
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                            tension: 0.4
+                        },
+                        {
+                            label: 'Max',
+                            data: allDataPoints.map(d => d.max),
+                            borderColor: 'rgb(255, 159, 64)',
+                            backgroundColor: 'rgba(255, 159, 64, 0.1)',
+                            tension: 0.4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'All Statistics Across All Combinations'
+                        },
+                        legend: {
+                            display: true
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Time (ms)'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                maxRotation: 90,
+                                minRotation: 90
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Event listeners
+        document.getElementById('btnKeyGen').addEventListener('click', async function() {
+            this.disabled = true;
+            try {
+                await benchmarkKeyGeneration();
+            } finally {
+                this.disabled = false;
+            }
+        });
+        
+        document.getElementById('btnEncryption').addEventListener('click', async function() {
+            this.disabled = true;
+            try {
+                await benchmarkEncryption();
+            } finally {
+                this.disabled = false;
+            }
+        });
+        
+        document.getElementById('btnFullBenchmark').addEventListener('click', async function() {
+            this.disabled = true;
+            try {
+                await benchmarkKeyGeneration();
+                await benchmarkEncryption();
+            } finally {
+                this.disabled = false;
+            }
+        });
+        
+        document.getElementById('btnClear').addEventListener('click', () => {
+            keyGenResults = null;
+            encryptionResults = null;
+            generatedKeys = [];
+            resultsEl.className = 'results hidden';
+            keyGenResultsEl.className = 'section hidden';
+            encryptionResultsEl.className = 'section hidden';
+            hideStatus();
+        });
+    </script>
+</body>
+</html>
+

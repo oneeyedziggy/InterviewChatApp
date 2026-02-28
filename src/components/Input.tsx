@@ -11,6 +11,8 @@ type InputProps = {
   value?: string;
   required?: boolean;
   onChange: (val: any) => void;
+  onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement>) => void;
+  autoFocus?: boolean;
 };
 
 const BlockLabel = styled.label`
@@ -42,6 +44,8 @@ export const Input = ({
   value = '',
   required = false,
   onChange,
+  onKeyDown,
+  autoFocus = false,
 }: InputProps) => {
   const changeHandeler = (thing: React.ChangeEvent<HTMLInputElement>) => {
     onChange(thing?.target?.value ?? '');
@@ -59,6 +63,8 @@ export const Input = ({
           minLength={minLength}
           required={required}
           onChange={changeHandeler}
+          onKeyDown={onKeyDown}
+          autoFocus={autoFocus}
         />
         {error && <InputError>{error}</InputError>}
       </div>

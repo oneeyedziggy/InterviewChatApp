@@ -1,0 +1,67 @@
+{
+  "messages": {
+    "#cats": [],
+    "#general": [
+      {
+        "timestamp": 1772309170,
+        "username": "bloopytrons",
+        "content": "\u003c-- has entered the room",
+        "encryptedFor": null
+      },
+      {
+        "timestamp": 1772309111,
+        "username": "oneeyedziggy",
+        "content": "\u003c-- has entered the room",
+        "encryptedFor": null
+      },
+      {
+        "timestamp": 1772309098,
+        "username": "bloopytron",
+        "content": "",
+        "encryptedFor": {
+          "bloopytron": "-----BEGIN PGP MESSAGE-----\n\nwcBMA4ZL5pJPHzTGAQgArykqOSARHEF/lb//GeQA3ozM34gOnv53soHfjjiF\nl/wYtd6eVq/tMVgT/+xuFGJBT1xomjBKjJvwL8x8IG2VVRXAKy25Qh0MmW2+\nFA/pfjms10qJ8a9Pd91DL5zHtpMFHddSVqCA2fq6rWU+0HiCHaLXcC4GfQzR\nxcW2HQ+GUbQ6MwjNv//4TUH1/5UwBx6ER5Kk32aYL+k1IuGAXoiN9gct31ik\nQpprd/7GlZMHyP7KWQ2QNFHuKvFtf3PHP0RuJ2osNh6TUrI5ldeFaIjB2zdk\ntjBNHXZgVZkN0jMMQgHO7QrJzit59Pd3V2eq848REm51Flo/UCA3tYTQQB3j\nktI7ARRq/EfZU7gmrTb39+OHEg97TxKUECwvwA9NUUaDdwgS1SbFLycSNKFi\ngD/N7ISVH3VhyxDGzTDs5uA=\n=8guP\n-----END PGP MESSAGE-----\n",
+          "oneeyedziggy": "-----BEGIN PGP MESSAGE-----\n\nwcBMA5ZVCApWr2VTAQf/esCW/Vgqh/8q/PEdVV4SoO+wwbKWtLxDLSMDW+wL\nagHfqmJwKg2S1YSX3p4xydnDGyhBZIwxoC0OnTZwM/6N9jVvfbICJph4cJwH\nNi5H5EuvWPDkSYAiuXigxOJ92EMwLNmADLg8XyOQWNpB2rBArZj2pmOc2vTl\nfuItFHjoXiKXTgIN08eaLSFqpXumdjTlrleePoEmtB71wTaGYI5Iqw4kL2md\nZCmvcdwopKehnX6mA8TpEd64UcowALC5P4m1aSQ+tWi5BtjrKBdMRsdr/mLi\nhfGIrpTt07wdUL1N/H8Np0zgOLWXZPZpO2kVU/v7VP7phvrgNs1J1cxAMPbc\nqtI7AcWJn8bBa2Aiv/On+8+SdZYpaHRqPqFjFS9pCMKe4o7k4WCyGir01eVS\nQ2FUyAS3/aS9kN13GYXa940=\n=VL4y\n-----END PGP MESSAGE-----\n"
+        }
+      },
+      {
+        "timestamp": 1772309071,
+        "username": "bloopytron",
+        "content": "\u003c-- has entered the room",
+        "encryptedFor": null
+      },
+      {
+        "timestamp": 1772309063,
+        "username": "oneeyedziggy",
+        "content": "\u003c-- has entered the room",
+        "encryptedFor": null
+      },
+      {
+        "timestamp": 1772309057,
+        "username": "oneeyedziggy",
+        "content": "",
+        "encryptedFor": {
+          "oneeyedziggy": "-----BEGIN PGP MESSAGE-----\n\nwcBMA5ZVCApWr2VTAQf6Aka2Tyu9R71TTyZT8iYVgcaEmMnpBdLWoMhhY3BR\nRBMjsCgD4oDBp8sgiEyrQCOC3f9CRZCu3pQ1atATRPZZy0RBBMg0zYe/nC9h\nnfXjD68gf9CG4vAny++PmKcU/OOEJYccpQUF5BkYOFeMkugssS8bQpJYZK7a\ntMzKIlkuYmtVLojNiRKELL/tV3+BmIoBRAKAUuYDayI3g9qGu7CoFiM1sIP1\nxdRYDTc8ga7j8t8Mq47ezghFbATKy2YjOKb8Pds8n8+X2t4VJhEcXug5a/+q\nDk8eAqjVP5OQbRreRe/1KEDAD7G1qyPQdd+yUikWWZBKdWFasemdbXUSgaaG\ny9I3AXxcQ2AR1dHsFM4+qXxAXJMAMN2Pr84BcDVYNn6HBDVHfmO7tww+qHuO\nr7pG6XKa+CjFFVkqpg==\n=sG/U\n-----END PGP MESSAGE-----\n"
+        }
+      },
+      {
+        "timestamp": 1772309048,
+        "username": "oneeyedziggy",
+        "content": "\u003c-- has entered the room",
+        "encryptedFor": null
+      }
+    ]
+  },
+  "rooms": [
+    "#general",
+    "#cats"
+  ],
+  "users": {
+    "bloopytrons": "ZHBUBPZE8O67ZoAKAAAJ",
+    "oneeyedziggy": "4S514Y5-QywXsZo0AAAH"
+  },
+  "userPubKeys": {
+    "bloopytron": "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nxsBNBGmjSk8BCAC2aux1WpWgxMx/xLCYt6tS2SI4nm7+e3/3qInFm5vn1wiW\nqM2dS/7mPF5Cwm3lvW9P7QqLtb8jYUYDCxJKK0TMWR4htXXzx6Th5bA0c+kP\naH8RayKFNDmIXmQ/cvB+wPqoUTvNhs1H4DVYEtv8b9iGTjmbGQmgfexeobPJ\nmaUNVbQwcqhgomHhFH90In8rE6ops18TptI+aO7x5v4dq4tSBFtyLQraVxGI\nIJIr9oWGYHwRuQakRB9z35zV5n6MvJVBTZVo88r+Vtpa7uMawV9MFbb130Dr\nv+iHDrWTc3ydkJmQzM48zBCSggO1gVAgtIu8qFaXd/AW2k9gEadiQPqrABEB\nAAHNImJsb29weXRyb24gPGJsb29weXRyb25AY2hhdC5sb2NhbD7CwNEEEwEK\nAIUFgmmjSk8DCwkHCRA6AYH38JTcL0UUAAAAAAAcACBzYWx0QG5vdGF0aW9u\ncy5vcGVucGdwanMub3JnXgAZK7CuqYsHjqxWphA5tAxC4hJJIc7cF18UpFHb\nrXMFFQoIDgwEFgACAQIZAQKbAwIeARYhBI0FgCIPVT0y+NbpaToBgffwlNwv\nAABrcggAhmwGxVs8ClpbuHJbxbWYfJTyBFuy0xxxUt6E71e1Pty9NBFhCNNZ\nhMlnPmpzvLjoXe7K1t2CnBI+ydYvGpflejcegC+H/1qH1379ALlO6ucoS+ZO\nzVACXhS0PlaqV9JizxY/K5otkvzDXuoaiNgiH8GSvxkkYbPPUtstWEkd8nbZ\n7Oc1p7OtjByUzQ9GMtA+1ZHvXXeZToGq3QF2t+ncWpRvpfF+o/L+0QaHF0xK\njXnt9kY9UFZrrOkViomsrKGZyzKiFjlTWP9EJlxqrCHLn2ucVIWM7Yfi47TD\n0B3D0haQ2UeL/bhm8h3CYB40VQ7ir+UIk8+uvdqtna916zMf987ATQRpo0pP\nAQgA5XZRy37GBDmQ7ovEXlopqd9X7ud0vGuHbXj3lsHBEXec52qZbgn4N6Eq\nNM9P9GBhou1/WC/+WEIqTjUabACJE690accELRgtwXZ3dPF437PeaYIqjsEz\nvxCR/KMoflh2Fg3Snpmi5VQxWUz9bpDoDB9TzG/haoM5wbUZWM8QC1zbKQcn\nolrJembjTWKegug02SR80z7cY/LTl0hMXAAxPD59bZ6cmGVmHULPnHo+nonY\nb6QS2dg+u23AOhANaxHCeFr57L8wpQ6VOZXw0UHu/j7yWGc5px7APh78+oCD\nSnAQWP2H8IT0aHMwhzqBjUkiCL5hUNCm3VZtb+yRTmOq+QARAQABwsC8BBgB\nCgBwBYJpo0pPCRA6AYH38JTcL0UUAAAAAAAcACBzYWx0QG5vdGF0aW9ucy5v\ncGVucGdwanMub3JnjYglji2jmTfV6iNA/7dq69y61QWGKkEK7e1hs3XUkSwC\nmwwWIQSNBYAiD1U9MvjW6Wk6AYH38JTcLwAAz5gH/0vs6BaigB3CyTC0xChx\nQ0g35CMPuFgt4qWul2vMGtywpbiLH/qjrYglRo3B1TcNuNTiGnsUdmOgj9LO\nNgtPTgUjQUVFkB3sPs5dvAVwofJ8DI3W896LqDLi8eJrSaGAF4PeMJ7EcnoB\nlwVcOFQs9ohK0wNC2GX4sslkmulCYn6+i++C6t+cuiEG3TdRCaviAgng7xRd\nCJmuXVFksFZjfnbufohXtvUkZ3Msr/tyTDJLPk004z4pLl+0U2HoPCV5gelc\nWQ64I6q4zVV4JKnP1+EVveNChXuOmmCkldTCeDZIl3gdrRRhkPzqcijLHtzn\nSRwwkXPhU3ODkTWspMWxQOk=\n=GQ28\n-----END PGP PUBLIC KEY BLOCK-----\n",
+    "bloopytrons": "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nxsBNBGmjSrIBCADHVY3e9h79cWDyDQZE0pzVxpzAbv6W9bv2tnuNMuXToEH/\n7DiSgBi2xLVXwe/VWkIo6OTANkDcF/38n3enG4ww5gaR9xEUhQYgvSrXPOBb\nJAiyT7uzUjcMPNTswBQy0IxsVLcY4oAnXLzrPvBdthQTXiorgPZLqllTZxtJ\nD2mnfIGvKDp7A47H9Osjc1VYMmSTUWRE0SpYGquOXcyM29vbyJ1M4ReT8F12\nrLUZvd39KlWbiAtASXtsWqnZKz+pg8/f6TQYuzjEW/XKOa/LdMYeJimTpkAT\nc3mXUPI2IdJL/845IXHhIzNVM6WgpEAG1BOWNVqg+ZjAOOS4cDl/kIL5ABEB\nAAHNJGJsb29weXRyb25zIDxibG9vcHl0cm9uc0BjaGF0LmxvY2FsPsLA0QQT\nAQoAhQWCaaNKsgMLCQcJEIoZtd28cOgMRRQAAAAAABwAIHNhbHRAbm90YXRp\nb25zLm9wZW5wZ3Bqcy5vcmfj9foDWTd9Z2htZwWMepN7DKsYqgE7wWmB04fx\nW70eIgUVCggODAQWAAIBAhkBApsDAh4BFiEEA5BBZieU74VZE4R7ihm13bxw\n6AwAAOTFB/4+eWZIgKgyDqGrW7/kerVRg2Gdj/NZ6lxrkFepQWnjbbshk8IH\nGZvP6K+y5uRNK16PkgCvBQlw941Y3eKjEM09mJNDCyk8E9uWc7ORofo44lgd\naB9X2NS3fLgBgrrVRxgBBPCHUHiiiEdpU8JpZ9O9b/AKBioQ8TII2ELBtdsx\nbNE/WDa0hXnKCzbkWvmg2iECA3p9fBxJ7gE32nT6SVlazI99hftUtu3RTTgz\nsQFBvd4jcM1FXZ9CwW24cECWhMZq4X+Se+P+v5FMafad8E2qUVUHenDxJ7+5\nOhg1V9pVVL4t0xRLod8FrzBrMKTb0eOYx5rGTPEbs39wjuQOum6mzsBNBGmj\nSrIBCADaQGQQps1L6Oagsb8tdMyJP0btRj/VyhvjmMsUW0Gv9WFYTf3AKOv6\n6gb6PYNlzWFiVqrTkA7jogm+QC0cU1ufXikx+yKAFZq3W1XLcFWeVVvMr9B+\n1vYMqhOLztn/2rjLWVd4O4eVuPatLohztFbVwqEVCqjIlySNS6Qfr3leylMx\nMWQ7aQ6rlpp9Vsm3Fa+ehAdBWx3zen3Ie23R68Ny+hRDVVXphwB8I3/v4aCb\n7j+S0B5Yq1mbvRPEMWYTxyKw5GzWTZ+94tOZf/CTG2GhOorx3XK2V14Yrx+c\nVDoOFk9JEZl5/1a621u5zKL5z6k1CCWq31szsJVE76BiFfUzABEBAAHCwLwE\nGAEKAHAFgmmjSrIJEIoZtd28cOgMRRQAAAAAABwAIHNhbHRAbm90YXRpb25z\nLm9wZW5wZ3Bqcy5vcmeOEkZre571eiPGvknQOBXuq/U25rRvG9zDu2+45xGa\nCgKbDBYhBAOQQWYnlO+FWROEe4oZtd28cOgMAAA8qggAt667Q8lilRFJfixJ\n2bv7JztthkEYVi5nosT49zyODEa2qKjN0fUrSnvCiUppWVd+K7unnByfMhS1\nyz+oeLWirjVQZSXt7+DTsiVMWV9apne9OkTogmfag+QPlIJl22YFsGxvMNMO\nRcZicqIBrKNCj/XfqdMs7R/60m5owlOxeCIRGmE9My2mKX2le+zeY+qS8qmg\nNKWXN2J7/gNwwgRfpDyAZRofked73gYaih8gZtgYgXIyxChOqUEP1MSIOmrX\n00KISIYWApBmmA+ciWhKJwCeM6SWN6vPmbeBWbojl8/ypPdHJk37TPeKde++\nkileOUj0MHhKbmJyHtGWKcu8rA==\n=hnrQ\n-----END PGP PUBLIC KEY BLOCK-----\n",
+    "oneeyedziggy": "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nxsBNBGmjSjgBCAClDnvGRyNUiZcSGQiHEfKCfhktcjCIEN9ycQrEA4voGAxI\nkRm4P6cBWwNSqUVlZUPrco6tmhwOWEQeEJAqXf7eHfuNc0nLnzOr01eOM/hQ\nJfl7gI4gtcpH4Dy9xq7XskN3ZoinTn1SONg4IHgLGWWz0af/HEENf7gb7DeD\nTS2bh9diZdOsmFqbVUUwjXSjurMDcoHlnv+wX4ao1l1JKd6UG4hf6hOGeqmg\nzMo2I3J1pdB/x86DtITwMZjQYmbjCvDDEbj7DLtIr3okamrgrMExMdq/L4a7\ntqjixZaatVU+JVM4x607NzsdO7vYef09EVPkB/aVxLtHstJQwHjlzNrLABEB\nAAHNJm9uZWV5ZWR6aWdneSA8b25lZXllZHppZ2d5QGNoYXQubG9jYWw+wsDR\nBBMBCgCFBYJpo0o4AwsJBwkQh7Y0qYm9r2hFFAAAAAAAHAAgc2FsdEBub3Rh\ndGlvbnMub3BlbnBncGpzLm9yZ4VUxy0fJar4fiRt8LbQolyL61E9gMCIOzlj\nNF9R2nvJBRUKCA4MBBYAAgECGQECmwMCHgEWIQQs75z01EADF+AuheiHtjSp\nib2vaAAAt0AIAJPYahDm6XMEG5KMIH/XFz4exK8eSR0FIqZVPDywPRDvOTia\nts6ZQ1cDlJp3wXtkPWgmuU+Y39cfQDxydjP8b26CcA8GtPupTlSLDFAYPHhf\nMvKjlkjzo9GQflquK/+zcqS8qr+K2CtzfkTSyBHmDvzPdmmKGnBV+UkXCGcs\nqf1luR1psZ4xV6vHLOmYTyQTTa+l3nU914WqxB5bvnkdgqVQMDzdFQAQm1bZ\nU8nJYDXcI2p5kKlswH6E3D4jc9zFTRW/mnqEdSCKirmsHxBRwQi4HQo80EOS\nL6lEStp7bbd+ui5PWR58eQILyKLFlg+Keoddbp+2UfdVmzT32IbCc63OwE0E\naaNKOAEIANY3Jb3H0fjOtrHKtit3xstlcVQpNrJSjAjTK2Itp6+WnEMtDxQB\nRlXY+Vga9EzobGMHw/0ddop3LVw4m5eMzeeMXF5TlkGwZ853h76m4maw+5ZS\nAfRa1SWMR01+25NSzjal8Eh/5ufa9AocKs4IR4P1Xb0vrqjijGmg2XVN1Bw+\nmOLGk1tSInMJ9zBApPeiHydgkRfxV+TT2GLT5kqmDuhK7n5df5UiCKnpS/CH\nSRHzSFY4fQd4mWmcjnDHgXLbriHlBkMCgI/11bZnEd9y0ZHPk6z2LXGPNRn9\nKW9NN5AZUa6bjQY2csGb5ZN+GuV5fj8fD+qvnk8D6YnXXS2IfU0AEQEAAcLA\nvAQYAQoAcAWCaaNKOAkQh7Y0qYm9r2hFFAAAAAAAHAAgc2FsdEBub3RhdGlv\nbnMub3BlbnBncGpzLm9yZzH0R15n0AVAqThdDsTG38oAnAr8MnW7WKp6udGs\nhZ6cApsMFiEELO+c9NRAAxfgLoXoh7Y0qYm9r2gAAE+PB/9uOw0It3WyEWrT\noR4SUOEfHKPj24grk77+bNm7U2vpRKGntzGsiDRAT5mCgMb6Hl28or71OSuo\nOIhvK6nIKD2J2g8TRUKalRkPzRgRJGT3lK/5kZOYWQQBbNng2rhrUWmvqqxT\njdzOKIIdv3JBEAiLJX+Ra7VKedVI9JMQ9djhe9DrLu7j5Px/5ESVR/fO2zy5\nbbyfMjzxXFYnQfxswaJfUPnvbNvqcuRCLel3vkIrvcm7d3rUjxY/eXbsHW+q\nUfJX/nq4XJu+UFExUfV9+rd03R2QKcxzk9DXIPUY2TJVDOK5D6pmsgEZeNGM\noW3EG8v9v8o2JcTgGuFrei18OWd3\n=xhzN\n-----END PGP PUBLIC KEY BLOCK-----\n"
+  }
+}
