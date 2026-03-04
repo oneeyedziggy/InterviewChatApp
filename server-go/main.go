@@ -75,7 +75,10 @@ const (
 	EventClientLeaveRoom      = "clientLeaveRoom"
 	EventClientRejoinRoom     = "clientRejoinRoom"
 	EventClientVoteJoin       = "clientVoteJoin"
+	EventClientVoteMessage     = "clientVoteMessage"
+	EventClientEditMessage     = "clientEditMessage"
 	EventServerMessage        = "serverMessage"
+	EventServerVoteUpdate     = "serverVoteUpdate"
 	EventServerNewRoom        = "serverNewRoom"
 	EventServerUserListUpdate = "serverUserListUpdate"
 	EventServerAccessRequest  = "serverAccessRequest"
@@ -109,6 +112,10 @@ type Message struct {
 	Versions      []MessageVersion   `json:"versions,omitempty"` // Array of message versions, newest first
 	CurrentVersion *int              `json:"currentVersion,omitempty"` // Index of current version in versions array
 	VisibleTo     []string           `json:"visibleTo,omitempty"` // List of usernames who should see this message (empty = all)
+	ReplyTo       *int64             `json:"replyTo,omitempty"` // Timestamp of the message this is replying to
+	VoteTotal     *int              `json:"voteTotal,omitempty"` // Total vote count (upvotes - downvotes)
+	UserVotes     map[string]string `json:"userVotes,omitempty"` // Map of username -> "up" or "down"
+	Edited        bool              `json:"edited,omitempty"` // Whether the message has been edited
 }
 
 type Messages map[string][]Message
@@ -682,6 +689,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		room, _ := msgMap["room"].(string)
 		username, _ := msgMap["username"].(string)
 		content, _ := msgMap["content"].(string) // May be empty for encrypted-only messages
+		replyToRaw, hasReplyTo := msgMap["replyTo"]
 		encryptedForRaw, hasEncrypted := msgMap["encryptedFor"]
 		var encryptedFor map[string]string
 		if hasEncrypted {
@@ -693,6 +701,21 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 					}
 				}
 			}
+		}
+		
+		// Parse replyTo if present
+		var replyTo *int64
+		if hasReplyTo {
+			log.Printf("[%s] replyTo field present, raw value: %v, type: %T", socketIDStr, replyToRaw, replyToRaw)
+			if replyToFloat, ok := replyToRaw.(float64); ok {
+				replyToInt := int64(replyToFloat)
+				replyTo = &replyToInt
+				log.Printf("[%s] ✓ Message is a reply to timestamp: %d", socketIDStr, replyToInt)
+			} else {
+				log.Printf("[%s] ✗ Failed to parse replyTo: expected float64, got %T with value %v", socketIDStr, replyToRaw, replyToRaw)
+			}
+		} else {
+			log.Printf("[%s] No replyTo field in message", socketIDStr)
 		}
 
 		// For encrypted messages, content may be empty - that's expected
@@ -726,11 +749,18 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			cs.messages[room] = []Message{}
 		}
 		beforeCount := len(cs.messages[room])
+		// Auto-upvote own message
+		one := 1
+		userVotes := make(map[string]string)
+		userVotes[username] = "up"
 		cs.messages[room] = append([]Message{{
 			Timestamp:    time.Now().Unix(),
 			Username:     username,
 			Content:      content,
 			EncryptedFor: encryptedFor,
+			ReplyTo:      replyTo,
+			VoteTotal:    &one,
+			UserVotes:    userVotes,
 		}}, cs.messages[room]...)
 		log.Printf("[%s] Added message to room %s (was %d, now has %d messages)", socketIDStr, room, beforeCount, len(cs.messages[room]))
 
@@ -932,6 +962,289 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		log.Printf("[%s] client disconnecting", socketIDStr)
 	})
 
+	// Register vote message handler
+	defaultNsp.OnEvent(EventClientVoteMessage, func(socket socketio.ServerSocket, voteData interface{}) {
+		socketIDStr := string(socket.ID())
+		log.Printf("[%s] ===== CLIENT_VOTE_MESSAGE EVENT ======", socketIDStr)
+		
+		voteMap, ok := voteData.(map[string]interface{})
+		if !ok {
+			log.Printf("[%s] ✗ Invalid vote data format, type: %T", socketIDStr, voteData)
+			return
+		}
+
+		room, _ := voteMap["room"].(string)
+		messageTimestampRaw, hasTimestamp := voteMap["messageTimestamp"]
+		username, _ := voteMap["username"].(string)
+		voteTypeRaw, hasVoteType := voteMap["voteType"]
+
+		if !hasTimestamp || !hasVoteType || username == "" || room == "" {
+			log.Printf("[%s] ✗ Missing required vote fields", socketIDStr)
+			return
+		}
+
+		var messageTimestamp int64
+		if tsFloat, ok := messageTimestampRaw.(float64); ok {
+			messageTimestamp = int64(tsFloat)
+		} else {
+			log.Printf("[%s] ✗ Invalid messageTimestamp format", socketIDStr)
+			return
+		}
+
+		voteType, ok := voteTypeRaw.(string)
+		if !ok || (voteType != "up" && voteType != "down") {
+			log.Printf("[%s] ✗ Invalid voteType, must be 'up' or 'down'", socketIDStr)
+			return
+		}
+
+		cs.mu.Lock()
+
+		// Find the message
+		messages, exists := cs.messages[room]
+		if !exists {
+			cs.mu.Unlock()
+			log.Printf("[%s] ✗ Room %s not found", socketIDStr, room)
+			return
+		}
+
+		var targetMessage *Message
+		for i := range messages {
+			if messages[i].Timestamp == messageTimestamp {
+				targetMessage = &messages[i]
+				break
+			}
+		}
+
+		if targetMessage == nil {
+			cs.mu.Unlock()
+			log.Printf("[%s] ✗ Message with timestamp %d not found in room %s", socketIDStr, messageTimestamp, room)
+			return
+		}
+
+		// Initialize vote fields if needed
+		if targetMessage.UserVotes == nil {
+			targetMessage.UserVotes = make(map[string]string)
+		}
+		if targetMessage.VoteTotal == nil {
+			zero := 0
+			targetMessage.VoteTotal = &zero
+		}
+
+		// Get current vote for this user
+		currentVote, hasVote := targetMessage.UserVotes[username]
+
+		// Handle vote logic
+		if hasVote && currentVote == voteType {
+			// User is clicking the same vote again - remove it
+			delete(targetMessage.UserVotes, username)
+			if currentVote == "up" {
+				*targetMessage.VoteTotal--
+			} else {
+				*targetMessage.VoteTotal++
+			}
+			log.Printf("[%s] ✓ Removed %s vote from message %d by %s (new total: %d)", socketIDStr, voteType, messageTimestamp, username, *targetMessage.VoteTotal)
+		} else if hasVote && currentVote != voteType {
+			// User is switching votes - remove old, add new
+			if currentVote == "up" {
+				*targetMessage.VoteTotal--
+			} else {
+				*targetMessage.VoteTotal++
+			}
+			targetMessage.UserVotes[username] = voteType
+			if voteType == "up" {
+				*targetMessage.VoteTotal++
+			} else {
+				*targetMessage.VoteTotal--
+			}
+			log.Printf("[%s] ✓ Switched vote from %s to %s for message %d by %s (new total: %d)", socketIDStr, currentVote, voteType, messageTimestamp, username, *targetMessage.VoteTotal)
+		} else {
+			// User is voting for the first time
+			targetMessage.UserVotes[username] = voteType
+			if voteType == "up" {
+				*targetMessage.VoteTotal++
+			} else {
+				*targetMessage.VoteTotal--
+			}
+			log.Printf("[%s] ✓ Added %s vote to message %d by %s (new total: %d)", socketIDStr, voteType, messageTimestamp, username, *targetMessage.VoteTotal)
+		}
+
+		// Copy data for saving and response while holding the lock
+		messagesCopyForSave := make(Messages)
+		for k, v := range cs.messages {
+			messagesCopyForSave[k] = make([]Message, len(v))
+			copy(messagesCopyForSave[k], v)
+		}
+		roomsCopyForSave := make([]string, len(cs.rooms))
+		copy(roomsCopyForSave, cs.rooms)
+		usersCopyForSave := make(map[string]string)
+		for k, v := range cs.users {
+			usersCopyForSave[k] = v
+		}
+		
+		// Prepare response with updated messages
+		messagesCopy := make(Messages)
+		for k, v := range cs.messages {
+			messagesCopy[k] = make([]Message, len(v))
+			copy(messagesCopy[k], v)
+		}
+		usersList := make([]string, 0, len(cs.users))
+		for user := range cs.users {
+			usersList = append(usersList, user)
+		}
+		
+		// Copy userPubKeys for save
+		userPubKeysCopy := make(map[string]string)
+		for k, v := range cs.userPubKeys {
+			userPubKeysCopy[k] = v
+		}
+		
+		cs.mu.Unlock()
+
+		// Save state in background (outside of lock)
+		go func() {
+			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+			}
+		}()
+
+		response := map[string]interface{}{
+			"messages": messagesCopy,
+			"users":    usersList,
+		}
+
+		// Broadcast to all clients
+		defaultNsp.Emit(EventServerVoteUpdate, response)
+		log.Printf("[%s] ✓ Broadcasted vote update", socketIDStr)
+	})
+
+	// Register edit message handler
+	defaultNsp.OnEvent(EventClientEditMessage, func(socket socketio.ServerSocket, editData interface{}) {
+		socketIDStr := string(socket.ID())
+		log.Printf("[%s] ===== CLIENT_EDIT_MESSAGE EVENT ======", socketIDStr)
+		
+		editMap, ok := editData.(map[string]interface{})
+		if !ok {
+			log.Printf("[%s] ✗ Invalid edit data format, type: %T", socketIDStr, editData)
+			return
+		}
+
+		room, _ := editMap["room"].(string)
+		messageTimestampRaw, hasTimestamp := editMap["messageTimestamp"]
+		username, _ := editMap["username"].(string)
+		encryptedForRaw, hasEncrypted := editMap["encryptedFor"]
+
+		if !hasTimestamp || username == "" || room == "" {
+			log.Printf("[%s] ✗ Missing required edit fields", socketIDStr)
+			return
+		}
+
+		var messageTimestamp int64
+		if tsFloat, ok := messageTimestampRaw.(float64); ok {
+			messageTimestamp = int64(tsFloat)
+		} else {
+			log.Printf("[%s] ✗ Invalid messageTimestamp format", socketIDStr)
+			return
+		}
+
+		var encryptedFor map[string]string
+		if hasEncrypted {
+			if efMap, ok := encryptedForRaw.(map[string]interface{}); ok {
+				encryptedFor = make(map[string]string)
+				for k, v := range efMap {
+					if str, ok := v.(string); ok {
+						encryptedFor[k] = str
+					}
+				}
+			}
+		}
+
+		cs.mu.Lock()
+
+		// Find the message
+		messages, exists := cs.messages[room]
+		if !exists {
+			cs.mu.Unlock()
+			log.Printf("[%s] ✗ Room %s not found", socketIDStr, room)
+			return
+		}
+
+		var targetMessage *Message
+		for i := range messages {
+			if messages[i].Timestamp == messageTimestamp {
+				targetMessage = &messages[i]
+				break
+			}
+		}
+
+		if targetMessage == nil {
+			cs.mu.Unlock()
+			log.Printf("[%s] ✗ Message with timestamp %d not found in room %s", socketIDStr, messageTimestamp, room)
+			return
+		}
+
+		// Validate that the editor is the original sender
+		if targetMessage.Username != username {
+			cs.mu.Unlock()
+			log.Printf("[%s] ✗ User %s attempted to edit message by %s (unauthorized)", socketIDStr, username, targetMessage.Username)
+			return
+		}
+
+		// Update the message
+		targetMessage.Content = "" // Clear plaintext (encrypted only)
+		targetMessage.EncryptedFor = encryptedFor
+		targetMessage.Edited = true
+
+		log.Printf("[%s] ✓ Message %d edited by %s", socketIDStr, messageTimestamp, username)
+
+		// Copy data for saving and response while holding the lock
+		messagesCopyForSave := make(Messages)
+		for k, v := range cs.messages {
+			messagesCopyForSave[k] = make([]Message, len(v))
+			copy(messagesCopyForSave[k], v)
+		}
+		roomsCopyForSave := make([]string, len(cs.rooms))
+		copy(roomsCopyForSave, cs.rooms)
+		usersCopyForSave := make(map[string]string)
+		for k, v := range cs.users {
+			usersCopyForSave[k] = v
+		}
+		
+		// Prepare response with updated messages
+		messagesCopy := make(Messages)
+		for k, v := range cs.messages {
+			messagesCopy[k] = make([]Message, len(v))
+			copy(messagesCopy[k], v)
+		}
+		usersList := make([]string, 0, len(cs.users))
+		for user := range cs.users {
+			usersList = append(usersList, user)
+		}
+		
+		// Copy userPubKeys for save
+		userPubKeysCopy := make(map[string]string)
+		for k, v := range cs.userPubKeys {
+			userPubKeysCopy[k] = v
+		}
+		
+		cs.mu.Unlock()
+
+		// Save state in background (outside of lock)
+		go func() {
+			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+			}
+		}()
+
+		response := map[string]interface{}{
+			"messages": messagesCopy,
+			"users":    usersList,
+		}
+
+		// Broadcast to all clients
+		defaultNsp.Emit(EventServerMessage, response)
+		log.Printf("[%s] ✓ Broadcasted message edit update", socketIDStr)
+	})
+
 	// Note: Disconnect handlers are registered per-socket in OnConnection
 
 	log.Println("===== SOCKET HANDLERS SETUP COMPLETE =====")
@@ -1021,6 +1334,7 @@ func main() {
 			room, _ := msgMap["room"].(string)
 			username, _ := msgMap["username"].(string)
 			content, _ := msgMap["content"].(string)
+			replyToRaw, hasReplyTo := msgMap["replyTo"]
 			encryptedForRaw, hasEncrypted := msgMap["encryptedFor"]
 			var encryptedFor map[string]string
 			if hasEncrypted {
@@ -1033,8 +1347,23 @@ func main() {
 					}
 				}
 			}
+			
+			// Parse replyTo if present
+			var replyTo *int64
+			if hasReplyTo {
+				log.Printf("[%s] replyTo field present, raw value: %v, type: %T", socketIDStr, replyToRaw, replyToRaw)
+				if replyToFloat, ok := replyToRaw.(float64); ok {
+					replyToInt := int64(replyToFloat)
+					replyTo = &replyToInt
+					log.Printf("[%s] ✓ Message is a reply to timestamp: %d", socketIDStr, replyToInt)
+				} else {
+					log.Printf("[%s] ✗ Failed to parse replyTo: expected float64, got %T with value %v", socketIDStr, replyToRaw, replyToRaw)
+				}
+			} else {
+				log.Printf("[%s] No replyTo field in message", socketIDStr)
+			}
 
-			log.Printf("[%s] ✓ Parsed message - User: %s, Room: %s, Content: %s, HasEncrypted: %v", socketIDStr, username, room, content, hasEncrypted)
+			log.Printf("[%s] ✓ Parsed message - User: %s, Room: %s, Content: %s, HasEncrypted: %v, ReplyTo: %v", socketIDStr, username, room, content, hasEncrypted, replyTo)
 
 			// Set user when they send a message
 			userJustRegistered := false
@@ -1147,11 +1476,18 @@ func main() {
 				}
 			} else {
 				// Normal message or already-approved join
+				// Auto-upvote own message
+				one := 1
+				userVotes := make(map[string]string)
+				userVotes[username] = "up"
 				chatServer.messages[room] = append([]Message{{
 					Timestamp:    time.Now().Unix(),
 					Username:     username,
 					Content:      content,
 					EncryptedFor: encryptedFor,
+					ReplyTo:      replyTo,
+					VoteTotal:    &one,
+					UserVotes:    userVotes,
 				}}, chatServer.messages[room]...)
 
 				// If this is a join message and user is approved/auto-admitted, add them to room members
@@ -2001,6 +2337,297 @@ func main() {
 		})
 
 		// Register CLIENT_VOTE_JOIN handler
+		// Register vote message handler (per-socket)
+		socket.OnEvent(EventClientVoteMessage, func(voteData interface{}) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[%s] ✗ PANIC in CLIENT_VOTE_MESSAGE (per-socket) handler: %v", socketIDStr, r)
+				}
+			}()
+			log.Printf("[%s] ===== CLIENT_VOTE_MESSAGE EVENT (per-socket) ======", socketIDStr)
+			
+			voteMap, ok := voteData.(map[string]interface{})
+			if !ok {
+				log.Printf("[%s] ✗ Invalid vote data format, type: %T", socketIDStr, voteData)
+				return
+			}
+
+			room, _ := voteMap["room"].(string)
+			messageTimestampRaw, hasTimestamp := voteMap["messageTimestamp"]
+			username, _ := voteMap["username"].(string)
+			voteTypeRaw, hasVoteType := voteMap["voteType"]
+
+			if !hasTimestamp || !hasVoteType || username == "" || room == "" {
+				log.Printf("[%s] ✗ Missing required vote fields", socketIDStr)
+				return
+			}
+
+			var messageTimestamp int64
+			if tsFloat, ok := messageTimestampRaw.(float64); ok {
+				messageTimestamp = int64(tsFloat)
+			} else {
+				log.Printf("[%s] ✗ Invalid messageTimestamp format", socketIDStr)
+				return
+			}
+
+			voteType, ok := voteTypeRaw.(string)
+			if !ok || (voteType != "up" && voteType != "down") {
+				log.Printf("[%s] ✗ Invalid voteType, must be 'up' or 'down'", socketIDStr)
+				return
+			}
+
+			chatServer.mu.Lock()
+
+			// Find the message
+			messages, exists := chatServer.messages[room]
+			if !exists {
+				chatServer.mu.Unlock()
+				log.Printf("[%s] ✗ Room %s not found", socketIDStr, room)
+				return
+			}
+
+			var targetMessage *Message
+			for i := range messages {
+				if messages[i].Timestamp == messageTimestamp {
+					targetMessage = &messages[i]
+					break
+				}
+			}
+
+			if targetMessage == nil {
+				chatServer.mu.Unlock()
+				log.Printf("[%s] ✗ Message with timestamp %d not found in room %s", socketIDStr, messageTimestamp, room)
+				return
+			}
+
+			// Initialize vote fields if needed
+			if targetMessage.UserVotes == nil {
+				targetMessage.UserVotes = make(map[string]string)
+			}
+			if targetMessage.VoteTotal == nil {
+				zero := 0
+				targetMessage.VoteTotal = &zero
+			}
+
+			// Get current vote for this user
+			currentVote, hasVote := targetMessage.UserVotes[username]
+
+			// Handle vote logic
+			if hasVote && currentVote == voteType {
+				// User is clicking the same vote again - remove it
+				delete(targetMessage.UserVotes, username)
+				if currentVote == "up" {
+					*targetMessage.VoteTotal--
+				} else {
+					*targetMessage.VoteTotal++
+				}
+				log.Printf("[%s] ✓ Removed %s vote from message %d by %s (new total: %d)", socketIDStr, voteType, messageTimestamp, username, *targetMessage.VoteTotal)
+			} else if hasVote && currentVote != voteType {
+				// User is switching votes - remove old, add new
+				if currentVote == "up" {
+					*targetMessage.VoteTotal--
+				} else {
+					*targetMessage.VoteTotal++
+				}
+				targetMessage.UserVotes[username] = voteType
+				if voteType == "up" {
+					*targetMessage.VoteTotal++
+				} else {
+					*targetMessage.VoteTotal--
+				}
+				log.Printf("[%s] ✓ Switched vote from %s to %s for message %d by %s (new total: %d)", socketIDStr, currentVote, voteType, messageTimestamp, username, *targetMessage.VoteTotal)
+			} else {
+				// User is voting for the first time
+				targetMessage.UserVotes[username] = voteType
+				if voteType == "up" {
+					*targetMessage.VoteTotal++
+				} else {
+					*targetMessage.VoteTotal--
+				}
+				log.Printf("[%s] ✓ Added %s vote to message %d by %s (new total: %d)", socketIDStr, voteType, messageTimestamp, username, *targetMessage.VoteTotal)
+			}
+
+			// Copy data for saving and response while holding the lock
+			messagesCopyForSave := make(Messages)
+			for k, v := range chatServer.messages {
+				messagesCopyForSave[k] = make([]Message, len(v))
+				copy(messagesCopyForSave[k], v)
+			}
+			roomsCopyForSave := make([]string, len(chatServer.rooms))
+			copy(roomsCopyForSave, chatServer.rooms)
+			usersCopyForSave := make(map[string]string)
+			for k, v := range chatServer.users {
+				usersCopyForSave[k] = v
+			}
+			
+			// Prepare response with updated messages
+			messagesCopy := make(Messages)
+			for k, v := range chatServer.messages {
+				messagesCopy[k] = make([]Message, len(v))
+				copy(messagesCopy[k], v)
+			}
+			usersList := make([]string, 0, len(chatServer.users))
+			for user := range chatServer.users {
+				usersList = append(usersList, user)
+			}
+			
+			// Copy userPubKeys for save
+			userPubKeysCopy := make(map[string]string)
+			for k, v := range chatServer.userPubKeys {
+				userPubKeysCopy[k] = v
+			}
+			
+			chatServer.mu.Unlock()
+
+			// Save state in background (outside of lock)
+			go func() {
+				if err := chatServer.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+					log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+				}
+			}()
+
+			response := map[string]interface{}{
+				"messages": messagesCopy,
+				"users":    usersList,
+			}
+
+			// Broadcast to all clients
+			defaultNsp.Emit(EventServerVoteUpdate, response)
+			log.Printf("[%s] ✓ Broadcasted vote update", socketIDStr)
+		})
+
+		// Register edit message handler (per-socket)
+		socket.OnEvent(EventClientEditMessage, func(editData interface{}) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[%s] ✗ PANIC in CLIENT_EDIT_MESSAGE (per-socket) handler: %v", socketIDStr, r)
+				}
+			}()
+			log.Printf("[%s] ===== CLIENT_EDIT_MESSAGE EVENT (per-socket) ======", socketIDStr)
+			
+			editMap, ok := editData.(map[string]interface{})
+			if !ok {
+				log.Printf("[%s] ✗ Invalid edit data format, type: %T", socketIDStr, editData)
+				return
+			}
+
+			room, _ := editMap["room"].(string)
+			messageTimestampRaw, hasTimestamp := editMap["messageTimestamp"]
+			username, _ := editMap["username"].(string)
+			encryptedForRaw, hasEncrypted := editMap["encryptedFor"]
+
+			if !hasTimestamp || username == "" || room == "" {
+				log.Printf("[%s] ✗ Missing required edit fields", socketIDStr)
+				return
+			}
+
+			var messageTimestamp int64
+			if tsFloat, ok := messageTimestampRaw.(float64); ok {
+				messageTimestamp = int64(tsFloat)
+			} else {
+				log.Printf("[%s] ✗ Invalid messageTimestamp format", socketIDStr)
+				return
+			}
+
+			var encryptedFor map[string]string
+			if hasEncrypted {
+				if efMap, ok := encryptedForRaw.(map[string]interface{}); ok {
+					encryptedFor = make(map[string]string)
+					for k, v := range efMap {
+						if str, ok := v.(string); ok {
+							encryptedFor[k] = str
+						}
+					}
+				}
+			}
+
+			chatServer.mu.Lock()
+
+			// Find the message
+			messages, exists := chatServer.messages[room]
+			if !exists {
+				chatServer.mu.Unlock()
+				log.Printf("[%s] ✗ Room %s not found", socketIDStr, room)
+				return
+			}
+
+			var targetMessage *Message
+			for i := range messages {
+				if messages[i].Timestamp == messageTimestamp {
+					targetMessage = &messages[i]
+					break
+				}
+			}
+
+			if targetMessage == nil {
+				chatServer.mu.Unlock()
+				log.Printf("[%s] ✗ Message with timestamp %d not found in room %s", socketIDStr, messageTimestamp, room)
+				return
+			}
+
+			// Validate that the editor is the original sender
+			if targetMessage.Username != username {
+				chatServer.mu.Unlock()
+				log.Printf("[%s] ✗ User %s attempted to edit message by %s (unauthorized)", socketIDStr, username, targetMessage.Username)
+				return
+			}
+
+			// Update the message
+			targetMessage.Content = "" // Clear plaintext (encrypted only)
+			targetMessage.EncryptedFor = encryptedFor
+			targetMessage.Edited = true
+
+			log.Printf("[%s] ✓ Message %d edited by %s", socketIDStr, messageTimestamp, username)
+
+			// Copy data for saving and response while holding the lock
+			messagesCopyForSave := make(Messages)
+			for k, v := range chatServer.messages {
+				messagesCopyForSave[k] = make([]Message, len(v))
+				copy(messagesCopyForSave[k], v)
+			}
+			roomsCopyForSave := make([]string, len(chatServer.rooms))
+			copy(roomsCopyForSave, chatServer.rooms)
+			usersCopyForSave := make(map[string]string)
+			for k, v := range chatServer.users {
+				usersCopyForSave[k] = v
+			}
+			
+			// Prepare response with updated messages
+			messagesCopy := make(Messages)
+			for k, v := range chatServer.messages {
+				messagesCopy[k] = make([]Message, len(v))
+				copy(messagesCopy[k], v)
+			}
+			usersList := make([]string, 0, len(chatServer.users))
+			for user := range chatServer.users {
+				usersList = append(usersList, user)
+			}
+			
+			// Copy userPubKeys for save
+			userPubKeysCopy := make(map[string]string)
+			for k, v := range chatServer.userPubKeys {
+				userPubKeysCopy[k] = v
+			}
+			
+			chatServer.mu.Unlock()
+
+			// Save state in background (outside of lock)
+			go func() {
+				if err := chatServer.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+					log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+				}
+			}()
+
+			response := map[string]interface{}{
+				"messages": messagesCopy,
+				"users":    usersList,
+			}
+
+			// Broadcast to all clients
+			defaultNsp.Emit(EventServerMessage, response)
+			log.Printf("[%s] ✓ Broadcasted message edit update", socketIDStr)
+		})
+
 		socket.OnEvent(EventClientVoteJoin, func(voteData interface{}) {
 			socketIDStr := string(socket.ID())
 			defer func() {

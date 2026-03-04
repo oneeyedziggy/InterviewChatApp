@@ -22,6 +22,9 @@ export const SOCKET_EVENTS = {
   SERVER_JOIN_REQUEST: 'serverJoinRequest',
   SERVER_JOIN_APPROVED: 'serverJoinApproved',
   SERVER_JOIN_DENIED: 'serverJoinDenied',
+  CLIENT_VOTE_MESSAGE: 'clientVoteMessage',
+  CLIENT_EDIT_MESSAGE: 'clientEditMessage',
+  SERVER_VOTE_UPDATE: 'serverVoteUpdate',
   INITIAL_DATA: 'initialData',
   CONNECT: 'connect',
   DISCONNECT: 'disconnect',
@@ -32,5 +35,9 @@ export const SOCKET_EVENTS = {
 export const SYSTEM_MESSAGES = {
   USER_JOINED: '<-- has entered the room',
   USER_LEFT: 'says "smell ya\' later" -->',
+} as const;
+
+export const FEATURES = {
+  MESSAGE_VOTING: true, // Enable/disable message voting feature
 } as const;
 

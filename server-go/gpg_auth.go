@@ -152,10 +152,10 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		} else {
 			// Public key doesn't match - reject registration attempt
 			log.Printf("[handleLogin] ✗ Username already exists with different public key: %s", req.Username)
-			json.NewEncoder(w).Encode(LoginResponse{
-				Error: "Username already exists",
-			})
-			return
+		json.NewEncoder(w).Encode(LoginResponse{
+			Error: "Username already exists",
+		})
+		return
 		}
 	}
 

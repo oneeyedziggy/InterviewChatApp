@@ -13,7 +13,7 @@ import * as SimpleMarkdown from 'simple-markdown';
 import { type Messages, type Message } from '../types/types';
 import { SelectableList } from '../components/SelectableList';
 import { ScrollableDiv } from '../components/styled/ScrollableDiv';
-import { SOCKET_EVENTS, DEFAULT_ROOM, SYSTEM_MESSAGES } from '../constants';
+import { SOCKET_EVENTS, DEFAULT_ROOM, SYSTEM_MESSAGES, FEATURES } from '../constants';
 import { 
   storeUserPublicKeys, 
   loadUserPublicKeys, 
@@ -61,6 +61,464 @@ const FlexDiv = styled.div`
   flex-direction: row;
 `;
 
+// Component to render a message with its replies (recursive)
+const MessageWithReplies = ({
+  message,
+  allMessages,
+  room,
+  username,
+  onRequestAccess,
+  onGrantAccess,
+  onDenyAccess,
+  onSelectVersion,
+  onReply,
+  onEdit,
+  onVote,
+  replyingTo,
+  editingMessageTimestamp,
+  indentLevel = 0,
+}: {
+  message: Message;
+  allMessages: Message[];
+  room: string;
+  username?: string;
+  onRequestAccess?: (messageUsername: string, room: string, messageTimestamp: number) => void;
+  onGrantAccess?: (requestingUser: string, originalRoom: string, messageTimestamp: number, plaintext?: string) => void;
+  onDenyAccess?: (requestingUser: string, originalRoom: string, messageTimestamp: number) => void;
+  onSelectVersion?: (room: string, messageTimestamp: number, versionIndex: number) => void;
+  onReply?: (messageTimestamp: number) => void;
+  onEdit?: (messageTimestamp: number, content: string) => void;
+  onVote?: (room: string, messageTimestamp: number, voteType: 'up' | 'down') => void;
+  replyingTo?: number;
+  editingMessageTimestamp?: number;
+  indentLevel?: number;
+}) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+  
+  // Find all replies to this message
+  // replyTo can be a number or undefined, timestamp is always a number
+  const replies = allMessages.filter(msg => {
+    if (msg.replyTo === undefined || msg.replyTo === null) return false;
+    // Normalize both values to numbers for comparison
+    const replyToNum = typeof msg.replyTo === 'number' ? msg.replyTo : Number(msg.replyTo);
+    const timestampNum = typeof message.timestamp === 'number' ? message.timestamp : Number(message.timestamp);
+    const matches = Math.abs(replyToNum - timestampNum) < 0.001 || replyToNum === timestampNum;
+    
+    // Debug logging
+    if (matches) {
+      console.log(`[MessageWithReplies] Found reply: msg.timestamp=${msg.timestamp}, msg.replyTo=${msg.replyTo}, parent.timestamp=${message.timestamp}`);
+    }
+    
+    return matches;
+  });
+  const hasReplies = replies.length > 0;
+  
+  // Debug: log if this message should have replies
+  if (message.timestamp) {
+    const allRepliesInRoom = allMessages.filter(msg => msg.replyTo !== undefined && msg.replyTo !== null);
+    console.log(`[MessageWithReplies] Message ${message.timestamp}: checking for replies. Total messages with replyTo in room: ${allRepliesInRoom.length}`, 
+      allRepliesInRoom.map(m => ({ timestamp: m.timestamp, replyTo: m.replyTo })));
+    console.log(`[MessageWithReplies] Message ${message.timestamp}: found ${replies.length} replies`);
+  }
+  
+  // Sort replies by timestamp (oldest first)
+  const sortedReplies = [...replies].sort((a, b) => a.timestamp - b.timestamp);
+  
+  // Check if user has access to this message
+  let hasAccess = false;
+  let encryptedData: string | null = null;
+  
+  if (username && message.encryptedFor) {
+    hasAccess = !!message.encryptedFor[username];
+    if (hasAccess) {
+      encryptedData = message.encryptedFor[username];
+    }
+  }
+  
+  if (!hasAccess && username && message.versions && message.versions.length > 0) {
+    const newestVersion = message.versions[0];
+    if (newestVersion.encryptedFor) {
+      hasAccess = !!newestVersion.encryptedFor[username];
+      if (hasAccess) {
+        encryptedData = newestVersion.encryptedFor[username];
+      }
+    }
+  }
+  
+  const canDecrypt = hasAccess && message.content && message.content.trim() !== '' && 
+    !message.content.includes('🔒') && !message.content.includes('[Encrypted message]');
+  
+  // Render the message content
+  const renderMessageContent = () => {
+    // Check if this is an access request message
+    const isAccessRequest = message.content && 
+      (message.content.includes('requests access') || message.content.includes('Requests access'));
+    const isAccessStatus = message.content && 
+      (message.content.includes('You requested access') || message.content.includes('you requested access'));
+    
+    if (isAccessStatus) {
+      const statusMatch = message.content.match(/You requested access to (.+?)'s message in (.+?) \(timestamp: (\d+)\) \[(.+?)\]/i);
+      if (statusMatch) {
+        const [, originalSender, originalRoom, messageTimestamp, status] = statusMatch;
+        const statusColor = status === 'Access Granted' ? '#2e7d32' : status === 'Access Denied' ? '#c62828' : '#666';
+        const statusBg = status === 'Access Granted' ? '#e8f5e9' : status === 'Access Denied' ? '#ffebee' : '#f5f5f5';
+        
+        return (
+          <div style={{ border: '1px solid #ccc', padding: '8px', margin: '4px 0' }}>
+            {mdStringToReact(message.content)}
+            <div style={{ marginTop: '8px', padding: '4px 8px', backgroundColor: statusBg, color: statusColor, borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' }}>
+              Status: {status}
+            </div>
+          </div>
+        );
+      }
+    }
+    
+    if (isAccessRequest && onGrantAccess && username) {
+      // Handle access request display
+      const match = message.content.match(/(?:User\s+\w+\s+)?requests access to your message in (.+?) \(timestamp: (\d+)\)/i);
+      if (match) {
+        const originalRoom = match[1];
+        const messageTimestamp = parseInt(match[2], 10);
+        const requestingUser = message.username;
+        
+        // Note: We can't easily look up messages from other rooms here without passing allMessages
+        // The transformMessages function handles this lookup, so we'll just show the request text
+        const isDenied = message.content.includes('[Access Denied]');
+        const isGranted = message.content.includes('[Access Granted]');
+        
+        return (
+          <div style={{ border: '1px solid #ccc', padding: '8px', margin: '4px 0' }}>
+            {mdStringToReact(message.content.replace(/\[Grant Access\]|\[Deny Access\]|\[Access Granted\]|\[Access Denied\]/g, ''))}
+            {isGranted && (
+              <div style={{ marginTop: '8px', padding: '4px 8px', backgroundColor: '#e8f5e9', color: '#2e7d32', borderRadius: '4px', fontSize: '12px' }}>
+                ✓ Access Granted
+              </div>
+            )}
+            {!isDenied && !isGranted && (
+              <div style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={async () => {
+                    if (onGrantAccess) {
+                      await onGrantAccess(requestingUser, originalRoom, messageTimestamp);
+                    }
+                  }}
+                  style={{ padding: '4px 8px', fontSize: '12px', cursor: 'pointer', backgroundColor: '#4caf50', color: 'white', border: 'none', borderRadius: '4px' }}
+                >
+                  Yes - Grant Access
+                </button>
+                <button
+                  onClick={() => {
+                    if (onDenyAccess) {
+                      onDenyAccess(requestingUser, originalRoom, messageTimestamp);
+                    }
+                  }}
+                  style={{ padding: '4px 8px', fontSize: '12px', cursor: 'pointer', backgroundColor: '#f44336', color: 'white', border: 'none', borderRadius: '4px' }}
+                >
+                  No - Deny Access
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      }
+    }
+    
+    if (!canDecrypt && (message.encryptedFor || message.versions)) {
+      const localTime = new Date(message.timestamp * 1000).toLocaleString();
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span>🔒</span>
+          <span>
+            <span title={`Sent at ${localTime}`} style={{ cursor: 'help', textDecoration: 'underline', textDecorationStyle: 'dotted' }}>
+              {message.username}
+            </span>
+            : [Encrypted message]
+          </span>
+          {onRequestAccess && (
+            <button
+              onClick={() => onRequestAccess(message.username, room, message.timestamp)}
+              style={{ marginLeft: '8px', padding: '4px 8px', fontSize: '12px', cursor: 'pointer' }}
+            >
+              Request Access
+            </button>
+          )}
+        </div>
+      );
+    }
+    
+    const hasMultipleVersions = message.versions && message.versions.length > 1;
+    const currentVersionIndex = message.currentVersion !== undefined ? message.currentVersion : 0;
+    
+    return (
+      <div style={{ position: 'relative' }}>
+        {hasMultipleVersions && onSelectVersion && message.versions && (
+          <div style={{ marginBottom: '4px', fontSize: '12px' }}>
+            <label>
+              Version: 
+              <select
+                value={currentVersionIndex}
+                onChange={(e) => onSelectVersion(room, message.timestamp, parseInt(e.target.value, 10))}
+                style={{ marginLeft: '4px', fontSize: '12px', padding: '2px 4px' }}
+              >
+                {message.versions.map((version, idx) => (
+                  <option key={idx} value={idx}>
+                    {idx === 0 ? 'Latest' : `v${version.version}`} - {version.changeSummary || 'no changes'} ({new Date(version.timestamp * 1000).toLocaleString()})
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
+        {(() => {
+          // Format timestamp to local time for tooltip
+          const localTime = new Date(message.timestamp * 1000).toLocaleString();
+          // Render username separately with tooltip, then render content as markdown
+          return (
+            <span>
+              <span title={`Sent at ${localTime}`} style={{ cursor: 'help', textDecoration: 'underline', textDecorationStyle: 'dotted' }}>
+                {message.username}
+              </span>
+              : {mdStringToReact(message.content || '[No content]')}
+              {message.edited && (
+                <span style={{ color: '#999', fontSize: '0.9em', marginLeft: '4px' }}>(edited)</span>
+              )}
+            </span>
+          );
+        })()}
+      </div>
+    );
+  };
+  
+  return (
+    <div style={{ 
+      position: 'relative',
+      marginBottom: '8px',
+      paddingLeft: indentLevel > 0 ? '24px' : '0'
+    }}>
+      {/* Tree line connector - vertical line from parent (if not root) */}
+      {indentLevel > 0 && (
+        <>
+          {/* Vertical line going up from this node - connects to parent's horizontal line */}
+          <div style={{
+            position: 'absolute',
+            left: '12px',
+            top: '-8px',
+            height: '20px',
+            width: '1px',
+            backgroundColor: '#d0d0d0',
+          }} />
+          
+          {/* Horizontal line connecting to this node - rounded corner like onramp */}
+          <div style={{
+            position: 'absolute',
+            left: '12px',
+            top: '12px',
+            width: '12px',
+            height: '1px',
+            backgroundColor: '#d0d0d0',
+            borderTopRightRadius: '6px',
+            borderBottomRightRadius: '6px',
+          }} />
+        </>
+      )}
+      
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', position: 'relative', zIndex: 1 }}>
+        {/* Voting UI (if enabled) */}
+        {FEATURES.MESSAGE_VOTING && onVote && username && (
+          <div style={{ 
+            display: 'flex', 
+            flexDirection: 'column', 
+            alignItems: 'center', 
+            gap: '2px',
+            flexShrink: 0,
+            marginRight: '4px'
+          }}>
+            {/* Upvote button */}
+            <button
+              onClick={() => onVote(room, message.timestamp, 'up')}
+              style={{
+                padding: '0',
+                fontSize: '16px',
+                cursor: 'pointer',
+                backgroundColor: 'transparent',
+                border: 'none',
+                color: message.userVotes?.[username] === 'up' ? '#4caf50' : '#999',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '20px',
+                height: '20px',
+                lineHeight: '1'
+              }}
+              title="Upvote"
+            >
+              ▲
+            </button>
+            {/* Vote count */}
+            <span style={{
+              fontSize: '12px',
+              fontWeight: 'bold',
+              color: '#666',
+              minWidth: '20px',
+              textAlign: 'center'
+            }}>
+              {message.voteTotal ?? 0}
+            </span>
+            {/* Downvote button */}
+            <button
+              onClick={() => onVote(room, message.timestamp, 'down')}
+              style={{
+                padding: '0',
+                fontSize: '16px',
+                cursor: 'pointer',
+                backgroundColor: 'transparent',
+                border: 'none',
+                color: message.userVotes?.[username] === 'down' ? '#f44336' : '#999',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '20px',
+                height: '20px',
+                lineHeight: '1'
+              }}
+              title="Downvote"
+            >
+              ▼
+            </button>
+          </div>
+        )}
+        
+        {/* Reply toggle button (only show if there are replies) */}
+        {hasReplies && (
+          <button
+            onClick={() => setIsExpanded(!isExpanded)}
+            style={{
+              padding: '2px 4px',
+              fontSize: '10px',
+              cursor: 'pointer',
+              backgroundColor: 'transparent',
+              border: 'none',
+              color: '#666',
+              minWidth: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
+            }}
+            title={isExpanded ? 'Collapse replies' : 'Expand replies'}
+          >
+            {isExpanded ? '▼' : '▶'}
+          </button>
+        )}
+        {!hasReplies && <div style={{ width: '20px', flexShrink: 0 }} />}
+        
+        {/* Message content */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {renderMessageContent()}
+        </div>
+        
+        {/* Edit and Reply buttons - floating to the right */}
+        <div style={{ display: 'flex', gap: '4px', marginLeft: 'auto', flexShrink: 0 }}>
+          {/* Edit button - only show on own messages */}
+          {onEdit && username && message.username === username && (
+            <button
+              onClick={() => onEdit(message.timestamp, message.content)}
+              style={{
+                padding: '2px 6px',
+                fontSize: '11px',
+                cursor: 'pointer',
+                backgroundColor: editingMessageTimestamp === message.timestamp ? '#2196f3' : 'transparent',
+                border: '1px solid #ccc',
+                borderRadius: '4px',
+                color: editingMessageTimestamp === message.timestamp ? 'white' : '#666',
+              }}
+              title="Edit this message"
+            >
+              Edit
+            </button>
+          )}
+          {/* Reply button */}
+          {onReply && (
+            <button
+              onClick={() => onReply(message.timestamp)}
+              style={{
+                padding: '2px 6px',
+                fontSize: '11px',
+                cursor: 'pointer',
+                backgroundColor: replyingTo === message.timestamp ? '#4caf50' : 'transparent',
+                border: '1px solid #ccc',
+                borderRadius: '4px',
+                color: replyingTo === message.timestamp ? 'white' : '#666',
+              }}
+              title="Reply to this message"
+            >
+              Reply
+            </button>
+          )}
+        </div>
+      </div>
+      
+      {/* Replies (collapsible) with tree structure */}
+      {hasReplies && isExpanded && (
+        <div style={{ 
+          position: 'relative',
+          marginTop: '8px',
+          paddingLeft: '24px'
+        }}>
+          {/* Vertical line going down through all children - continuous line that extends to bottom */}
+          {sortedReplies.length > 0 && (
+            <div style={{
+              position: 'absolute',
+              left: '12px',
+              top: '0',
+              bottom: '0',
+              width: '1px',
+              backgroundColor: '#d0d0d0',
+            }} />
+          )}
+          
+          {sortedReplies.map((reply, index) => {
+            const isLast = index === sortedReplies.length - 1;
+            return (
+              <div key={reply.timestamp} style={{ position: 'relative' }}>
+                {/* Horizontal line to each child - rounded corner like onramp */}
+                <div style={{
+                  position: 'absolute',
+                  left: '-12px',
+                  top: '12px',
+                  width: '12px',
+                  height: '1px',
+                  backgroundColor: '#d0d0d0',
+                  borderTopLeftRadius: '6px',
+                  borderBottomLeftRadius: '6px',
+                }} />
+                
+                <MessageWithReplies
+                  message={reply}
+                  allMessages={allMessages}
+                  room={room}
+                  username={username}
+                  onRequestAccess={onRequestAccess}
+                  onGrantAccess={onGrantAccess}
+                  onDenyAccess={onDenyAccess}
+                  onSelectVersion={onSelectVersion}
+                  onReply={onReply}
+                  onEdit={onEdit}
+                  onVote={onVote}
+                  replyingTo={replyingTo}
+                  editingMessageTimestamp={editingMessageTimestamp}
+                  indentLevel={indentLevel + 1}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const transformMessages = (
   messages: Messages, 
   currentRoom: string, 
@@ -68,246 +526,63 @@ const transformMessages = (
   onRequestAccess?: (messageUsername: string, room: string, messageTimestamp: number) => void,
   onGrantAccess?: (requestingUser: string, originalRoom: string, messageTimestamp: number, plaintext?: string) => void,
   onSelectVersion?: (room: string, messageTimestamp: number, versionIndex: number) => void,
-  allMessages?: Messages // All messages from all rooms (for looking up original message content)
+  allMessages?: Messages, // All messages from all rooms (for looking up original message content)
+  onReply?: (messageTimestamp: number) => void,
+  onEdit?: (messageTimestamp: number, content: string) => void,
+  onVote?: (room: string, messageTimestamp: number, voteType: 'up' | 'down') => void,
+  replyingTo?: number,
+  editingMessageTimestamp?: number,
+  socket?: Socket // Socket for deny access functionality
 ) => {
   if (currentRoom && Object.keys(messages).length && messages[currentRoom]) {
+    const allRoomMessages = messages[currentRoom];
+    // Filter out reply messages (they'll be shown as children of their parent)
+    // Check both undefined and null for replyTo
+    const topLevelMessages = allRoomMessages.filter(msg => !msg.replyTo && msg.replyTo !== 0);
+    // Sort by timestamp (newest first for reverse column)
+    const sortedMessages = [...topLevelMessages].sort((a, b) => b.timestamp - a.timestamp);
+    
     return (
       <ScrollableDiv $flexDirection="column-reverse">
-        {messages[currentRoom].map((message, dontUseIndex) => {
-          // Check if user has access - check both encryptedFor and versions array
-          let hasAccess = false;
-          let encryptedData: string | null = null;
-          
-          if (username && message.encryptedFor) {
-            hasAccess = !!message.encryptedFor[username];
-            if (hasAccess) {
-              encryptedData = message.encryptedFor[username];
-            }
-          }
-          
-          if (!hasAccess && username && message.versions && message.versions.length > 0) {
-            // Check newest version (index 0)
-            const newestVersion = message.versions[0];
-            if (newestVersion.encryptedFor) {
-              hasAccess = !!newestVersion.encryptedFor[username];
-              if (hasAccess) {
-                encryptedData = newestVersion.encryptedFor[username];
+        {sortedMessages.map((message) => (
+          <MessageWithReplies
+            key={message.timestamp}
+            message={message}
+            allMessages={messages[currentRoom]}
+            room={currentRoom}
+            username={username}
+            onRequestAccess={onRequestAccess}
+            onGrantAccess={onGrantAccess}
+            onDenyAccess={(requestingUser: string, originalRoom: string, messageTimestamp: number) => {
+              if (socket) {
+                socket.emit(SOCKET_EVENTS.CLIENT_DENY_ACCESS, {
+                  requestingUser,
+                  originalRoom,
+                  messageTimestamp,
+                });
               }
-            }
-          }
-          
-          // If we have access but no decrypted content, try to decrypt on-the-fly
-          const needsDecryption = hasAccess && encryptedData && (!message.content || message.content.trim() === '' || message.content.includes('🔒') || message.content.includes('[Encrypted message]'));
-          const canDecrypt = hasAccess && message.content && message.content.trim() !== '' && !message.content.includes('🔒') && !message.content.includes('[Encrypted message]');
-          
-          // Check if this is an access request message (contains "requests access")
-          const isAccessRequest = message.content && 
-            (message.content.includes('requests access') || message.content.includes('Requests access'));
-          const isAccessStatus = message.content && 
-            (message.content.includes('You requested access') || message.content.includes('you requested access'));
-          
-          // Show status message for requesting user (not the prompt)
-          if (isAccessStatus) {
-            const statusMatch = message.content.match(/You requested access to (.+?)'s message in (.+?) \(timestamp: (\d+)\) \[(.+?)\]/i);
-            if (statusMatch) {
-              const [, originalSender, originalRoom, messageTimestamp, status] = statusMatch;
-              const statusColor = status === 'Access Granted' ? '#2e7d32' : status === 'Access Denied' ? '#c62828' : '#666';
-              const statusBg = status === 'Access Granted' ? '#e8f5e9' : status === 'Access Denied' ? '#ffebee' : '#f5f5f5';
-              
-              return (
-                <div key={dontUseIndex} style={{ border: '1px solid #ccc', padding: '8px', margin: '4px 0' }}>
-                  {mdStringToReact(message.content)}
-                  <div style={{ marginTop: '8px', padding: '4px 8px', backgroundColor: statusBg, color: statusColor, borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' }}>
-                    Status: {status}
-                  </div>
-                </div>
-              );
-            }
-          }
-          
-          if (isAccessRequest && onGrantAccess && username) {
-            // Parse the access request to extract details - handle both "User X requests" and "requests" formats
-            const match = message.content.match(/(?:User\s+\w+\s+)?requests access to your message in (.+?) \(timestamp: (\d+)\)/i);
-            if (match) {
-              const originalRoom = match[1];
-              const messageTimestamp = parseInt(match[2], 10);
-              const requestingUser = message.username;
-              
-              // Look up the original message content from the original author's local state
-              // The requesting user doesn't have access to the content, so we look it up locally
-              let quotedContent: string | null = null;
-              const roomMessages = allMessages ? allMessages[originalRoom] : null;
-              if (roomMessages) {
-                const originalMessage = roomMessages.find(msg => 
-                  msg.timestamp === messageTimestamp && msg.username === username
-                );
-                if (originalMessage) {
-                  // Use the decrypted content if available, otherwise show encrypted indicator
-                  if (originalMessage.content && 
-                      originalMessage.content.trim() && 
-                      !originalMessage.content.includes('🔒') && 
-                      !originalMessage.content.includes('[Encrypted message]')) {
-                    quotedContent = originalMessage.content;
-                    console.log('[AccessRequest] Found original message content locally, length:', quotedContent.length);
-                  } else {
-                    console.log('[AccessRequest] Original message found but content not decrypted yet');
-                    quotedContent = '[Encrypted message]';
-                  }
-                } else {
-                  console.log('[AccessRequest] Original message not found in local state for timestamp:', messageTimestamp);
-                  quotedContent = '[Message not found]';
-                }
-              } else {
-                console.log('[AccessRequest] Room not found in local state:', originalRoom);
-                quotedContent = '[Message not found]';
-              }
-              
-              // Check if this request was already responded to (denied or granted)
-              const isDenied = message.content.includes('[Access Denied]');
-              const isGranted = message.content.includes('[Access Granted]');
-              
-              // Build the display content with the actual message content
-              const requestText = message.content.split(':')[0]; // Get the part before the colon
-              const displayContent = quotedContent 
-                ? `${requestText}:\n\n> ${quotedContent}`
-                : message.content.replace(/\[Grant Access\]|\[Deny Access\]|\[Access Granted\]|\[Access Denied\]/g, '');
-              
-              return (
-                <div key={dontUseIndex} style={{ border: '1px solid #ccc', padding: '8px', margin: '4px 0' }}>
-                  {mdStringToReact(displayContent)}
-                  {isGranted && (
-                    <div style={{ marginTop: '8px', padding: '4px 8px', backgroundColor: '#e8f5e9', color: '#2e7d32', borderRadius: '4px', fontSize: '12px' }}>
-                      ✓ Access Granted
-                    </div>
-                  )}
-                  {!isDenied && !isGranted && (
-                    <div style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
-                      <button
-                        onClick={async () => {
-                          console.log('[Button] Yes - Grant Access clicked');
-                          console.log('[Button] requestingUser:', requestingUser);
-                          console.log('[Button] originalRoom:', originalRoom);
-                          console.log('[Button] messageTimestamp:', messageTimestamp);
-                          console.log('[Button] quotedContent:', quotedContent ? 'provided' : 'not provided');
-                          console.log('[Button] onGrantAccess function:', typeof onGrantAccess);
-                          console.log('[Button] socket available:', !!(socket || (window as any).__socket));
-                          if (onGrantAccess) {
-                            try {
-                              await onGrantAccess(requestingUser, originalRoom, messageTimestamp, quotedContent || undefined);
-                              console.log('[Button] ✓ onGrantAccess completed');
-                            } catch (error) {
-                              console.error('[Button] ✗ Error in onGrantAccess:', error);
-                            }
-                          } else {
-                            console.error('[Button] ✗ onGrantAccess is not a function!');
-                          }
-                        }}
-                        style={{ 
-                          padding: '4px 8px', 
-                          fontSize: '12px',
-                          cursor: 'pointer',
-                          backgroundColor: '#4caf50',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '4px'
-                        }}
-                      >
-                        Yes - Grant Access
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (socket) {
-                            socket.emit(SOCKET_EVENTS.CLIENT_DENY_ACCESS, {
-                              requestingUser,
-                              originalRoom,
-                              messageTimestamp,
-                            });
-                          }
-                        }}
-                        style={{ 
-                          padding: '4px 8px', 
-                          fontSize: '12px',
-                          cursor: 'pointer',
-                          backgroundColor: '#f44336',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '4px'
-                        }}
-                      >
-                        No - Deny Access
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            }
-          }
-          
-          // Check if message is encrypted but user doesn't have access
-          // Also check versions array
-          const hasEncryptedFor = message.encryptedFor && Object.keys(message.encryptedFor).length > 0;
-          const hasVersionsWithEncryption = message.versions && message.versions.length > 0 && 
-            message.versions.some(v => v.encryptedFor && Object.keys(v.encryptedFor).length > 0);
-          
-          if (!canDecrypt && (hasEncryptedFor || hasVersionsWithEncryption)) {
-            // Message is encrypted but user doesn't have access
-            return (
-              <div key={dontUseIndex} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span>🔒</span>
-                <span>{message.username}: [Encrypted message]</span>
-                {onRequestAccess && (
-                  <button
-                    onClick={() => onRequestAccess(message.username, currentRoom, message.timestamp)}
-                    style={{ 
-                      marginLeft: '8px', 
-                      padding: '4px 8px', 
-                      fontSize: '12px',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    Request Access
-                  </button>
-                )}
-              </div>
-            );
-          }
-          
-          // Message is decrypted or is a system message
-          const hasMultipleVersions = message.versions && message.versions.length > 1;
-          const currentVersionIndex = message.currentVersion !== undefined ? message.currentVersion : 0;
-          
-          return (
-            <div key={dontUseIndex} style={{ position: 'relative' }}>
-              {hasMultipleVersions && onSelectVersion && message.versions && (
-                <div style={{ marginBottom: '4px', fontSize: '12px' }}>
-                  <label>
-                    Version: 
-                    <select
-                      value={currentVersionIndex}
-                      onChange={(e) => onSelectVersion(currentRoom, message.timestamp, parseInt(e.target.value, 10))}
-                      style={{ marginLeft: '4px', fontSize: '12px', padding: '2px 4px' }}
-                    >
-                      {message.versions.map((version, idx) => (
-                        <option key={idx} value={idx}>
-                          {idx === 0 ? 'Latest' : `v${version.version}`} - {version.changeSummary || 'no changes'} ({new Date(version.timestamp * 1000).toLocaleString()})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-              )}
-              {mdStringToReact(`${message.username}: ${message.content || '[No content]'}`)}
-            </div>
-          );
-        })}
+            }}
+            onSelectVersion={onSelectVersion}
+            onReply={onReply}
+            onEdit={onEdit}
+            onVote={onVote}
+            replyingTo={replyingTo}
+            editingMessageTimestamp={editingMessageTimestamp}
+            indentLevel={0}
+          />
+        ))}
       </ScrollableDiv>
     );
   }
+  
+  return null;
 };
 
 // TODO: break this up into more components to reduce the complexity and number of dependencies in this file
 const Home = () => {
   const [userDraftMessage, setUserDraftMessage] = useState('');
+  const [replyingTo, setReplyingTo] = useState<number | undefined>(undefined); // Timestamp of message being replied to
+  const [editingMessageTimestamp, setEditingMessageTimestamp] = useState<number | undefined>(undefined); // Timestamp of message being edited
   // this "old" chatValues is almost certainly not the best way to acheive this, but there appears to be a timing issue trying to do the diff in the socket.on serverMessage
   const [oldChatValues, setOldChatValues] = useState<Messages>({});
   const [chatValues, setChatValues] = useState<Messages>({});
@@ -938,8 +1213,19 @@ const Home = () => {
           
           // Type assertion: messages from SERVER_MESSAGE should be Message[]
           const roomMessages = messages as Message[];
+          console.log(`[Socket] SERVER_MESSAGE: Received ${roomMessages.length} messages for room ${room}`);
+          // Log replyTo fields
+          const messagesWithReplies = roomMessages.filter(m => m.replyTo !== undefined && m.replyTo !== null);
+          if (messagesWithReplies.length > 0) {
+            console.log(`[Socket] SERVER_MESSAGE: ${messagesWithReplies.length} messages have replyTo:`, 
+              messagesWithReplies.map(m => ({ timestamp: m.timestamp, replyTo: m.replyTo, username: m.username })));
+          }
+          
           decryptedMessages[room] = await Promise.all(
             roomMessages.map(async (msg: Message) => {
+              // Preserve replyTo field
+              const preservedReplyTo = msg.replyTo;
+              
               // Check if we have access - check both encryptedFor and versions array
               let encryptedData: string | null = null;
               
@@ -957,31 +1243,56 @@ const Home = () => {
                 try {
                   console.log('[Socket] ===== DECRYPTING MESSAGE IN SERVER_MESSAGE =====');
                   console.log('[Socket] Message timestamp:', msg.timestamp);
+                  console.log('[Socket] Message replyTo:', preservedReplyTo);
                   console.log('[Socket] User:', keys!.username);
                   console.log('[Socket] Room:', room);
-                  console.log('[Socket] Encrypted data length:', encryptedData.length);
-                  console.log('[Socket] Encrypted data (first 200 chars):', encryptedData.substring(0, 200));
                   const decrypted = await decryptMessageForUser(encryptedData, keys!.privateKey);
-                  console.log('[Socket] ✓ Decrypted message, content length:', decrypted.length);
-                  console.log('[Socket] Decrypted content (first 200 chars):', decrypted.substring(0, 200));
-                  console.log('[Socket] Decrypted content (full):', decrypted);
-                  return { ...msg, content: decrypted };
+                  console.log('[Socket] ✓ Decrypted message, preserving replyTo:', preservedReplyTo);
+                  // Preserve all fields including replyTo
+                  return { ...msg, content: decrypted, replyTo: preservedReplyTo };
                 } catch (error) {
                   console.error('[Socket] ✗ Failed to decrypt message:', error);
-                  return msg; // Return original if decryption fails
+                  return msg; // Return original if decryption fails (should preserve replyTo)
                 }
               }
-              return msg;
+              // Return message with preserved replyTo
+              return { ...msg, replyTo: preservedReplyTo };
             })
           );
         }
         
         // Merge with existing chat values instead of replacing
+        // Important: preserve replyTo fields when merging
         setChatValues(prev => {
           const merged = { ...prev };
           for (const [room, messages] of Object.entries(decryptedMessages)) {
-            merged[room] = messages;
+            // Merge messages by timestamp to preserve replyTo and other fields
+            if (!merged[room]) {
+              merged[room] = messages;
+            } else {
+              // Create a map of existing messages by timestamp
+              const existingMap = new Map(merged[room].map(m => [m.timestamp, m]));
+              // Update or add new messages, preserving replyTo
+              messages.forEach(msg => {
+                const existing = existingMap.get(msg.timestamp);
+                if (existing) {
+                  // Update existing message but preserve replyTo if it exists
+                  Object.assign(existing, msg, { replyTo: msg.replyTo !== undefined ? msg.replyTo : existing.replyTo });
+                } else {
+                  // Add new message
+                  existingMap.set(msg.timestamp, msg);
+                }
+              });
+              merged[room] = Array.from(existingMap.values());
+            }
           }
+          console.log('[Socket] Merged chatValues, checking replyTo fields:', 
+            Object.entries(merged).map(([r, msgs]) => ({
+              room: r,
+              total: msgs.length,
+              withReplyTo: msgs.filter(m => m.replyTo !== undefined && m.replyTo !== null).length
+            }))
+          );
           return merged;
         });
         
@@ -1188,6 +1499,40 @@ const Home = () => {
         alert(`Access to your message in ${originalRoom} was denied by the original sender.`);
       }
     });
+
+    // Handle vote updates
+    socket.on(SOCKET_EVENTS.SERVER_VOTE_UPDATE, async (data) => {
+      console.log('[Socket] SERVER_VOTE_UPDATE received');
+      if (data?.messages) {
+        // Update messages with new vote data
+        const keys = loadKeys();
+        const decryptedMessages: Messages = {};
+        
+        for (const [room, messages] of Object.entries(data.messages)) {
+          const roomMessages = messages as Message[];
+          decryptedMessages[room] = await Promise.all(
+            roomMessages.map(async (msg: Message) => {
+              // If message has encryptedFor and we have keys, decrypt it
+              if (msg.encryptedFor && keys) {
+                const encrypted = msg.encryptedFor[keys.username];
+                if (encrypted) {
+                  try {
+                    const decrypted = await decryptMessageForUser(encrypted, keys.privateKey);
+                    return { ...msg, content: decrypted };
+                  } catch (error) {
+                    console.error('[Socket] ✗ Failed to decrypt message:', error);
+                    return msg;
+                  }
+                }
+              }
+              return msg;
+            })
+          );
+        }
+        
+        setChatValues(decryptedMessages);
+      }
+    });
     
     socket.on(SOCKET_EVENTS.DISCONNECTING, (msg) => {
       socket.emit(SOCKET_EVENTS.CLIENT_MESSAGE, {
@@ -1314,6 +1659,33 @@ const Home = () => {
       return;
     }
     
+    // Check if we're editing a message
+    if (editingMessageTimestamp !== undefined && editingMessageTimestamp !== null) {
+      // Edit existing message
+      console.log('[doSend] Editing message with timestamp:', editingMessageTimestamp);
+      
+      try {
+        encryptedFor = await encryptForAllUsers(userDraftMessage, userPubKeys, keys.publicKey, username);
+        console.log('[doSend] ✓ Edit message encrypted for all users');
+      } catch (error) {
+        console.error('[doSend] ✗ Failed to encrypt edit message:', error);
+        alert('Failed to encrypt message. Please try again.');
+        return;
+      }
+      
+      const editData = {
+        room: currentRoom,
+        messageTimestamp: editingMessageTimestamp,
+        username,
+        encryptedFor,
+      };
+      activeSocket.emit(SOCKET_EVENTS.CLIENT_EDIT_MESSAGE, editData);
+      console.log('[doSend] ✓ Edit message emitted');
+      setEditingMessageTimestamp(undefined);
+      setUserDraftMessage('');
+      return;
+    }
+    
     console.log('[doSend] Encrypting message for', Object.keys(userPubKeys).length, 'users (including self)');
     try {
       encryptedFor = await encryptForAllUsers(userDraftMessage, userPubKeys, keys.publicKey, username);
@@ -1329,17 +1701,36 @@ const Home = () => {
     const isSystemMessage = userDraftMessage.includes(SYSTEM_MESSAGES.USER_JOINED) || 
                            userDraftMessage.includes(SYSTEM_MESSAGES.USER_LEFT);
     
+    // Include replyTo if replying to a message (check explicitly for undefined/null, not just truthiness)
+    const shouldIncludeReplyTo = replyingTo !== undefined && replyingTo !== null;
+    const currentReplyTo = replyingTo;
+    
     const messageData = {
       username,
       room: currentRoom,
       ...(isSystemMessage ? { content: userDraftMessage } : {}), // Only system messages have plaintext
       encryptedFor, // Encrypted versions for all users
+      ...(shouldIncludeReplyTo ? { replyTo: replyingTo } : {}), // Include replyTo if replying to a message
     };
     
-    console.log('[doSend] Emitting CLIENT_MESSAGE with data:', { ...messageData, encryptedFor: encryptedFor ? `${Object.keys(encryptedFor).length} encrypted versions` : 'none' });
+    // Clear replyingTo after sending
+    if (shouldIncludeReplyTo) {
+      setReplyingTo(undefined);
+    }
+    
+    console.log('[doSend] ===== MESSAGE DATA =====');
+    console.log('[doSend] replyingTo state:', currentReplyTo);
+    console.log('[doSend] shouldIncludeReplyTo:', shouldIncludeReplyTo);
+    console.log('[doSend] messageData.replyTo:', messageData.replyTo);
+    console.log('[doSend] messageData keys:', Object.keys(messageData));
+    console.log('[doSend] Emitting CLIENT_MESSAGE with data:', { 
+      ...messageData, 
+      encryptedFor: encryptedFor ? `${Object.keys(encryptedFor).length} encrypted versions` : 'none', 
+      replyTo: currentReplyTo || 'none' 
+    });
     console.log('[doSend] Event name:', SOCKET_EVENTS.CLIENT_MESSAGE);
     activeSocket.emit(SOCKET_EVENTS.CLIENT_MESSAGE, messageData);
-    console.log('[doSend] ✓ Message emitted');
+    console.log('[doSend] ✓ Message emitted with replyTo:', messageData.replyTo || 'none');
     setUserDraftMessage('');
   };
 
@@ -1930,15 +2321,66 @@ const Home = () => {
             </WiderButton>
           </SideFlexColumn>
           <MiddleFlexColumn>
-            {transformMessages(chatValues, currentRoom, username, handleRequestAccess, handleGrantAccess, handleSelectVersion, chatValues)}
+            {transformMessages(chatValues, currentRoom, username, handleRequestAccess, handleGrantAccess, handleSelectVersion, chatValues, (timestamp: number) => {
+              console.log('[onReply] Reply button clicked, setting replyingTo to:', timestamp);
+              setReplyingTo(timestamp);
+              setEditingMessageTimestamp(undefined); // Clear editing when replying
+              // Focus the input
+              const input = document.getElementById('userDraftMessageInput') as HTMLInputElement;
+              if (input) {
+                input.focus();
+              }
+            }, (messageTimestamp: number, content: string) => {
+              console.log('[onEdit] Edit button clicked, setting editingMessageTimestamp to:', messageTimestamp);
+              setEditingMessageTimestamp(messageTimestamp);
+              setReplyingTo(undefined); // Clear reply when editing
+              setUserDraftMessage(content);
+              // Focus the input
+              const input = document.getElementById('userDraftMessageInput') as HTMLInputElement;
+              if (input) {
+                input.focus();
+              }
+            }, (room: string, messageTimestamp: number, voteType: 'up' | 'down') => {
+              if (socket && username) {
+                console.log('[onVote] Voting', voteType, 'on message', messageTimestamp, 'in room', room);
+                socket.emit(SOCKET_EVENTS.CLIENT_VOTE_MESSAGE, {
+                  room,
+                  messageTimestamp,
+                  username,
+                  voteType,
+                });
+              }
+            }, replyingTo, editingMessageTimestamp, socket)}
             <FlexRow>
               <WiderInput
                 id="userDraftMessageInput"
-                placeholder="Type something"
+                placeholder={editingMessageTimestamp ? `Editing message... (click X to cancel)` : replyingTo ? `Replying to message... (click X to cancel)` : "Type something"}
                 value={userDraftMessage}
                 onChange={userDraftMessageOnChangeHandler}
                 onKeyDown={onDraftKeyDownHandler}
               />
+              {(replyingTo || editingMessageTimestamp) && (
+                <button
+                  onClick={() => {
+                    setReplyingTo(undefined);
+                    setEditingMessageTimestamp(undefined);
+                  }}
+                  style={{
+                    padding: '4px 8px',
+                    fontSize: '12px',
+                    cursor: 'pointer',
+                    backgroundColor: '#f44336',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    marginLeft: '4px',
+                    marginRight: '4px'
+                  }}
+                  title={editingMessageTimestamp ? "Cancel edit" : "Cancel reply"}
+                >
+                  ✕
+                </button>
+              )}
               <WiderButton type="button" onClick={doSend}>
                 Send
               </WiderButton>
