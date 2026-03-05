@@ -226,12 +226,14 @@ const MessageWithReplies = ({
     
     if (!canDecrypt && (message.encryptedFor || message.versions)) {
       const localTime = new Date(message.timestamp * 1000).toLocaleString();
+      const isSystemMessage = message.username === 'system';
+      const displayUsername = isSystemMessage ? 'Server' : message.username;
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span>🔒</span>
           <span>
             <span title={`Sent at ${localTime}`} style={{ cursor: 'help', textDecoration: 'underline', textDecorationStyle: 'dotted' }}>
-              {message.username}
+              {displayUsername}
             </span>
             : [Encrypted message]
           </span>
@@ -273,11 +275,26 @@ const MessageWithReplies = ({
         {(() => {
           // Format timestamp to local time for tooltip
           const localTime = new Date(message.timestamp * 1000).toLocaleString();
-          // Render username separately with tooltip, then render content as markdown
+          const isSystemMessage = message.username === 'system';
+          const displayUsername = isSystemMessage ? 'Server' : message.username;
+          
+          // System messages: medium grey, one line, no markdown rendering
+          if (isSystemMessage) {
+            return (
+              <span style={{ color: '#888', fontSize: '0.95em', whiteSpace: 'nowrap' }}>
+                <span title={`Sent at ${localTime}`} style={{ cursor: 'help', textDecoration: 'underline', textDecorationStyle: 'dotted' }}>
+                  {displayUsername}
+                </span>
+                : {message.content || '[No content]'}
+              </span>
+            );
+          }
+          
+          // Regular messages: render username separately with tooltip, then render content as markdown
           return (
             <span>
               <span title={`Sent at ${localTime}`} style={{ cursor: 'help', textDecoration: 'underline', textDecorationStyle: 'dotted' }}>
-                {message.username}
+                {displayUsername}
               </span>
               : {mdStringToReact(message.content || '[No content]')}
               {message.edited && (
@@ -324,8 +341,8 @@ const MessageWithReplies = ({
       )}
       
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', position: 'relative', zIndex: 1 }}>
-        {/* Voting UI (if enabled) */}
-        {FEATURES.MESSAGE_VOTING && onVote && username && (
+        {/* Voting UI (if enabled) - disabled for system messages */}
+        {FEATURES.MESSAGE_VOTING && onVote && username && message.username !== 'system' && (
           <div style={{ 
             display: 'flex', 
             flexDirection: 'column', 
@@ -420,8 +437,8 @@ const MessageWithReplies = ({
         
         {/* Edit and Reply buttons - floating to the right */}
         <div style={{ display: 'flex', gap: '4px', marginLeft: 'auto', flexShrink: 0 }}>
-          {/* Edit button - only show on own messages */}
-          {onEdit && username && message.username === username && (
+          {/* Edit button - only show on own messages (not system messages) */}
+          {onEdit && username && message.username === username && message.username !== 'system' && (
             <button
               onClick={() => onEdit(message.timestamp, message.content)}
               style={{
@@ -1552,13 +1569,7 @@ const Home = () => {
       console.log('[Socket] ===== CONNECTED =====');
       console.log('[Socket] Socket ID:', socket.id);
       console.log('[Socket] Socket connected:', socket.connected);
-      console.log('[Socket] Emitting join message...');
-      socket.emit(SOCKET_EVENTS.CLIENT_MESSAGE, {
-        username,
-        room: DEFAULT_ROOM,
-        content: SYSTEM_MESSAGES.USER_JOINED,
-      });
-      console.log('[Socket] Join message emitted');
+      // Join messages are now sent automatically by the server
     });
 
     socket.on(SOCKET_EVENTS.DISCONNECT, (reason) => {
@@ -1697,10 +1708,7 @@ const Home = () => {
     }
     
     // Only send encryptedFor - no plaintext for user messages
-    // System messages (like join/leave) can still use content field
-    const isSystemMessage = userDraftMessage.includes(SYSTEM_MESSAGES.USER_JOINED) || 
-                           userDraftMessage.includes(SYSTEM_MESSAGES.USER_LEFT);
-    
+    // System messages are now sent by the server automatically
     // Include replyTo if replying to a message (check explicitly for undefined/null, not just truthiness)
     const shouldIncludeReplyTo = replyingTo !== undefined && replyingTo !== null;
     const currentReplyTo = replyingTo;
@@ -1708,7 +1716,6 @@ const Home = () => {
     const messageData = {
       username,
       room: currentRoom,
-      ...(isSystemMessage ? { content: userDraftMessage } : {}), // Only system messages have plaintext
       encryptedFor, // Encrypted versions for all users
       ...(shouldIncludeReplyTo ? { replyTo: replyingTo } : {}), // Include replyTo if replying to a message
     };

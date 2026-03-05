@@ -337,6 +337,8 @@ type ChatServer struct {
 	userLastSeen    map[string]int64           // username -> last seen timestamp
 	roomMembers     map[string]map[string]bool // room -> username -> bool (membership)
 	roomCreators    map[string]string          // room -> username (creator)
+	hasSentJoinMsg  map[string]bool            // username -> bool (has sent join message for this session)
+	defaultNsp      *socketio.Namespace        // Reference to default namespace for broadcasting
 }
 
 func NewChatServer() *ChatServer {
@@ -364,14 +366,13 @@ func NewChatServer() *ChatServer {
 		messages[DefaultRoom] = []Message{}
 		messages["#cats"] = []Message{}
 	}
-
-	// Purge all existing messages on server start
-	log.Printf("[NewChatServer] Purging all existing messages...")
-	messages = make(Messages)
+	
+	// Ensure all rooms in the rooms list have message arrays
 	for _, room := range rooms {
-		messages[room] = []Message{}
+		if messages[room] == nil {
+			messages[room] = []Message{}
+		}
 	}
-	log.Printf("[NewChatServer] ✓ All messages purged")
 
 	// Generate or load server GPG key pair
 	serverKeyRing, serverPublicKey, err := generateOrLoadServerKeys()
@@ -407,6 +408,7 @@ func NewChatServer() *ChatServer {
 		userLastSeen:    userLastSeen,
 		roomMembers:     roomMembers,
 		roomCreators:    roomCreators,
+		hasSentJoinMsg:  make(map[string]bool),
 	}
 
 	log.Printf("[NewChatServer] ✓ Chat server initialized with %d rooms, %d users (cleared), %d message rooms, %d pub keys",
@@ -514,11 +516,86 @@ func (cs *ChatServer) setUser(name, sessionID string) {
 	log.Printf("[setUser] Attempting to acquire lock for user: %s, session: %s", name, sessionID)
 	cs.mu.Lock()
 	log.Printf("[setUser] ✓ Lock acquired")
+	oldSessionID, wasLoggedIn := cs.users[name]
 	cs.users[name] = sessionID
+	// If this is a new login (different session), send join message immediately
+	if !wasLoggedIn || oldSessionID != sessionID {
+		// Check if join message was already sent (shouldn't happen, but be safe)
+		needsJoinMsg := !cs.hasSentJoinMsg[name]
+		if needsJoinMsg {
+			log.Printf("[setUser] ✓ Marked user %s as needing join message (was logged in: %v, old session: %s)", name, wasLoggedIn, oldSessionID)
+			// Send join message immediately on login (must unlock first to avoid deadlock in sendJoinMessage)
+			cs.mu.Unlock()
+			cs.sendJoinMessage(name)
+			cs.mu.Lock() // Re-acquire lock for consistency
+			// Verify it was sent
+			if !cs.hasSentJoinMsg[name] {
+				log.Printf("[setUser] ✗ ERROR: Join message was not sent for %s!", name)
+			} else {
+				log.Printf("[setUser] ✓ Verified join message was sent for %s", name)
+			}
+		} else {
+			log.Printf("[setUser] ⚠ Join message already sent for %s (shouldn't happen on new login)", name)
+		}
+	}
 	log.Printf("[setUser] ✓ User set in map")
 	cs.mu.Unlock()
 	log.Printf("[setUser] ✓ Lock released")
 	log.Printf("[setUser] ===== EXITING setUser ======")
+}
+
+// sendJoinMessage sends a join message for the user if they haven't sent one yet
+func (cs *ChatServer) sendJoinMessage(username string) {
+	if username == "" {
+		return
+	}
+	
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	
+	if cs.hasSentJoinMsg[username] {
+		return
+	}
+	
+	// Ensure default room exists
+	if cs.messages[DefaultRoom] == nil {
+		cs.messages[DefaultRoom] = []Message{}
+	}
+	// Check if user is already a member (to avoid duplicate join messages)
+	if cs.roomMembers[DefaultRoom] == nil {
+		cs.roomMembers[DefaultRoom] = make(map[string]bool)
+	}
+	if !cs.roomMembers[DefaultRoom][username] {
+		// Add user to room members
+		cs.roomMembers[DefaultRoom][username] = true
+		// If this is the first person in the room, make them the creator
+		if len(cs.roomMembers[DefaultRoom]) == 1 {
+			cs.roomCreators[DefaultRoom] = username
+			log.Printf("[sendJoinMessage] Set %s as creator of %s", username, DefaultRoom)
+		}
+	}
+	// Send system join message (not editable) to default room
+	joinMsg := Message{
+		Timestamp: time.Now().Unix(),
+		Username:  "system",
+		Content:   fmt.Sprintf("%s %s", username, UserJoined),
+		Edited:    false, // System messages can't be edited
+	}
+	cs.messages[DefaultRoom] = append([]Message{joinMsg}, cs.messages[DefaultRoom]...)
+	cs.hasSentJoinMsg[username] = true
+	log.Printf("[sendJoinMessage] ✓ Sent join message for %s to %s", username, DefaultRoom)
+	
+	// Broadcast the join message if we have access to the namespace
+	if cs.defaultNsp != nil {
+		messagesCopy := make(Messages)
+		messagesCopy[DefaultRoom] = make([]Message, len(cs.messages[DefaultRoom]))
+		copy(messagesCopy[DefaultRoom], cs.messages[DefaultRoom])
+		response := map[string]interface{}{
+			"messages": messagesCopy,
+		}
+		cs.defaultNsp.Emit(EventServerMessage, response)
+		log.Printf("[sendJoinMessage] ✓ Broadcasted join message for %s", username)
+	}
 }
 
 func (cs *ChatServer) getUserList() []string {
@@ -718,6 +795,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			log.Printf("[%s] No replyTo field in message", socketIDStr)
 		}
 
+		// Reject join messages from clients - server sends these automatically
+		if content == UserJoined {
+			log.Printf("[%s] ✗ Rejecting client-sent join message from %s - server sends these automatically", socketIDStr, username)
+			return
+		}
+
 		// For encrypted messages, content may be empty - that's expected
 		if hasEncrypted && len(encryptedFor) > 0 {
 			log.Printf("[%s] ✓ Parsed encrypted message - User: %s, Room: %s, EncryptedFor: %d users", socketIDStr, username, room, len(encryptedFor))
@@ -748,6 +831,16 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			log.Printf("[%s] Creating new room: %s", socketIDStr, room)
 			cs.messages[room] = []Message{}
 		}
+		
+		// Join message should already be sent on login via setUser
+		// DO NOT add join message here - it should already exist from login
+		// If it doesn't exist, that's a bug that should be fixed, not worked around
+		if username != "" && !cs.hasSentJoinMsg[username] {
+			log.Printf("[%s] ⚠ WARNING: Join message not sent for %s during login! This should not happen.", socketIDStr, username)
+			// Don't add join message here - it will cause issues
+			// Instead, just log the warning and continue with the user's message
+		}
+		
 		beforeCount := len(cs.messages[room])
 		// Auto-upvote own message
 		one := 1
@@ -1188,6 +1281,13 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			log.Printf("[%s] ✗ User %s attempted to edit message by %s (unauthorized)", socketIDStr, username, targetMessage.Username)
 			return
 		}
+		
+		// Prevent editing system messages
+		if targetMessage.Username == "system" {
+			cs.mu.Unlock()
+			log.Printf("[%s] ✗ User %s attempted to edit system message (not allowed)", socketIDStr, username)
+			return
+		}
 
 		// Update the message
 		targetMessage.Content = "" // Clear plaintext (encrypted only)
@@ -1270,6 +1370,11 @@ func main() {
 
 	// Get the default namespace
 	defaultNsp := sio.Of("/")
+	
+	// Store reference to namespace in chatServer for login handler
+	chatServer.mu.Lock()
+	chatServer.defaultNsp = defaultNsp
+	chatServer.mu.Unlock()
 
 	// Register connection handler - this is called when a client connects
 	log.Println("Registering OnConnection handler...")
@@ -1288,16 +1393,55 @@ func main() {
 			log.Printf("[%s] ===== CLIENT DISCONNECTED ======", socketIDStr)
 			log.Printf("[%s] Reason: %s", socketIDStr, string(reason))
 			
-			// Remove user from active users list (unreserve username)
+			// Remove user from active users list (unreserve username) and send leave message
 			chatServer.mu.Lock()
+			var disconnectedUsername string
 			for username, sessionID := range chatServer.users {
 				if sessionID == socketIDStr {
+					disconnectedUsername = username
 					delete(chatServer.users, username)
+					// Clear the join message flag so they'll get a new one on next login
+					delete(chatServer.hasSentJoinMsg, username)
 					log.Printf("[%s] ✓ Removed user %s from active users (username unreserved)", socketIDStr, username)
+					
+					// Send leave message to default room
+					if chatServer.messages[DefaultRoom] == nil {
+						chatServer.messages[DefaultRoom] = []Message{}
+					}
+					leaveMsg := Message{
+						Timestamp: time.Now().Unix(),
+						Username:  "system",
+						Content:   fmt.Sprintf("%s %s", username, UserLeft),
+						Edited:    false, // System messages can't be edited
+					}
+					chatServer.messages[DefaultRoom] = append([]Message{leaveMsg}, chatServer.messages[DefaultRoom]...)
+					log.Printf("[%s] ✓ Auto-sent leave message for %s from %s", socketIDStr, username, DefaultRoom)
+					
+					// Remove user from room members
+					if chatServer.roomMembers[DefaultRoom] != nil {
+						delete(chatServer.roomMembers[DefaultRoom], username)
+					}
+					
 					break
 				}
 			}
+			
+			// Prepare response with updated messages
+			messagesCopy := make(Messages)
+			for k, v := range chatServer.messages {
+				messagesCopy[k] = make([]Message, len(v))
+				copy(messagesCopy[k], v)
+			}
 			chatServer.mu.Unlock()
+			
+			// Broadcast updated messages (including leave message)
+			if defaultNsp != nil && disconnectedUsername != "" {
+				response := map[string]interface{}{
+					"messages": messagesCopy,
+				}
+				defaultNsp.Emit(EventServerMessage, response)
+				log.Printf("[%s] ✓ Broadcasted leave message for %s", socketIDStr, disconnectedUsername)
+			}
 			
 			// Broadcast updated user list
 			if defaultNsp != nil {
@@ -1388,55 +1532,21 @@ func main() {
 				log.Printf("[%s] Creating new room: %s", socketIDStr, room)
 				chatServer.messages[room] = []Message{}
 			}
+			
+			// Reject join messages from clients - server sends these automatically
+			if content == UserJoined {
+				log.Printf("[%s] ✗ Rejecting client-sent join message from %s - server sends these automatically", socketIDStr, username)
+				chatServer.mu.Unlock()
+				return
+			}
 
-			// Check if this is a join message and handle approval
-			isJoinMessage := content == UserJoined
-			needsApproval := false
-			if isJoinMessage {
-				// Always admit everyone to #general
-				if room == DefaultRoom {
-					log.Printf("[%s] User %s joining %s (always admitted)", socketIDStr, username, room)
-					needsApproval = false
-				} else {
-					// Check if user is already a member
-					if chatServer.roomMembers[room] == nil {
-						chatServer.roomMembers[room] = make(map[string]bool)
-					}
-
-					// Check if user is the creator of this room (first person)
-					isCreator := chatServer.roomCreators[room] == username
-
-					// Check if this is the first person in the room (no members yet)
-					isFirstPerson := len(chatServer.roomMembers[room]) == 0
-
-					if isFirstPerson {
-						// First person becomes the creator
-						chatServer.roomCreators[room] = username
-						log.Printf("[%s] User %s is the creator/first person in %s (auto-admitted)", socketIDStr, username, room)
-						needsApproval = false
-					} else if isCreator {
-						// Creator is always admitted
-						log.Printf("[%s] User %s is the creator of %s (auto-admitted)", socketIDStr, username, room)
-						needsApproval = false
-					} else if !chatServer.roomMembers[room][username] {
-						// User is not a member, need approval
-						needsApproval = true
-						requestKey := fmt.Sprintf("%s:%s", room, username)
-						if _, exists := chatServer.joinRequests[requestKey]; !exists {
-							// Create new join request
-							chatServer.joinRequests[requestKey] = &JoinRequest{
-								RequestingUser: username,
-								Room:           room,
-								Votes:          make(map[string]bool),
-								Timestamp:      time.Now().Unix(),
-							}
-							log.Printf("[%s] Created join request for %s to join %s", socketIDStr, username, room)
-						}
-					} else {
-						// User is already a member, allow the join message
-						log.Printf("[%s] User %s is already a member of %s", socketIDStr, username, room)
-					}
-				}
+			// Join message should already be sent on login via setUser
+			// DO NOT add join message here - it should already exist from login
+			// If it doesn't exist, that's a bug that should be fixed, not worked around
+			if username != "" && !chatServer.hasSentJoinMsg[username] {
+				log.Printf("[%s] ⚠ WARNING: Join message not sent for %s during login! This should not happen.", socketIDStr, username)
+				// Don't add join message here - it will cause issues
+				// Instead, just log the warning and continue with the user's message
 			}
 
 			// Update user last seen
@@ -1444,68 +1554,20 @@ func main() {
 
 			beforeCount := len(chatServer.messages[room])
 
-			// If needs approval, post a system message instead of the join message
-			if needsApproval {
-				// Post system message asking for approval
-				approvalMsg := Message{
-					Timestamp: time.Now().Unix(),
-					Username:  "system",
-					Content:   fmt.Sprintf("%s would like to join this room. Accept or Deny?", username),
-				}
-				chatServer.messages[room] = append([]Message{approvalMsg}, chatServer.messages[room]...)
-				log.Printf("[%s] Posted approval request message for %s to join %s", socketIDStr, username, room)
-
-				// Broadcast join request to room members
-				requestKey := fmt.Sprintf("%s:%s", room, username)
-				if req, exists := chatServer.joinRequests[requestKey]; exists {
-					// Get current room members
-					var roomMemberList []string
-					for member := range chatServer.roomMembers[room] {
-						roomMemberList = append(roomMemberList, member)
-					}
-
-					joinRequestData := map[string]interface{}{
-						"type":           "joinRequest",
-						"requestingUser": username,
-						"room":           room,
-						"timestamp":      req.Timestamp,
-						"roomMembers":    roomMemberList,
-					}
-					defaultNsp.Emit(EventServerJoinRequest, joinRequestData)
-					log.Printf("[%s] Broadcasted join request for %s to join %s", socketIDStr, username, room)
-				}
-			} else {
-				// Normal message or already-approved join
-				// Auto-upvote own message
-				one := 1
-				userVotes := make(map[string]string)
-				userVotes[username] = "up"
-				chatServer.messages[room] = append([]Message{{
-					Timestamp:    time.Now().Unix(),
-					Username:     username,
-					Content:      content,
-					EncryptedFor: encryptedFor,
-					ReplyTo:      replyTo,
-					VoteTotal:    &one,
-					UserVotes:    userVotes,
-				}}, chatServer.messages[room]...)
-
-				// If this is a join message and user is approved/auto-admitted, add them to room members
-				if isJoinMessage {
-					if chatServer.roomMembers[room] == nil {
-						chatServer.roomMembers[room] = make(map[string]bool)
-					}
-					chatServer.roomMembers[room][username] = true
-
-					// If this is the first person in the room, make them the creator
-					if len(chatServer.roomMembers[room]) == 1 {
-						chatServer.roomCreators[room] = username
-						log.Printf("[%s] Set %s as creator of %s", socketIDStr, username, room)
-					}
-
-					log.Printf("[%s] Added %s as member of %s", socketIDStr, username, room)
-				}
-			}
+			// Normal message handling (join messages are rejected earlier)
+			// Auto-upvote own message
+			one := 1
+			userVotes := make(map[string]string)
+			userVotes[username] = "up"
+			chatServer.messages[room] = append([]Message{{
+				Timestamp:    time.Now().Unix(),
+				Username:     username,
+				Content:      content,
+				EncryptedFor: encryptedFor,
+				ReplyTo:      replyTo,
+				VoteTotal:    &one,
+				UserVotes:    userVotes,
+			}}, chatServer.messages[room]...)
 
 			log.Printf("[%s] Added message to room %s (was %d, now has %d messages)", socketIDStr, room, beforeCount, len(chatServer.messages[room]))
 
@@ -2571,6 +2633,13 @@ func main() {
 				log.Printf("[%s] ✗ User %s attempted to edit message by %s (unauthorized)", socketIDStr, username, targetMessage.Username)
 				return
 			}
+			
+			// Prevent editing system messages
+			if targetMessage.Username == "system" {
+				chatServer.mu.Unlock()
+				log.Printf("[%s] ✗ User %s attempted to edit system message (not allowed)", socketIDStr, username)
+				return
+			}
 
 			// Update the message
 			targetMessage.Content = "" // Clear plaintext (encrypted only)
@@ -2711,11 +2780,12 @@ func main() {
 				}
 				chatServer.roomMembers[room][requestingUser] = true
 
-				// Post join message
+				// Post join message (system message, not editable)
 				joinMsg := Message{
 					Timestamp: time.Now().Unix(),
-					Username:  requestingUser,
-					Content:   UserJoined,
+					Username:  "system",
+					Content:   fmt.Sprintf("%s %s", requestingUser, UserJoined),
+					Edited:    false, // System messages can't be edited
 				}
 				if chatServer.messages[room] == nil {
 					chatServer.messages[room] = []Message{}
