@@ -3,12 +3,17 @@ import { styled } from 'styled-components';
 
 import { ScrollableDiv } from './styled/ScrollableDiv';
 
+export type SelectableListOption = {
+  value: string;
+  label: string;
+};
+
 type SelectableListProps = {
   id: string;
   label: string;
   value: string;
-  options: string[];
-  onSelect: (room: string) => void;
+  options: SelectableListOption[];
+  onSelect: (value: string) => void;
 };
 
 const Wrapper = styled.div`
@@ -35,14 +40,14 @@ export const SelectableList = ({
       <div>{label}:</div>
       <ScrollableDiv $padding="0px">
         {options.map((option) => {
-          const isActive = option === value;
+          const isActive = option.value === value;
           return (
             <Option
-              key={option}
+              key={option.value}
               $isActive={isActive}
-              onClick={() => onSelect(option)}
+              onClick={() => onSelect(option.value)}
             >
-              {option}
+              {option.label}
             </Option>
           );
         })}

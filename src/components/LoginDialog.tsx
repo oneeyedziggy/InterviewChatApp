@@ -10,6 +10,8 @@ import {
   storeKeys,
   loadKeys,
   clearKeys,
+  hasValidStoredKeys,
+  redirectToLogout,
   fetchServerPublicKey,
   decryptMessage,
   encryptForServer,
@@ -81,7 +83,16 @@ export const LoginDialog = ({
 
   const checkAutoLogin = useCallback(async () => {
     const storedKeys = loadKeys();
-    if (storedKeys && storedKeys.sessionId) {
+    const keysValid = await hasValidStoredKeys();
+
+    if (!keysValid) {
+      if (storedKeys?.sessionId) {
+        redirectToLogout();
+      }
+      return;
+    }
+
+    if (storedKeys?.sessionId) {
       console.log('[LoginDialog] Auto-login with stored keys');
       setUsername(storedKeys.username);
       onSuccess(storedKeys.sessionId, storedKeys.username);

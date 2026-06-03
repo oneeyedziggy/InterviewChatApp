@@ -8,6 +8,8 @@ import {
   storeKeys,
   loadKeys,
   loadKeysForUser,
+  hasValidStoredKeys,
+  redirectToLogout,
   getAllLocalUsers,
   getAllUsersWithPublicKeys,
   isLocalUser,
@@ -154,23 +156,51 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [serverPublicKey, setServerPublicKey] = useState<string>('');
 
+  const showUserSelect = localUsers.length > 1;
+
+  const applyLocalUsers = useCallback((users: string[], preselectSingle = false) => {
+    setLocalUsers(users);
+    if (preselectSingle && users.length === 1) {
+      setUsername(users[0]);
+      setSelectedUser(users[0]);
+    }
+  }, []);
+
   // Load local users (users with private keys) and check for auto-login on mount
   useEffect(() => {
-    const users = getAllLocalUsers();
-    console.log('[LoginPage] Loaded local users:', users);
-    setLocalUsers(users);
-    
-    const storedKeys = loadKeys();
-    if (storedKeys && storedKeys.sessionId) {
-      console.log('[LoginPage] Auto-login with stored keys');
-      window.location.href = '/';
-      return;
-    }
-    
-    fetchServerPublicKey().then(setServerPublicKey).catch((err) => {
-      console.error('[LoginPage] Failed to fetch server public key:', err);
-    });
-  }, []);
+    let cancelled = false;
+
+    (async () => {
+      const users = getAllLocalUsers();
+      console.log('[LoginPage] Loaded local users:', users);
+      if (!cancelled) {
+        applyLocalUsers(users, true);
+      }
+
+      const storedKeys = loadKeys();
+      const keysValid = await hasValidStoredKeys();
+
+      if (!keysValid) {
+        if (storedKeys?.sessionId) {
+          console.log('[LoginPage] Invalid or missing private key, redirecting to logout');
+          redirectToLogout();
+          return;
+        }
+      } else if (storedKeys?.sessionId) {
+        console.log('[LoginPage] Auto-login with stored keys');
+        window.location.href = '/';
+        return;
+      }
+
+      fetchServerPublicKey().then(setServerPublicKey).catch((err) => {
+        console.error('[LoginPage] Failed to fetch server public key:', err);
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applyLocalUsers]);
   
   // Refresh user list when page becomes visible (in case keys were added in another tab)
   useEffect(() => {
@@ -205,6 +235,10 @@ export default function LoginPage() {
   const refreshUserList = useCallback(() => {
     const users = getAllLocalUsers();
     setLocalUsers(users);
+    if (users.length === 1) {
+      setUsername(users[0]);
+      setSelectedUser(users[0]);
+    }
   }, []);
 
   useEffect(() => {
@@ -510,30 +544,31 @@ export default function LoginPage() {
             }
           }}
         >
-          <label htmlFor="userSelect" style={{ display: 'block', marginBottom: '5px', textAlign: 'left' }}>
-            {localUsers.length > 0 ? 'Select existing user:' : 'No saved users yet'}
-          </label>
-          <UserSelect
-            id="userSelect"
-            value={selectedUser}
-            onChange={(e) => {
-              setSelectedUser(e.target.value);
-              if (e.target.value) {
-                setUsername(e.target.value);
-              }
-            }}
-            disabled={localUsers.length === 0}
-          >
-            <option value="">
-              {localUsers.length > 0 ? '-- Select a user --' : '-- No users available --'}
-            </option>
-            {localUsers.map(user => (
-              <option key={user} value={user}>
-                {user}
-              </option>
-            ))}
-          </UserSelect>
-          {localUsers.length > 0 && <Divider>or</Divider>}
+          {showUserSelect && (
+            <>
+              <label htmlFor="userSelect" style={{ display: 'block', marginBottom: '5px', textAlign: 'left' }}>
+                Select existing user:
+              </label>
+              <UserSelect
+                id="userSelect"
+                value={selectedUser}
+                onChange={(e) => {
+                  setSelectedUser(e.target.value);
+                  if (e.target.value) {
+                    setUsername(e.target.value);
+                  }
+                }}
+              >
+                <option value="">-- Select a user --</option>
+                {localUsers.map(user => (
+                  <option key={user} value={user}>
+                    {user}
+                  </option>
+                ))}
+              </UserSelect>
+              <Divider>or</Divider>
+            </>
+          )}
           <Input
             id="username"
             label="username:"

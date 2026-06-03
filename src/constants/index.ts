@@ -24,6 +24,8 @@ export const SOCKET_EVENTS = {
   SERVER_JOIN_DENIED: 'serverJoinDenied',
   CLIENT_VOTE_MESSAGE: 'clientVoteMessage',
   CLIENT_EDIT_MESSAGE: 'clientEditMessage',
+  CLIENT_SEND_PUBLIC_KEY: 'clientSendPublicKey',
+  SERVER_PUBLIC_KEY_RECEIVED: 'serverPublicKeyReceived',
   SERVER_VOTE_UPDATE: 'serverVoteUpdate',
   INITIAL_DATA: 'initialData',
   CONNECT: 'connect',

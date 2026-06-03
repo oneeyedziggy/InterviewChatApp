@@ -5,12 +5,16 @@ import { SelectableList } from './SelectableList';
 
 describe('SelectableList component', () => {
   it('renders label and options', () => {
-    const options = ['Option 1', 'Option 2', 'Option 3'];
+    const options = [
+      { value: 'opt1', label: 'Option 1' },
+      { value: 'opt2', label: 'Option 2' },
+      { value: 'opt3', label: 'Option 3' },
+    ];
     render(
       <SelectableList
         id="test-list"
         label="Test List"
-        value="Option 1"
+        value="opt1"
         options={options}
         onSelect={vi.fn()}
       />
@@ -27,8 +31,12 @@ describe('SelectableList component', () => {
       <SelectableList
         id="test-list"
         label="Test"
-        value="Option 2"
-        options={['Option 1', 'Option 2', 'Option 3']}
+        value="opt2"
+        options={[
+          { value: 'opt1', label: 'Option 1' },
+          { value: 'opt2', label: 'Option 2' },
+          { value: 'opt3', label: 'Option 3' },
+        ]}
         onSelect={vi.fn()}
       />
     );
@@ -46,8 +54,11 @@ describe('SelectableList component', () => {
       <SelectableList
         id="test-list"
         label="Test"
-        value="Option 1"
-        options={['Option 1', 'Option 2']}
+        value="opt1"
+        options={[
+          { value: 'opt1', label: 'Option 1' },
+          { value: 'opt2', label: 'Option 2' },
+        ]}
         onSelect={vi.fn()}
       />
     );
@@ -67,15 +78,18 @@ describe('SelectableList component', () => {
       <SelectableList
         id="test-list"
         label="Test"
-        value="Option 1"
-        options={['Option 1', 'Option 2']}
+        value="opt1"
+        options={[
+          { value: 'opt1', label: 'Option 1' },
+          { value: 'opt2', label: 'Option 2' },
+        ]}
         onSelect={onSelect}
       />
     );
 
     await user.click(screen.getByText('Option 2'));
 
-    expect(onSelect).toHaveBeenCalledWith('Option 2');
+    expect(onSelect).toHaveBeenCalledWith('opt2');
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
@@ -100,7 +114,10 @@ describe('SelectableList component', () => {
         id="test-list"
         label="Test"
         value="NonExistent"
-        options={['Option 1', 'Option 2']}
+        options={[
+          { value: 'opt1', label: 'Option 1' },
+          { value: 'opt2', label: 'Option 2' },
+        ]}
         onSelect={vi.fn()}
       />
     );
@@ -139,7 +156,11 @@ describe('SelectableList component', () => {
         id="test-list"
         label="Test"
         value=""
-        options={['Option 1', 'Option 2', 'Option 3']}
+        options={[
+          { value: 'opt1', label: 'Option 1' },
+          { value: 'opt2', label: 'Option 2' },
+          { value: 'opt3', label: 'Option 3' },
+        ]}
         onSelect={onSelect}
       />
     );
@@ -149,9 +170,9 @@ describe('SelectableList component', () => {
     await user.click(screen.getByText('Option 3'));
 
     expect(onSelect).toHaveBeenCalledTimes(3);
-    expect(onSelect).toHaveBeenNthCalledWith(1, 'Option 1');
-    expect(onSelect).toHaveBeenNthCalledWith(2, 'Option 2');
-    expect(onSelect).toHaveBeenNthCalledWith(3, 'Option 3');
+    expect(onSelect).toHaveBeenNthCalledWith(1, 'opt1');
+    expect(onSelect).toHaveBeenNthCalledWith(2, 'opt2');
+    expect(onSelect).toHaveBeenNthCalledWith(3, 'opt3');
   });
 });
 

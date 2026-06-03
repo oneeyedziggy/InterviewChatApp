@@ -17,10 +17,17 @@ import { SOCKET_EVENTS, DEFAULT_ROOM, SYSTEM_MESSAGES, FEATURES } from '../const
 import { 
   storeUserPublicKeys, 
   loadUserPublicKeys, 
-  encryptForAllUsers, 
+  encryptForAllUsers,
+  filterPubKeysForEncryption,
   decryptMessageForUser,
-  loadKeys 
+  loadKeys,
+  hasValidStoredKeys,
+  redirectToLogout,
 } from '../utils/gpg';
+import { getDmRoomId, getRoomDisplayLabel } from '../utils/dmRooms';
+import { blockUser, getBlockedUsers } from '../utils/userSettings';
+import { canUserViewMessage } from '../utils/messages';
+import { UserListPanel } from '../components/UserListPanel';
 import * as openpgp from 'openpgp';
 
 const mdParse = SimpleMarkdown.defaultBlockParse;
@@ -121,8 +128,10 @@ const MessageWithReplies = ({
     console.log(`[MessageWithReplies] Message ${message.timestamp}: found ${replies.length} replies`);
   }
   
-  // Sort replies by timestamp (oldest first)
-  const sortedReplies = [...replies].sort((a, b) => a.timestamp - b.timestamp);
+  // Sort replies by timestamp (oldest first); hide blocked / undecryptable
+  const sortedReplies = [...replies]
+    .filter((r) => canUserViewMessage(r, username))
+    .sort((a, b) => a.timestamp - b.timestamp);
   
   // Check if user has access to this message
   let hasAccess = false;
@@ -226,14 +235,12 @@ const MessageWithReplies = ({
     
     if (!canDecrypt && (message.encryptedFor || message.versions)) {
       const localTime = new Date(message.timestamp * 1000).toLocaleString();
-      const isSystemMessage = message.username === 'system';
-      const displayUsername = isSystemMessage ? 'Server' : message.username;
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span>🔒</span>
           <span>
             <span title={`Sent at ${localTime}`} style={{ cursor: 'help', textDecoration: 'underline', textDecorationStyle: 'dotted' }}>
-              {displayUsername}
+              {message.username}
             </span>
             : [Encrypted message]
           </span>
@@ -275,26 +282,11 @@ const MessageWithReplies = ({
         {(() => {
           // Format timestamp to local time for tooltip
           const localTime = new Date(message.timestamp * 1000).toLocaleString();
-          const isSystemMessage = message.username === 'system';
-          const displayUsername = isSystemMessage ? 'Server' : message.username;
-          
-          // System messages: medium grey, one line, no markdown rendering
-          if (isSystemMessage) {
-            return (
-              <span style={{ color: '#888', fontSize: '0.95em', whiteSpace: 'nowrap' }}>
-                <span title={`Sent at ${localTime}`} style={{ cursor: 'help', textDecoration: 'underline', textDecorationStyle: 'dotted' }}>
-                  {displayUsername}
-                </span>
-                : {message.content || '[No content]'}
-              </span>
-            );
-          }
-          
-          // Regular messages: render username separately with tooltip, then render content as markdown
+          // Render username separately with tooltip, then render content as markdown
           return (
             <span>
               <span title={`Sent at ${localTime}`} style={{ cursor: 'help', textDecoration: 'underline', textDecorationStyle: 'dotted' }}>
-                {displayUsername}
+                {message.username}
               </span>
               : {mdStringToReact(message.content || '[No content]')}
               {message.edited && (
@@ -341,8 +333,8 @@ const MessageWithReplies = ({
       )}
       
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', position: 'relative', zIndex: 1 }}>
-        {/* Voting UI (if enabled) - disabled for system messages */}
-        {FEATURES.MESSAGE_VOTING && onVote && username && message.username !== 'system' && (
+        {/* Voting UI (if enabled) */}
+        {FEATURES.MESSAGE_VOTING && onVote && username && (
           <div style={{ 
             display: 'flex', 
             flexDirection: 'column', 
@@ -540,6 +532,7 @@ const transformMessages = (
   messages: Messages, 
   currentRoom: string, 
   username?: string,
+  blockedUsers: string[] = [],
   onRequestAccess?: (messageUsername: string, room: string, messageTimestamp: number) => void,
   onGrantAccess?: (requestingUser: string, originalRoom: string, messageTimestamp: number, plaintext?: string) => void,
   onSelectVersion?: (room: string, messageTimestamp: number, versionIndex: number) => void,
@@ -556,8 +549,11 @@ const transformMessages = (
     // Filter out reply messages (they'll be shown as children of their parent)
     // Check both undefined and null for replyTo
     const topLevelMessages = allRoomMessages.filter(msg => !msg.replyTo && msg.replyTo !== 0);
+    const visibleMessages = topLevelMessages.filter((msg) =>
+      canUserViewMessage(msg, username)
+    );
     // Sort by timestamp (newest first for reverse column)
-    const sortedMessages = [...topLevelMessages].sort((a, b) => b.timestamp - a.timestamp);
+    const sortedMessages = [...visibleMessages].sort((a, b) => b.timestamp - a.timestamp);
     
     return (
       <ScrollableDiv $flexDirection="column-reverse">
@@ -623,6 +619,7 @@ const Home = () => {
     room: string;
     timestamp: number;
   }>>([]);
+  const [blockedUsers, setBlockedUsers] = useState<string[]>([]);
 
   useEffect(() => {
     setRoomNotifications((rn) => {
@@ -635,16 +632,32 @@ const Home = () => {
     });
   }, [currentRoom]);
 
-  // Check authentication on mount and redirect to login if needed
+  // Check private keys and session on mount; redirect to logout if invalid
   useEffect(() => {
-    const storedKeys = loadKeys();
-    if (storedKeys && storedKeys.sessionId) {
-      setAuthToken(storedKeys.sessionId);
-      setUsername(storedKeys.username);
-    } else {
-      // No auth token, redirect to login
-      window.location.href = '/login';
-    }
+    let cancelled = false;
+
+    (async () => {
+      const storedKeys = loadKeys();
+      const keysValid = await hasValidStoredKeys();
+
+      if (!keysValid || !storedKeys?.sessionId) {
+        redirectToLogout();
+        return;
+      }
+
+      if (!cancelled) {
+        setAuthToken(storedKeys.sessionId);
+        setUsername(storedKeys.username);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setBlockedUsers(getBlockedUsers());
   }, []);
 
   useEffect(() => {
@@ -1565,6 +1578,15 @@ const Home = () => {
       console.log('[Socket] STATUS received:', msg);
     });
 
+    socket.on(SOCKET_EVENTS.SERVER_PUBLIC_KEY_RECEIVED, (data) => {
+      if (data?.fromUser && data?.publicKey) {
+        const userPubKeys = loadUserPublicKeys() || {};
+        userPubKeys[data.fromUser] = data.publicKey;
+        storeUserPublicKeys(userPubKeys);
+        console.log('[Socket] ✓ Stored public key from', data.fromUser);
+      }
+    });
+
     socket.on(SOCKET_EVENTS.CONNECT, () => {
       console.log('[Socket] ===== CONNECTED =====');
       console.log('[Socket] Socket ID:', socket.id);
@@ -1676,7 +1698,16 @@ const Home = () => {
       console.log('[doSend] Editing message with timestamp:', editingMessageTimestamp);
       
       try {
-        encryptedFor = await encryptForAllUsers(userDraftMessage, userPubKeys, keys.publicKey, username);
+        const filteredKeys = filterPubKeysForEncryption(userPubKeys, {
+          room: currentRoom,
+          blockedUsers,
+        });
+        encryptedFor = await encryptForAllUsers(
+          userDraftMessage,
+          filteredKeys,
+          keys.publicKey,
+          username
+        );
         console.log('[doSend] ✓ Edit message encrypted for all users');
       } catch (error) {
         console.error('[doSend] ✗ Failed to encrypt edit message:', error);
@@ -1699,7 +1730,16 @@ const Home = () => {
     
     console.log('[doSend] Encrypting message for', Object.keys(userPubKeys).length, 'users (including self)');
     try {
-      encryptedFor = await encryptForAllUsers(userDraftMessage, userPubKeys, keys.publicKey, username);
+      const filteredKeys = filterPubKeysForEncryption(userPubKeys, {
+        room: currentRoom,
+        blockedUsers,
+      });
+      encryptedFor = await encryptForAllUsers(
+        userDraftMessage,
+        filteredKeys,
+        keys.publicKey,
+        username
+      );
       console.log('[doSend] ✓ Message encrypted for all users');
     } catch (error) {
       console.error('[doSend] ✗ Failed to encrypt message:', error);
@@ -1764,8 +1804,49 @@ const Home = () => {
   };
 
   const onRoomSelectionChange = (newRoom: string) => {
-    setCurrentRoom(newRoom?.replace(/-\(\d+ NEW!\)/, ''));
+    setCurrentRoom(newRoom);
   };
+
+  const handleMessageUser = useCallback(
+    (targetUser: string) => {
+      if (!username || targetUser === username) return;
+      const dmRoomId = getDmRoomId(username, targetUser);
+      if (!roomList.includes(dmRoomId)) {
+        const activeSocket = (window as any).__socket || socket;
+        if (activeSocket) {
+          activeSocket.emit(SOCKET_EVENTS.CLIENT_NEW_ROOM, dmRoomId);
+        }
+      }
+      setLeftRooms((prev) => {
+        const next = new Set(prev);
+        next.delete(dmRoomId);
+        return next;
+      });
+      setCurrentRoom(dmRoomId);
+    },
+    [username, roomList]
+  );
+
+  const handleSendPublicKeyToUser = useCallback(
+    (targetUser: string) => {
+      const keys = loadKeys();
+      const activeSocket = (window as any).__socket || socket;
+      if (!keys?.publicKey || !activeSocket || !username) return;
+      activeSocket.emit(SOCKET_EVENTS.CLIENT_SEND_PUBLIC_KEY, {
+        targetUser,
+        fromUser: username,
+        publicKey: keys.publicKey,
+      });
+      console.log('[UserList] Sent public key to', targetUser);
+    },
+    [username]
+  );
+
+  const handleBlockUser = useCallback((targetUser: string) => {
+    blockUser(targetUser);
+    setBlockedUsers(getBlockedUsers());
+    console.log('[UserList] Blocked user', targetUser);
+  }, []);
 
   // Request access to an encrypted message
   const handleRequestAccess = (messageUsername: string, room: string, messageTimestamp: number) => {
@@ -2049,7 +2130,16 @@ const Home = () => {
       
       // Encrypt for all users including the sender
       // encryptForAllUsers will use senderPublicKey and senderUsername parameters to ensure sender is included
-      const encryptedFor = await encryptForAllUsers(plaintext, userPubKeys, keys.publicKey, username);
+      const filteredKeys = filterPubKeysForEncryption(userPubKeys, {
+        room: originalRoom,
+        blockedUsers,
+      });
+      const encryptedFor = await encryptForAllUsers(
+        plaintext,
+        filteredKeys,
+        keys.publicKey,
+        username
+      );
       
       console.log('[GrantAccess] ===== RE-ENCRYPTION COMPLETE =====');
       console.log('[GrantAccess] Encrypted for', Object.keys(encryptedFor).length, 'users');
@@ -2301,13 +2391,13 @@ const Home = () => {
               label={'Rooms'}
               value={currentRoom}
               options={roomList
-                .filter(room => !leftRooms.has(room)) // Filter out left rooms
-                .map(
-                  (room) =>
-                    `${room}${
-                      roomNotifications[room] ? '-' + roomNotifications[room] : ''
-                    }`
-                )}
+                .filter((room) => !leftRooms.has(room))
+                .map((room) => ({
+                  value: room,
+                  label: `${getRoomDisplayLabel(room, username)}${
+                    roomNotifications[room] ? `-${roomNotifications[room]}` : ''
+                  }`,
+                }))}
               onSelect={onRoomSelectionChange}
             />
             <hr />
@@ -2328,7 +2418,7 @@ const Home = () => {
             </WiderButton>
           </SideFlexColumn>
           <MiddleFlexColumn>
-            {transformMessages(chatValues, currentRoom, username, handleRequestAccess, handleGrantAccess, handleSelectVersion, chatValues, (timestamp: number) => {
+            {transformMessages(chatValues, currentRoom, username, blockedUsers, handleRequestAccess, handleGrantAccess, handleSelectVersion, chatValues, (timestamp: number) => {
               console.log('[onReply] Reply button clicked, setting replyingTo to:', timestamp);
               setReplyingTo(timestamp);
               setEditingMessageTimestamp(undefined); // Clear editing when replying
@@ -2394,85 +2484,16 @@ const Home = () => {
             </FlexRow>
           </MiddleFlexColumn>
           <SideFlexColumn>
-            <div style={{ marginBottom: '5px' }}>Users:</div>
-            <ScrollableDiv $padding="0px">
-              {/* Show logged in first, then active but not logged in */}
-              {loggedInUsers.length > 0 && (
-                <>
-                  <div style={{ fontSize: '11px', color: '#666', marginTop: '4px', marginBottom: '2px', fontWeight: 'bold' }}>
-                    Logged In ({loggedInUsers.length}):
-                  </div>
-                  {loggedInUsers
-                    .filter((user) => user !== 'undefined')
-                    .sort((a, b) => {
-                      const aSeen = userLastSeen[a] || 0;
-                      const bSeen = userLastSeen[b] || 0;
-                      return bSeen - aSeen;
-                    })
-                    .map((user) => {
-                      const lastSeen = userLastSeen[user] || 0;
-                      const isOnline = lastSeen > 0 && (Date.now() - lastSeen) < 300000;
-                      return (
-                        <div
-                          key={user}
-                          style={{
-                            border: '1px solid #556',
-                            backgroundColor: user === username ? '#aab' : '#fffff00',
-                            color: isOnline ? '#333344' : '#999',
-                            fontWeight: user === username ? 700 : 300,
-                            margin: '0px',
-                            padding: '2px 5px',
-                            cursor: 'pointer',
-                            fontSize: '12px',
-                          }}
-                        >
-                          {user} {isOnline ? '🟢' : '⚫'}
-                        </div>
-                      );
-                    })}
-                </>
-              )}
-              {activeUsers.length > 0 && (
-                <>
-                  <div style={{ fontSize: '11px', color: '#666', marginTop: loggedInUsers.length > 0 ? '8px' : '4px', marginBottom: '2px', fontWeight: 'bold' }}>
-                    Active (Not Logged In) ({activeUsers.length}):
-                  </div>
-                  {activeUsers
-                    .filter((user) => user !== 'undefined')
-                    .sort((a, b) => {
-                      const aSeen = userLastSeen[a] || 0;
-                      const bSeen = userLastSeen[b] || 0;
-                      return bSeen - aSeen;
-                    })
-                    .map((user) => {
-                      const lastSeen = userLastSeen[user] || 0;
-                      const isOnline = lastSeen > 0 && (Date.now() - lastSeen) < 300000;
-                      return (
-                        <div
-                          key={user}
-                          style={{
-                            border: '1px solid #556',
-                            backgroundColor: user === username ? '#aab' : '#fffff00',
-                            color: '#999', // Always grey for not logged in
-                            fontWeight: user === username ? 700 : 300,
-                            margin: '0px',
-                            padding: '2px 5px',
-                            cursor: 'pointer',
-                            fontSize: '12px',
-                          }}
-                        >
-                          {user} ⚫
-                        </div>
-                      );
-                    })}
-                </>
-              )}
-              {loggedInUsers.length === 0 && activeUsers.length === 0 && (
-                <div style={{ fontSize: '12px', color: '#999', padding: '4px' }}>
-                  No users
-                </div>
-              )}
-            </ScrollableDiv>
+            <UserListPanel
+              currentUsername={username}
+              loggedInUsers={loggedInUsers}
+              activeUsers={activeUsers}
+              userLastSeen={userLastSeen}
+              blockedUsers={blockedUsers}
+              onMessageUser={handleMessageUser}
+              onSendPublicKey={handleSendPublicKeyToUser}
+              onBlockUser={handleBlockUser}
+            />
             {activeJoinRequests
               .filter(req => req.room === currentRoom)
               .map((req) => (
@@ -2559,16 +2580,11 @@ const Home = () => {
                 socket = undefined as any;
                 (window as any).__socket = undefined;
                 
-                // Clear session (but keep keys so user can log back in)
-                const { clearSession } = await import('../utils/gpg');
-                clearSession();
-                
-                // Clear state
+                // Clear state before redirect
                 setAuthToken('');
                 setUsername('');
                 
-                // Redirect to login page
-                window.location.href = '/login';
+                redirectToLogout();
               }}
               style={{ backgroundColor: '#e24a4a', color: 'white', marginTop: '10px' }}
             >

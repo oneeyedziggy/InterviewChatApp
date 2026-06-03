@@ -11,6 +11,7 @@ All servers are compatible with the existing client and can be run simultaneousl
 ## Prerequisites
 
 1. Build the Next.js client first:
+
 ```bash
 npm run build
 ```
@@ -32,12 +33,13 @@ Runs on `http://localhost:3000`
 ```bash
 cd server-go
 go mod download
-go run main.go
+go run .
 ```
 
 Runs on `http://localhost:3001` (or set `PORT` environment variable)
 
 **First time setup:**
+
 ```bash
 cd server-go
 go mod download
@@ -60,19 +62,22 @@ Runs on `http://localhost:3002` (or set `PORT` environment variable)
 You can run all three servers at the same time on different ports:
 
 **Terminal 1:**
+
 ```bash
 npm run dev
 # Next.js server on port 3000
 ```
 
 **Terminal 2:**
+
 ```bash
 cd server-go
-PORT=3001 go run main.go
+PORT=3001 go run .
 # Go server on port 3001
 ```
 
 **Terminal 3:**
+
 ```bash
 cd server-express
 PORT=3002 npm run dev
@@ -80,20 +85,23 @@ PORT=3002 npm run dev
 ```
 
 Then access:
-- Next.js: http://localhost:3000
-- Go: http://localhost:3001
-- Express: http://localhost:3002
+
+- Next.js: [http://localhost:3000](http://localhost:3000)
+- Go: [http://localhost:3001](http://localhost:3001)
+- Express: [http://localhost:3002](http://localhost:3002)
 
 ## Server Comparison
 
-| Feature | Next.js Server | Go Server | Express Server |
-|---------|---------------|-----------|----------------|
-| Language | TypeScript/Node.js | Go | JavaScript/Node.js |
-| Static Serving | Next.js handler | Go file server | Express static |
-| Socket.IO | Full support | Full support | Full support |
-| Hot Reloading | Next.js dev mode | Manual restart | Nodemon |
-| Build Required | No (dev mode) | Yes | Yes |
-| Port (default) | 3000 | 3001 | 3002 |
+
+| Feature        | Next.js Server     | Go Server      | Express Server     |
+| -------------- | ------------------ | -------------- | ------------------ |
+| Language       | TypeScript/Node.js | Go             | JavaScript/Node.js |
+| Static Serving | Next.js handler    | Go file server | Express static     |
+| Socket.IO      | Full support       | Full support   | Full support       |
+| Hot Reloading  | Next.js dev mode   | Manual restart | Nodemon            |
+| Build Required | No (dev mode)      | Yes            | Yes                |
+| Port (default) | 3000               | 3001           | 3002               |
+
 
 ## Configuration
 
@@ -101,34 +109,38 @@ All servers support the `PORT` environment variable:
 
 ```bash
 PORT=4000 npm run dev          # Next.js
-PORT=4000 go run main.go       # Go
+PORT=4000 go run .       # Go
 PORT=4000 npm start            # Express
 ```
 
 ## Important Notes
 
 1. **Build First**: Always run `npm run build` before starting Go or Express servers, as they serve the built `.next` directory.
-
 2. **Separate State**: Each server maintains its own in-memory state (users, messages, rooms). They don't share data.
-
 3. **Socket.IO Compatibility**: All servers use Socket.IO protocol, so clients can connect to any server.
-
 4. **API Compatibility**: All servers implement the same `/api/login` endpoint with identical behavior.
 
 ## Troubleshooting
 
 ### ".next directory not found"
+
 - Run `npm run build` in the project root first
 - Make sure you're running the command from the correct directory
 
-### "Port already in use"
-- Change the `PORT` environment variable
-- Or stop the server using that port (see "Killing and Restarting Servers" below)
+### "Port already in use" (Go server)
+
+A previous `go run .` may still be listening (process name `chat-server-go`). Either:
+
+- Run `./start.sh` from `server-go` (kills the old Go server, then starts a new one), or
+- Free the port manually: `lsof -i :3001` then `kill <pid>`, or
+- Use a different port: `PORT=3002 go run .`
 
 ### Go server: "module not found"
+
 - Run `go mod download` in the `server-go` directory
 
 ### Express server: "Cannot find module"
+
 - Run `npm install` in the `server-express` directory
 
 ## Killing and Restarting Servers
@@ -136,6 +148,7 @@ PORT=4000 npm start            # Express
 ### Find and Kill Process on a Port
 
 **Linux/macOS:**
+
 ```bash
 # Find process using port 3000
 lsof -ti:3000
@@ -148,6 +161,7 @@ lsof -ti:3000 | xargs kill -9
 ```
 
 **Alternative (if lsof not available):**
+
 ```bash
 # Find process using port 3000
 fuser 3000/tcp
@@ -157,6 +171,7 @@ fuser -k 3000/tcp
 ```
 
 **Using netstat (older systems):**
+
 ```bash
 # Find process using port 3000
 netstat -tulpn | grep :3000
@@ -168,18 +183,21 @@ kill -9 <PID>
 ### Quick Restart Commands
 
 **Next.js Server (Port 3000):**
+
 ```bash
 # Kill and restart
 kill -9 $(lsof -ti:3000) 2>/dev/null; npm run dev
 ```
 
 **Go Server (Port 3001):**
+
 ```bash
 # Kill and restart
-kill -9 $(lsof -ti:3001) 2>/dev/null; cd server-go && PORT=3001 go run main.go
+kill -9 $(lsof -ti:3001) 2>/dev/null; cd server-go && PORT=3001 go run .
 ```
 
 **Express Server (Port 3002):**
+
 ```bash
 # Kill and restart
 kill -9 $(lsof -ti:3002) 2>/dev/null; cd server-express && PORT=3002 npm run dev

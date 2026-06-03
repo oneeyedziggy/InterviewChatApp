@@ -1,4 +1,6 @@
 import * as openpgp from 'openpgp';
+import { getDmParticipants, isDmRoom } from './dmRooms';
+import { getBlockedUsers } from './userSettings';
 
 const STORAGE_KEYS = {
   USERNAME: 'gpg_username',
@@ -240,6 +242,41 @@ export function loadKeys(): StoredKeys | null {
 }
 
 /**
+ * Returns true if the armored string is a parseable OpenPGP private key.
+ */
+export async function isValidPrivateKey(privateKeyArmored: string): Promise<boolean> {
+  if (!privateKeyArmored?.trim()) {
+    return false;
+  }
+
+  try {
+    await openpgp.readPrivateKey({ armoredKey: privateKeyArmored });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Returns true if the current user has stored keys with a valid private key.
+ */
+export async function hasValidStoredKeys(): Promise<boolean> {
+  const keys = loadKeys();
+  if (!keys) {
+    return false;
+  }
+  return isValidPrivateKey(keys.privateKey);
+}
+
+/**
+ * Navigate to the logout page (clears session, then sends user to login).
+ */
+export function redirectToLogout(): void {
+  if (typeof window === 'undefined') return;
+  window.location.href = '/logout';
+}
+
+/**
  * Clear session for current user (logout) - keeps keys so user can log back in
  */
 export function clearSession(): void {
@@ -408,6 +445,38 @@ export function loadUserPublicKeys(): Record<string, string> | null {
     console.error('[GPG] ✗ Failed to parse user public keys:', e);
     return null;
   }
+}
+
+/**
+ * Filter public keys for outbound encryption (respects blocks and DM room scope).
+ */
+export function filterPubKeysForEncryption(
+  userPubKeys: Record<string, string>,
+  options: { room?: string; blockedUsers?: string[] }
+): Record<string, string> {
+  const blocked = new Set(options.blockedUsers ?? getBlockedUsers());
+  const filtered: Record<string, string> = {};
+
+  for (const [user, key] of Object.entries(userPubKeys)) {
+    if (!blocked.has(user)) {
+      filtered[user] = key;
+    }
+  }
+
+  if (options.room && isDmRoom(options.room)) {
+    const participants = getDmParticipants(options.room);
+    if (participants) {
+      const dmKeys: Record<string, string> = {};
+      for (const p of participants) {
+        if (filtered[p]) {
+          dmKeys[p] = filtered[p];
+        }
+      }
+      return dmKeys;
+    }
+  }
+
+  return filtered;
 }
 
 /**

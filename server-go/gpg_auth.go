@@ -99,10 +99,10 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if userPubKey == req.PublicKey {
 			// Public key matches - this is a login attempt, send challenge
 			log.Printf("[handleLogin] User exists with matching public key, sending challenge: %s", req.Username)
-			
+
 			// Generate challenge UUID
 			challengeUUID := uuid.New().String()
-			
+
 			// Encrypt challenge with user's public key
 			userKey, err := crypto.NewKeyFromArmored(userPubKey)
 			if err != nil {
@@ -112,7 +112,7 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
-			
+
 			userKeyRing, err := crypto.NewKeyRing(userKey)
 			if err != nil {
 				log.Printf("[handleLogin] ✗ Failed to create keyring: %v", err)
@@ -121,7 +121,7 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
-			
+
 			message := crypto.NewPlainMessage([]byte(challengeUUID))
 			encrypted, err := userKeyRing.Encrypt(message, nil)
 			if err != nil {
@@ -131,7 +131,7 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
-			
+
 			encryptedArmored, err := encrypted.GetArmored()
 			if err != nil {
 				log.Printf("[handleLogin] ✗ Failed to armor encrypted challenge: %v", err)
@@ -140,10 +140,10 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
-			
+
 			// Store challenge temporarily
 			cs.sessionCache.Set("challenge_"+req.Username, challengeUUID)
-			
+
 			log.Printf("[handleLogin] ✓ Challenge sent to existing user: %s", req.Username)
 			json.NewEncoder(w).Encode(LoginResponse{
 				Challenge: encryptedArmored,
@@ -152,10 +152,10 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		} else {
 			// Public key doesn't match - reject registration attempt
 			log.Printf("[handleLogin] ✗ Username already exists with different public key: %s", req.Username)
-		json.NewEncoder(w).Encode(LoginResponse{
-			Error: "Username already exists",
-		})
-		return
+			json.NewEncoder(w).Encode(LoginResponse{
+				Error: "Username already exists",
+			})
+			return
 		}
 	}
 
@@ -335,18 +335,6 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DeleteUserRequest represents a request to delete a user account
-type DeleteUserRequest struct {
-	Username  string `json:"username"`
-	SessionID string `json:"sessionId"`
-}
-
-// DeleteUserResponse represents the response from deleting a user
-type DeleteUserResponse struct {
-	Success bool   `json:"success"`
-	Error   string `json:"error,omitempty"`
-}
-
 // handleDeleteUser handles user account deletion
 func (cs *ChatServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -400,26 +388,26 @@ func (cs *ChatServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 
 	// Delete user from server state
 	cs.mu.Lock()
-	
+
 	// Remove from users map
 	delete(cs.users, req.Username)
-	
+
 	// Remove from userPubKeys
 	delete(cs.userPubKeys, req.Username)
-	
+
 	// Remove from roomMembers
 	for room := range cs.roomMembers {
 		if cs.roomMembers[room] != nil {
 			delete(cs.roomMembers[room], req.Username)
 		}
 	}
-	
+
 	// Remove from userLastSeen
 	delete(cs.userLastSeen, req.Username)
-	
+
 	// Remove session from cache
 	cs.sessionCache.Delete(req.SessionID)
-	
+
 	cs.mu.Unlock()
 
 	// Save state to disk
