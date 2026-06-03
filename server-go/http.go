@@ -40,6 +40,11 @@ func newHTTPHandler(chatServer *ChatServer, sio *socketio.Server) http.Handler {
 	})
 	log.Println("Registered /api/login handler")
 
+	mux.HandleFunc("/api/auth", func(w http.ResponseWriter, r *http.Request) {
+		chatServer.handleAuth(w, r)
+	})
+	log.Println("Registered /api/auth handler")
+
 	mux.HandleFunc("/api/delete-user", func(w http.ResponseWriter, r *http.Request) {
 		chatServer.handleDeleteUser(w, r)
 	})

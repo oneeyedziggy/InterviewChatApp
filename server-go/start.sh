@@ -7,6 +7,10 @@
 # Default port (can be overridden with PORT environment variable)
 PORT=${PORT:-3001}
 
+# Default CLEAR_ON_START to false so history is preserved unless explicitly requested
+CLEAR_ON_START=${CLEAR_ON_START:-false}
+export CLEAR_ON_START
+
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -61,6 +65,21 @@ echo ""
 echo "Starting Go server on port $PORT..."
 echo ""
 
+# Locate Go binary: prefer `go` on PATH, fallback to known local install
+GO_CMD="${GO_CMD:-$(command -v go 2>/dev/null || true)}"
+if [ -z "$GO_CMD" ]; then
+    # fallback to bundled local install path used during development
+    if [ -x "/tmp/go1.24.6-install/go/bin/go" ]; then
+        GO_CMD="/tmp/go1.24.6-install/go/bin/go"
+    fi
+fi
+
+if [ -z "$GO_CMD" ]; then
+    echo "FATAL: 'go' not found in PATH and no fallback available. Install Go or set GO_CMD." >&2
+    exit 1
+fi
+
+echo "Using Go command: $GO_CMD"
 # Start the server
-PORT=$PORT go run .
+PORT=$PORT "$GO_CMD" run .
 

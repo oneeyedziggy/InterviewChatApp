@@ -564,3 +564,116 @@ export async function decryptMessageForUser(
   }
 }
 
+/**
+ * Automatically re-establish session using stored credentials when session becomes invalid.
+ * This prevents losing the message window context when server restarts.
+ * Returns new sessionId if successful, null if re-login fails.
+ */
+export async function attemptAutoRelogin(): Promise<string | null> {
+  try {
+    const keys = loadKeys();
+    if (!keys) {
+      console.warn('[GPG] No stored keys available for auto-relogin');
+      return null;
+    }
+
+    console.log('[GPG] Attempting auto-relogin for user:', keys.username);
+
+    // Step 1: Send username and public key to server
+    const loginResponse = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: keys.username,
+        publicKey: keys.publicKey,
+      }),
+    });
+
+    if (!loginResponse.ok) {
+      console.warn('[GPG] Auto-relogin: initial login request failed');
+      return null;
+    }
+
+    const loginData = await loginResponse.json();
+
+    if (loginData.error) {
+      console.warn('[GPG] Auto-relogin: server returned error:', loginData.error);
+      return null;
+    }
+
+    // If new user was registered (unlikely after server restart), return sessionId
+    if (loginData.sessionId && !loginData.challenge) {
+      console.log('[GPG] ✓ Auto-relogin successful (new registration)');
+      // Store the new session ID
+      storeKeys({
+        ...keys,
+        sessionId: loginData.sessionId,
+      });
+      return loginData.sessionId;
+    }
+
+    // If we got a challenge, this is an existing user - perform challenge-response
+    if (loginData.challenge) {
+      console.log('[GPG] Received challenge, performing challenge-response for auto-relogin');
+
+      try {
+        // Decrypt the challenge with our private key
+        const decryptedUUID = await decryptMessage(
+          loginData.challenge,
+          keys.privateKey
+        );
+
+        // Encrypt the UUID with server's public key
+        const encryptedResponse = await encryptForServer(
+          decryptedUUID,
+          keys.serverPublicKey
+        );
+
+        // Send the encrypted response
+        const verifyResponse = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: keys.username,
+            encryptedUUID: encryptedResponse,
+          }),
+        });
+
+        if (!verifyResponse.ok) {
+          console.warn('[GPG] Auto-relogin: challenge-response request failed');
+          return null;
+        }
+
+        const verifyData = await verifyResponse.json();
+
+        if (verifyData.error) {
+          console.warn('[GPG] Auto-relogin: challenge-response rejected:', verifyData.error);
+          return null;
+        }
+
+        if (verifyData.sessionId) {
+          console.log('[GPG] ✓ Auto-relogin successful (challenge-response)');
+          // Store the new session ID
+          storeKeys({
+            ...keys,
+            sessionId: verifyData.sessionId,
+          });
+          return verifyData.sessionId;
+        }
+
+        console.warn('[GPG] Auto-relogin: no sessionId in challenge-response');
+        return null;
+      } catch (err) {
+        console.error('[GPG] Auto-relogin: failed during challenge-response:', err);
+        return null;
+      }
+    }
+
+    console.warn('[GPG] Auto-relogin: unexpected response from server');
+    return null;
+  } catch (err) {
+    console.error('[GPG] Auto-relogin failed:', err);
+    return null;
+  }
+}
+

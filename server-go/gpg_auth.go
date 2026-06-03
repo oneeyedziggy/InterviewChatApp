@@ -36,6 +36,50 @@ func (cs *ChatServer) handleGetServerPublicKey(w http.ResponseWriter, r *http.Re
 	json.NewEncoder(w).Encode(response)
 }
 
+// handleAuth is a single auth endpoint used on page load to validate an
+// existing session or return the server public key so the client can start
+// a login flow. Request body may include { sessionId: string }.
+func (cs *ChatServer) handleAuth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	var req struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// Bad request; still provide server public key so client can proceed to login
+		json.NewEncoder(w).Encode(map[string]any{"valid": false, "serverPublicKey": cs.serverPublicKey})
+		return
+	}
+
+	if req.SessionID == "" {
+		json.NewEncoder(w).Encode(map[string]any{"valid": false, "serverPublicKey": cs.serverPublicKey})
+		return
+	}
+
+	// Check session cache
+	storedUsername, exists := cs.sessionCache.Get(req.SessionID)
+	if !exists || storedUsername == "" {
+		json.NewEncoder(w).Encode(map[string]any{"valid": false, "serverPublicKey": cs.serverPublicKey})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{"valid": true, "username": storedUsername})
+}
+
 // handleLogin handles GPG-based authentication
 func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Set headers early to ensure CORS and content type

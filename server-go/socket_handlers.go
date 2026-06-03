@@ -96,6 +96,31 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			log.Printf("[%s] ✗ No username in message", socketIDStr)
 		}
 
+		// If user was just registered, wait for the join message to be sent
+		// to prevent the first client message from being processed before the join
+		if userJustRegistered {
+			log.Printf("[%s] User just registered - waiting for join message to be sent", socketIDStr)
+			for i := 0; i < 50; i++ { // Wait up to 5 seconds (50 * 100ms)
+				cs.mu.RLock()
+				joinSent := cs.hasSentJoinMsg[username]
+				joinScheduled := cs.joinScheduled[username]
+				cs.mu.RUnlock()
+
+				if joinSent {
+					log.Printf("[%s] ✓ Join message sent, proceeding with user message", socketIDStr)
+					break
+				}
+
+				if !joinScheduled {
+					// Join wasn't scheduled; this shouldn't happen but avoid infinite loop
+					log.Printf("[%s] ⚠ Join message not scheduled; proceeding anyway", socketIDStr)
+					break
+				}
+
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+
 		cs.mu.Lock()
 		if cs.messages[room] == nil {
 			log.Printf("[%s] Creating new room: %s", socketIDStr, room)

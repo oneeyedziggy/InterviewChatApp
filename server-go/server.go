@@ -57,19 +57,25 @@ func NewChatServer() *ChatServer {
 		messages["#cats"] = []Message{}
 	}
 
-	log.Printf("[NewChatServer] Purging all existing messages...")
-	messages = make(Messages)
-	for _, room := range rooms {
-		messages[room] = []Message{}
+	// Purge messages on startup only if explicitly requested via
+	// the CLEAR_ON_START environment variable. Preserving messages by
+	// default avoids losing chat history on server restarts.
+	if strings.ToLower(os.Getenv("CLEAR_ON_START")) == "true" {
+		log.Printf("[NewChatServer] Purging all existing messages (CLEAR_ON_START=true)...")
+		messages = make(Messages)
+		for _, room := range rooms {
+			messages[room] = []Message{}
+		}
+		log.Printf("[NewChatServer] ✓ All messages purged")
+	} else {
+		log.Printf("[NewChatServer] Skipping message purge on startup (CLEAR_ON_START!=true)")
 	}
-	log.Printf("[NewChatServer] ✓ All messages purged")
 
 	serverKeyRing, serverPublicKey, err := generateOrLoadServerKeys()
 	if err != nil {
 		log.Fatalf("[NewChatServer] ✗ Failed to generate/load server GPG keys: %v", err)
 	}
 
-	users = make(map[string]string)
 	joinRequests := make(map[string]*JoinRequest)
 	userLastSeen := make(map[string]int64)
 	roomMembers := make(map[string]map[string]bool)
@@ -95,6 +101,20 @@ func NewChatServer() *ChatServer {
 		roomCreators:    roomCreators,
 		hasSentJoinMsg:  make(map[string]bool),
 		joinScheduled:   make(map[string]bool),
+	}
+
+	// Populate hasSentJoinMsg for users who already have a system "joined"
+	// message in the default room. This prevents the server from re-posting
+	// a join message on restart for users who had already joined previously.
+	if msgs, ok := messages[DefaultRoom]; ok {
+		for _, m := range msgs {
+			if m.Username == "system" && strings.HasSuffix(m.Content, UserJoined) {
+				uname := strings.TrimSuffix(m.Content, " "+UserJoined)
+				if uname != "" {
+					cs.hasSentJoinMsg[uname] = true
+				}
+			}
+		}
 	}
 
 	log.Printf("[NewChatServer] ✓ Chat server initialized with %d rooms, %d active sessions (cleared on restart), %d message rooms, %d registered pub keys",

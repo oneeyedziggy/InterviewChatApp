@@ -3,6 +3,7 @@ import {
   useEffect,
   useState,
   useRef,
+  useCallback,
   type ChangeEvent,
   type KeyboardEvent,
 } from 'react';
@@ -23,6 +24,7 @@ import {
   loadKeys,
   hasValidStoredKeys,
   redirectToLogout,
+  attemptAutoRelogin,
 } from '../utils/gpg';
 import { getDmRoomId, getRoomDisplayLabel } from '../utils/dmRooms';
 import { blockUser, getBlockedUsers } from '../utils/userSettings';
@@ -632,6 +634,28 @@ const Home = () => {
     });
   }, [currentRoom]);
 
+  // Unified session initialization: verifies session and initializes socket
+  // This is called on mount and whenever session needs to be re-established
+  const initializeSession = async (sessionIdToVerify: string, usernameToSet: string) => {
+    console.log('[Home] Initializing session for user:', usernameToSet);
+    
+    // Always disconnect and clear socket before re-initializing
+    if (socket && socket.connected) {
+      console.log('[Home] Disconnecting existing socket for re-init');
+      socket.disconnect();
+      socket = undefined as any;
+    }
+    if ((window as any).__socket && (window as any).__socket.connected) {
+      console.log('[Home] Disconnecting window socket for re-init');
+      (window as any).__socket.disconnect();
+      (window as any).__socket = undefined;
+    }
+
+    // Set auth state and trigger socket initialization
+    setAuthToken(sessionIdToVerify);
+    setUsername(usernameToSet);
+  };
+
   // Check private keys and session on mount; redirect to logout if invalid
   useEffect(() => {
     let cancelled = false;
@@ -645,9 +669,59 @@ const Home = () => {
         return;
       }
 
-      if (!cancelled) {
-        setAuthToken(storedKeys.sessionId);
-        setUsername(storedKeys.username);
+      // Verify session with server: if server restarted and session is gone,
+      // attempt to re-establish it using stored credentials. Only force re-login
+      // if auto-relogin fails.
+      try {
+        const resp = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: storedKeys.sessionId }),
+        });
+
+        if (!resp.ok) {
+          console.warn('[Home] /api/auth request failed; attempting auto-relogin');
+          const newSessionId = await attemptAutoRelogin();
+          if (newSessionId && !cancelled) {
+            // Use unified initialization after successful auto-relog
+            initializeSession(newSessionId, storedKeys.username);
+          } else {
+            redirectToLogout();
+          }
+          return;
+        }
+
+        const data = await resp.json();
+        if (!data || !data.valid) {
+          console.warn('[Home] Session invalid on server; attempting auto-relogin');
+          // Try to re-establish session using stored credentials
+          const newSessionId = await attemptAutoRelogin();
+          if (newSessionId && !cancelled) {
+            // Use unified initialization after successful auto-relog
+            initializeSession(newSessionId, storedKeys.username);
+          } else {
+            // Auto-relogin failed, force re-login
+            console.warn('[Home] Auto-relogin failed; forcing manual re-login');
+            redirectToLogout();
+          }
+          return;
+        }
+
+        // Session is still valid, initialize normally
+        if (!cancelled) {
+          initializeSession(storedKeys.sessionId, storedKeys.username);
+        }
+      } catch (err) {
+        console.error('[Home] Failed to verify session with server:', err);
+        // Try auto-relogin on network error too
+        const newSessionId = await attemptAutoRelogin();
+        if (newSessionId && !cancelled) {
+          // Use unified initialization after successful auto-relog
+          initializeSession(newSessionId, storedKeys.username);
+        } else {
+          redirectToLogout();
+        }
+        return;
       }
     })();
 
