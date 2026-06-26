@@ -45,5 +45,6 @@ server-go/*.exe
 *.swo
 *~
 
-# Backup files
+# State and Backup files
 chat-state.json.backup.*
+server-go/chat-state.json
