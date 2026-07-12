@@ -59,11 +59,11 @@ const LoginButton = styled.button`
   color: white;
   cursor: pointer;
   transition: background 0.2s;
-  
+
   &:hover:not(:disabled) {
     background: #2980b9;
   }
-  
+
   &:disabled {
     background: #95a5a6;
     cursor: not-allowed;
@@ -81,11 +81,11 @@ const DeleteButton = styled.button`
   color: white;
   cursor: pointer;
   transition: background 0.2s;
-  
+
   &:hover:not(:disabled) {
     background: #c0392b;
   }
-  
+
   &:disabled {
     background: #95a5a6;
     cursor: not-allowed;
@@ -126,7 +126,7 @@ const Divider = styled.div`
   color: #999;
   font-size: 14px;
   position: relative;
-  
+
   &::before,
   &::after {
     content: '';
@@ -136,11 +136,11 @@ const Divider = styled.div`
     height: 1px;
     background: #ddd;
   }
-  
+
   &::before {
     left: 0;
   }
-  
+
   &::after {
     right: 0;
   }
@@ -158,13 +158,16 @@ export default function LoginPage() {
 
   const showUserSelect = localUsers.length > 1;
 
-  const applyLocalUsers = useCallback((users: string[], preselectSingle = false) => {
-    setLocalUsers(users);
-    if (preselectSingle && users.length === 1) {
-      setUsername(users[0]);
-      setSelectedUser(users[0]);
-    }
-  }, []);
+  const applyLocalUsers = useCallback(
+    (users: string[], preselectSingle = false) => {
+      setLocalUsers(users);
+      if (preselectSingle && users.length === 1) {
+        setUsername(users[0]);
+        setSelectedUser(users[0]);
+      }
+    },
+    [],
+  );
 
   // Load local users (users with private keys) and check for auto-login on mount
   useEffect(() => {
@@ -182,7 +185,9 @@ export default function LoginPage() {
 
       if (!keysValid) {
         if (storedKeys?.sessionId) {
-          console.log('[LoginPage] Invalid or missing private key, redirecting to logout');
+          console.log(
+            '[LoginPage] Invalid or missing private key, redirecting to logout',
+          );
           redirectToLogout();
           return;
         }
@@ -192,37 +197,43 @@ export default function LoginPage() {
         return;
       }
 
-      fetchServerPublicKey().then(setServerPublicKey).catch((err) => {
-        console.error('[LoginPage] Failed to fetch server public key:', err);
-      });
+      fetchServerPublicKey()
+        .then(setServerPublicKey)
+        .catch((err) => {
+          console.error('[LoginPage] Failed to fetch server public key:', err);
+        });
     })();
 
     return () => {
       cancelled = true;
     };
   }, [applyLocalUsers]);
-  
+
   // Refresh user list when page becomes visible (in case keys were added in another tab)
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (!document.hidden) {
         const users = getAllLocalUsers();
-        console.log('[LoginPage] Refreshed local users on visibility change:', users);
+        console.log(
+          '[LoginPage] Refreshed local users on visibility change:',
+          users,
+        );
         setLocalUsers(users);
       }
     };
-    
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    return () =>
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
-  
+
   // Update username when selected user changes
   useEffect(() => {
     if (selectedUser) {
       setUsername(selectedUser);
     }
   }, [selectedUser]);
-  
+
   // Check if username has changed from selected user
   useEffect(() => {
     // If username doesn't match selected user, clear selection
@@ -230,7 +241,7 @@ export default function LoginPage() {
       setSelectedUser('');
     }
   }, [username, selectedUser]);
-  
+
   // Refresh user list after operations
   const refreshUserList = useCallback(() => {
     const users = getAllLocalUsers();
@@ -247,289 +258,311 @@ export default function LoginPage() {
     setIsSubmitDisabled(!username || !!localUsernameError);
   }, [username]);
 
-  const onSubmit = useCallback(async (username: string) => {
-    setIsLoading(true);
-    setLoginError('');
-    
-    const snarkyFallbackError =
-      "Something went wrong at login, go grab a cup of tea, maybe we'll figure it out while you're gone";
+  const onSubmit = useCallback(
+    async (username: string) => {
+      setIsLoading(true);
+      setLoginError('');
 
-    try {
-      // Check if we have stored keys for this username
-      let storedKeys = loadKeysForUser(username);
-      if (!storedKeys) {
-        // Fallback to legacy loadKeys
-        const legacyKeys = loadKeys();
-        if (legacyKeys && legacyKeys.username === username) {
-          storedKeys = legacyKeys;
+      const snarkyFallbackError =
+        "Something went wrong at login, go grab a cup of tea, maybe we'll figure it out while you're gone";
+
+      try {
+        // Check if we have stored keys for this username
+        let storedKeys = loadKeysForUser(username);
+        if (!storedKeys) {
+          // Fallback to legacy loadKeys
+          const legacyKeys = loadKeys();
+          if (legacyKeys && legacyKeys.username === username) {
+            storedKeys = legacyKeys;
+          }
         }
-      }
-      
-      let keys: StoredKeys;
-      const hasLocalKeys = storedKeys && storedKeys.username === username;
 
-      if (hasLocalKeys && storedKeys) {
-        // Use existing keys - this is an existing user with stored keys
-        console.log('[LoginPage] Using existing keys for:', username);
-        keys = storedKeys;
-        
-        // Get server public key if we don't have it
-        if (!keys.serverPublicKey) {
-          keys.serverPublicKey = await fetchServerPublicKey();
+        let keys: StoredKeys;
+        const hasLocalKeys = storedKeys && storedKeys.username === username;
+
+        if (hasLocalKeys && storedKeys) {
+          // Use existing keys - this is an existing user with stored keys
+          console.log('[LoginPage] Using existing keys for:', username);
+          keys = storedKeys;
+
+          // Get server public key if we don't have it
+          if (!keys.serverPublicKey) {
+            keys.serverPublicKey = await fetchServerPublicKey();
+          }
+        } else {
+          // Generate new keys for new user
+          console.log('[LoginPage] Generating new keys for:', username);
+          const keyPair = await generateKeyPair(username);
+
+          // Get server public key
+          const serverPubKey =
+            serverPublicKey || (await fetchServerPublicKey());
+
+          keys = {
+            username,
+            privateKey: keyPair.privateKey,
+            publicKey: keyPair.publicKey,
+            serverPublicKey: serverPubKey,
+          };
         }
-      } else {
-        // Generate new keys for new user
-        console.log('[LoginPage] Generating new keys for:', username);
-        const keyPair = await generateKeyPair(username);
-        
-        // Get server public key
-        const serverPubKey = serverPublicKey || await fetchServerPublicKey();
-        
-        keys = {
-          username,
-          privateKey: keyPair.privateKey,
-          publicKey: keyPair.publicKey,
-          serverPublicKey: serverPubKey,
-        };
-      }
 
-      // First login attempt - send username and public key
-      // Server will:
-      // - Send challenge if user exists and public key matches (for existing users)
-      // - Register new user if user doesn't exist (for new users)
-      // - Reject if user exists but public key doesn't match
-      const loginResponse = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username,
-          publicKey: keys.publicKey,
-        }),
-      });
-
-      const loginData = await loginResponse.json();
-
-      if (loginData.error) {
-        setLoginError(loginData.error);
-        setIsLoading(false);
-        return;
-      }
-
-      // If we got a challenge, this is an existing user - perform challenge-response
-      if (loginData.challenge) {
-        console.log('[LoginPage] Received challenge, performing challenge-response');
-        
-        // Decrypt the challenge with our private key
-        const decryptedUUID = await decryptMessage(
-          loginData.challenge,
-          keys.privateKey
-        );
-        console.log('[LoginPage] Decrypted UUID:', decryptedUUID);
-
-        // Encrypt the UUID with server's public key
-        const encryptedResponse = await encryptForServer(
-          decryptedUUID,
-          keys.serverPublicKey
-        );
-        console.log('[LoginPage] Encrypted response for server');
-
-        // Send the encrypted response
-        const verifyResponse = await fetch('/api/login', {
+        // First login attempt - send username and public key
+        // Server will:
+        // - Send challenge if user exists and public key matches (for existing users)
+        // - Register new user if user doesn't exist (for new users)
+        // - Reject if user exists but public key doesn't match
+        const loginResponse = await fetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             username,
-            encryptedUUID: encryptedResponse,
+            publicKey: keys.publicKey,
           }),
         });
 
-        const verifyData = await verifyResponse.json();
+        const loginData = await loginResponse.json();
 
-        if (verifyData.error) {
-          setLoginError(verifyData.error);
+        if (loginData.error) {
+          setLoginError(loginData.error);
           setIsLoading(false);
           return;
         }
 
-        if (verifyData.sessionId) {
-          // Store keys with session ID
+        // If we got a challenge, this is an existing user - perform challenge-response
+        if (loginData.challenge) {
+          console.log(
+            '[LoginPage] Received challenge, performing challenge-response',
+          );
+
+          // Decrypt the challenge with our private key
+          const decryptedUUID = await decryptMessage(
+            loginData.challenge,
+            keys.privateKey,
+          );
+          console.log('[LoginPage] Decrypted UUID:', decryptedUUID);
+
+          // Encrypt the UUID with server's public key
+          const encryptedResponse = await encryptForServer(
+            decryptedUUID,
+            keys.serverPublicKey,
+          );
+          console.log('[LoginPage] Encrypted response for server');
+
+          // Send the encrypted response
+          const verifyResponse = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              username,
+              encryptedUUID: encryptedResponse,
+            }),
+          });
+
+          const verifyData = await verifyResponse.json();
+
+          if (verifyData.error) {
+            setLoginError(verifyData.error);
+            setIsLoading(false);
+            return;
+          }
+
+          if (verifyData.sessionId) {
+            // Store keys with session ID
+            storeKeys({
+              ...keys,
+              sessionId: verifyData.sessionId,
+            });
+
+            // Refresh user list to include this user in dropdown
+            const updatedUsers = getAllLocalUsers();
+            setLocalUsers(updatedUsers);
+
+            setLoginError('');
+            // Redirect to main app
+            window.location.href = '/';
+          } else {
+            setLoginError(verifyData.error || snarkyFallbackError);
+          }
+        } else if (loginData.sessionId) {
+          // New user registration successful
+          console.log('[LoginPage] New user registered successfully');
+
+          // Store server public key if provided
+          if (loginData.serverPublicKey) {
+            keys.serverPublicKey = loginData.serverPublicKey;
+          }
+
+          // Store keys with session ID (this will add user to ALL_USERS list)
           storeKeys({
             ...keys,
-            sessionId: verifyData.sessionId,
+            sessionId: loginData.sessionId,
           });
-          
-          // Refresh user list to include this user in dropdown
+
+          // Refresh user list to include this new user in dropdown
           const updatedUsers = getAllLocalUsers();
           setLocalUsers(updatedUsers);
-          
+          console.log('[LoginPage] User list updated:', updatedUsers);
+
           setLoginError('');
           // Redirect to main app
           window.location.href = '/';
         } else {
-          setLoginError(verifyData.error || snarkyFallbackError);
+          setLoginError(loginData.error || snarkyFallbackError);
         }
-      } else if (loginData.sessionId) {
-        // New user registration successful
-        console.log('[LoginPage] New user registered successfully');
-        
-        // Store server public key if provided
-        if (loginData.serverPublicKey) {
-          keys.serverPublicKey = loginData.serverPublicKey;
-        }
-        
-        // Store keys with session ID (this will add user to ALL_USERS list)
-        storeKeys({
-          ...keys,
-          sessionId: loginData.sessionId,
-        });
-        
-        // Refresh user list to include this new user in dropdown
-        const updatedUsers = getAllLocalUsers();
-        setLocalUsers(updatedUsers);
-        console.log('[LoginPage] User list updated:', updatedUsers);
-        
-        setLoginError('');
-        // Redirect to main app
-        window.location.href = '/';
-      } else {
-        setLoginError(loginData.error || snarkyFallbackError);
-      }
-    } catch (err) {
-      console.error('[LoginPage] Login error:', err);
-      setLoginError(snarkyFallbackError);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [serverPublicKey]);
-
-  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Enter' && !isSubmitDisabled && !isLoading) {
-      event.preventDefault();
-      onSubmit(username);
-    }
-  }, [isSubmitDisabled, isLoading, username, onSubmit]);
-
-  const handleDeleteAccount = useCallback(async (usernameToDelete: string) => {
-    if (!confirm(`Are you sure you want to delete the account "${usernameToDelete}"? This action cannot be undone.`)) {
-      return;
-    }
-
-    setIsLoading(true);
-    setLoginError('');
-
-    try {
-      // First, login to authenticate
-      console.log('[DeleteAccount] Logging in to authenticate...');
-      
-      // Load keys for the user to delete
-      let storedKeys = loadKeysForUser(usernameToDelete);
-      if (!storedKeys) {
-        const legacyKeys = loadKeys();
-        if (legacyKeys && legacyKeys.username === usernameToDelete) {
-          storedKeys = legacyKeys;
-        }
-      }
-
-      if (!storedKeys || storedKeys.username !== usernameToDelete) {
-        setLoginError('Cannot find keys for this user');
+      } catch (err) {
+        console.error('[LoginPage] Login error:', err);
+        setLoginError(snarkyFallbackError);
+      } finally {
         setIsLoading(false);
+      }
+    },
+    [serverPublicKey],
+  );
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === 'Enter' && !isSubmitDisabled && !isLoading) {
+        event.preventDefault();
+        onSubmit(username);
+      }
+    },
+    [isSubmitDisabled, isLoading, username, onSubmit],
+  );
+
+  const handleDeleteAccount = useCallback(
+    async (usernameToDelete: string) => {
+      if (
+        !confirm(
+          `Are you sure you want to delete the account "${usernameToDelete}"? This action cannot be undone.`,
+        )
+      ) {
         return;
       }
 
-      // Get server public key if needed
-      if (!storedKeys.serverPublicKey) {
-        storedKeys.serverPublicKey = await fetchServerPublicKey();
-      }
+      setIsLoading(true);
+      setLoginError('');
 
-      // Perform login to get session
-      const loginResponse = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: usernameToDelete,
-          publicKey: storedKeys.publicKey,
-        }),
-      });
+      try {
+        // First, login to authenticate
+        console.log('[DeleteAccount] Logging in to authenticate...');
 
-      const loginData = await loginResponse.json();
+        // Load keys for the user to delete
+        let storedKeys = loadKeysForUser(usernameToDelete);
+        if (!storedKeys) {
+          const legacyKeys = loadKeys();
+          if (legacyKeys && legacyKeys.username === usernameToDelete) {
+            storedKeys = legacyKeys;
+          }
+        }
 
-      if (loginData.error) {
-        setLoginError(loginData.error);
-        setIsLoading(false);
-        return;
-      }
+        if (!storedKeys || storedKeys.username !== usernameToDelete) {
+          setLoginError('Cannot find keys for this user');
+          setIsLoading(false);
+          return;
+        }
 
-      let sessionId: string;
+        // Get server public key if needed
+        if (!storedKeys.serverPublicKey) {
+          storedKeys.serverPublicKey = await fetchServerPublicKey();
+        }
 
-      // Handle challenge-response if needed
-      if (loginData.challenge) {
-        const decryptedUUID = await decryptMessage(loginData.challenge, storedKeys.privateKey);
-        const encryptedResponse = await encryptForServer(decryptedUUID, storedKeys.serverPublicKey);
-
-        const verifyResponse = await fetch('/api/login', {
+        // Perform login to get session
+        const loginResponse = await fetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             username: usernameToDelete,
-            encryptedUUID: encryptedResponse,
+            publicKey: storedKeys.publicKey,
           }),
         });
 
-        const verifyData = await verifyResponse.json();
-        if (verifyData.error || !verifyData.sessionId) {
-          setLoginError(verifyData.error || 'Authentication failed');
+        const loginData = await loginResponse.json();
+
+        if (loginData.error) {
+          setLoginError(loginData.error);
           setIsLoading(false);
           return;
         }
-        sessionId = verifyData.sessionId;
-      } else if (loginData.sessionId) {
-        sessionId = loginData.sessionId;
-      } else {
-        setLoginError('Failed to get session');
+
+        let sessionId: string;
+
+        // Handle challenge-response if needed
+        if (loginData.challenge) {
+          const decryptedUUID = await decryptMessage(
+            loginData.challenge,
+            storedKeys.privateKey,
+          );
+          const encryptedResponse = await encryptForServer(
+            decryptedUUID,
+            storedKeys.serverPublicKey,
+          );
+
+          const verifyResponse = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              username: usernameToDelete,
+              encryptedUUID: encryptedResponse,
+            }),
+          });
+
+          const verifyData = await verifyResponse.json();
+          if (verifyData.error || !verifyData.sessionId) {
+            setLoginError(verifyData.error || 'Authentication failed');
+            setIsLoading(false);
+            return;
+          }
+          sessionId = verifyData.sessionId;
+        } else if (loginData.sessionId) {
+          sessionId = loginData.sessionId;
+        } else {
+          setLoginError('Failed to get session');
+          setIsLoading(false);
+          return;
+        }
+
+        // Now delete the user account
+        console.log('[DeleteAccount] Deleting user account...');
+        const deleteResponse = await fetch('/api/delete-user', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: usernameToDelete,
+            sessionId: sessionId,
+          }),
+        });
+
+        const deleteData = await deleteResponse.json();
+
+        if (deleteData.error || !deleteData.success) {
+          setLoginError(deleteData.error || 'Failed to delete account');
+          setIsLoading(false);
+          return;
+        }
+
+        // Delete local keys
+        console.log('[DeleteAccount] Deleting local keys...');
+        deleteUserKeys(usernameToDelete);
+
+        // Clear any current session
+        clearKeys();
+
+        // Refresh user list
+        refreshUserList();
+        setSelectedUser('');
+        setUsername('');
+
+        // Redirect to login page (refresh)
+        console.log('[DeleteAccount] ✓ Account deleted, redirecting...');
+        window.location.href = '/login';
+      } catch (err) {
+        console.error('[DeleteAccount] Error:', err);
+        setLoginError('Failed to delete account. Please try again.');
         setIsLoading(false);
-        return;
       }
-
-      // Now delete the user account
-      console.log('[DeleteAccount] Deleting user account...');
-      const deleteResponse = await fetch('/api/delete-user', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: usernameToDelete,
-          sessionId: sessionId,
-        }),
-      });
-
-      const deleteData = await deleteResponse.json();
-
-      if (deleteData.error || !deleteData.success) {
-        setLoginError(deleteData.error || 'Failed to delete account');
-        setIsLoading(false);
-        return;
-      }
-
-      // Delete local keys
-      console.log('[DeleteAccount] Deleting local keys...');
-      deleteUserKeys(usernameToDelete);
-
-      // Clear any current session
-      clearKeys();
-
-      // Refresh user list
-      refreshUserList();
-      setSelectedUser('');
-      setUsername('');
-
-      // Redirect to login page (refresh)
-      console.log('[DeleteAccount] ✓ Account deleted, redirecting...');
-      window.location.href = '/login';
-    } catch (err) {
-      console.error('[DeleteAccount] Error:', err);
-      setLoginError('Failed to delete account. Please try again.');
-      setIsLoading(false);
-    }
-  }, [refreshUserList]);
+    },
+    [refreshUserList],
+  );
 
   return (
     <LoginContainer>
@@ -546,7 +579,14 @@ export default function LoginPage() {
         >
           {showUserSelect && (
             <>
-              <label htmlFor="userSelect" style={{ display: 'block', marginBottom: '5px', textAlign: 'left' }}>
+              <label
+                htmlFor="userSelect"
+                style={{
+                  display: 'block',
+                  marginBottom: '5px',
+                  textAlign: 'left',
+                }}
+              >
                 Select existing user:
               </label>
               <UserSelect
@@ -560,7 +600,7 @@ export default function LoginPage() {
                 }}
               >
                 <option value="">-- Select a user --</option>
-                {localUsers.map(user => (
+                {localUsers.map((user) => (
                   <option key={user} value={user}>
                     {user}
                   </option>
@@ -590,14 +630,11 @@ export default function LoginPage() {
             required={true}
             autoFocus={localUsers.length === 0}
           />
-          <LoginButton
-            type="submit"
-            disabled={isSubmitDisabled || isLoading}
-          >
-            {isLoading 
-              ? 'Logging in...' 
-              : username && localUsers.includes(username) 
-                ? 'Login as ' + username 
+          <LoginButton type="submit" disabled={isSubmitDisabled || isLoading}>
+            {isLoading
+              ? 'Logging in...'
+              : username && localUsers.includes(username)
+                ? 'Login as ' + username
                 : 'Login / Create User'}
           </LoginButton>
         </form>
@@ -619,4 +656,3 @@ export default function LoginPage() {
     </LoginContainer>
   );
 }
-

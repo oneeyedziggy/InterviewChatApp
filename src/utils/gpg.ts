@@ -33,7 +33,7 @@ export async function generateKeyPair(username: string): Promise<{
   publicKey: string;
 }> {
   console.log('[GPG] Generating key pair for user:', username);
-  
+
   const { privateKey, publicKey } = await openpgp.generateKey({
     type: 'rsa',
     rsaBits: 2048,
@@ -46,7 +46,7 @@ export async function generateKeyPair(username: string): Promise<{
   const publicKeyArmored = publicKey;
 
   console.log('[GPG] ✓ Key pair generated');
-  
+
   return {
     privateKey: privateKeyArmored,
     publicKey: publicKeyArmored,
@@ -58,15 +58,27 @@ export async function generateKeyPair(username: string): Promise<{
  */
 export function storeKeys(keys: StoredKeys): void {
   if (typeof window === 'undefined') return;
-  
+
   // Store per-user data
-  localStorage.setItem(getUserStorageKey(keys.username, 'privateKey'), keys.privateKey);
-  localStorage.setItem(getUserStorageKey(keys.username, 'publicKey'), keys.publicKey);
-  localStorage.setItem(getUserStorageKey(keys.username, 'serverPublicKey'), keys.serverPublicKey);
+  localStorage.setItem(
+    getUserStorageKey(keys.username, 'privateKey'),
+    keys.privateKey,
+  );
+  localStorage.setItem(
+    getUserStorageKey(keys.username, 'publicKey'),
+    keys.publicKey,
+  );
+  localStorage.setItem(
+    getUserStorageKey(keys.username, 'serverPublicKey'),
+    keys.serverPublicKey,
+  );
   if (keys.sessionId) {
-    localStorage.setItem(getUserStorageKey(keys.username, 'sessionId'), keys.sessionId);
+    localStorage.setItem(
+      getUserStorageKey(keys.username, 'sessionId'),
+      keys.sessionId,
+    );
   }
-  
+
   // Store current user (for backward compatibility)
   localStorage.setItem(STORAGE_KEYS.USERNAME, keys.username);
   localStorage.setItem(STORAGE_KEYS.PRIVATE_KEY, keys.privateKey);
@@ -75,14 +87,14 @@ export function storeKeys(keys: StoredKeys): void {
   if (keys.sessionId) {
     localStorage.setItem(STORAGE_KEYS.SESSION_ID, keys.sessionId);
   }
-  
+
   // Add to all users list
   const allUsers = getAllLocalUsers();
   if (!allUsers.includes(keys.username)) {
     allUsers.push(keys.username);
     localStorage.setItem(STORAGE_KEYS.ALL_USERS, JSON.stringify(allUsers));
   }
-  
+
   console.log('[GPG] ✓ Keys stored in localStorage for user:', keys.username);
 }
 
@@ -92,9 +104,9 @@ export function storeKeys(keys: StoredKeys): void {
  */
 export function getAllLocalUsers(): string[] {
   if (typeof window === 'undefined') return [];
-  
+
   const usersSet = new Set<string>();
-  
+
   // First, get users from the ALL_USERS list
   const stored = localStorage.getItem(STORAGE_KEYS.ALL_USERS);
   if (stored) {
@@ -105,13 +117,13 @@ export function getAllLocalUsers(): string[] {
       // Ignore parse errors
     }
   }
-  
+
   // Also check for legacy single user
   const legacyUser = localStorage.getItem(STORAGE_KEYS.USERNAME);
   if (legacyUser) {
     usersSet.add(legacyUser);
   }
-  
+
   // Scan all localStorage keys to find users with stored private keys
   // This ensures we don't miss any users even if ALL_USERS list is out of sync
   for (let i = 0; i < localStorage.length; i++) {
@@ -124,18 +136,23 @@ export function getAllLocalUsers(): string[] {
       }
     }
   }
-  
+
   // Verify each user actually has a private key stored
   const verifiedUsers: string[] = [];
-  usersSet.forEach(user => {
-    const privateKey = localStorage.getItem(getUserStorageKey(user, 'privateKey'));
-    const legacyPrivateKey = user === legacyUser ? localStorage.getItem(STORAGE_KEYS.PRIVATE_KEY) : null;
-    
+  usersSet.forEach((user) => {
+    const privateKey = localStorage.getItem(
+      getUserStorageKey(user, 'privateKey'),
+    );
+    const legacyPrivateKey =
+      user === legacyUser
+        ? localStorage.getItem(STORAGE_KEYS.PRIVATE_KEY)
+        : null;
+
     if (privateKey || legacyPrivateKey) {
       verifiedUsers.push(user);
     }
   });
-  
+
   // Update ALL_USERS list with all verified users (ensures it's always in sync)
   if (verifiedUsers.length > 0) {
     const uniqueUsers = Array.from(new Set(verifiedUsers));
@@ -145,7 +162,7 @@ export function getAllLocalUsers(): string[] {
     // Clear ALL_USERS if no users found
     localStorage.removeItem(STORAGE_KEYS.ALL_USERS);
   }
-  
+
   return verifiedUsers.sort();
 }
 
@@ -154,19 +171,19 @@ export function getAllLocalUsers(): string[] {
  */
 export function getAllUsersWithPublicKeys(): string[] {
   if (typeof window === 'undefined') return [];
-  
+
   const usersSet = new Set<string>();
-  
+
   // Add local users (users with private keys)
   const localUsers = getAllLocalUsers();
-  localUsers.forEach(user => usersSet.add(user));
-  
+  localUsers.forEach((user) => usersSet.add(user));
+
   // Add users whose public keys we have stored
   const userPubKeys = loadUserPublicKeys();
   if (userPubKeys) {
-    Object.keys(userPubKeys).forEach(user => usersSet.add(user));
+    Object.keys(userPubKeys).forEach((user) => usersSet.add(user));
   }
-  
+
   return Array.from(usersSet).sort();
 }
 
@@ -175,18 +192,20 @@ export function getAllUsersWithPublicKeys(): string[] {
  */
 export function isLocalUser(username: string): boolean {
   if (typeof window === 'undefined') return false;
-  
+
   // Check if user has private key stored
-  const privateKey = localStorage.getItem(getUserStorageKey(username, 'privateKey'));
+  const privateKey = localStorage.getItem(
+    getUserStorageKey(username, 'privateKey'),
+  );
   if (privateKey) return true;
-  
+
   // Check legacy storage
   const legacyUser = localStorage.getItem(STORAGE_KEYS.USERNAME);
   if (legacyUser === username) {
     const legacyPrivateKey = localStorage.getItem(STORAGE_KEYS.PRIVATE_KEY);
     return !!legacyPrivateKey;
   }
-  
+
   return false;
 }
 
@@ -195,11 +214,19 @@ export function isLocalUser(username: string): boolean {
  */
 export function loadKeysForUser(username: string): StoredKeys | null {
   if (typeof window === 'undefined') return null;
-  
-  const privateKey = localStorage.getItem(getUserStorageKey(username, 'privateKey'));
-  const publicKey = localStorage.getItem(getUserStorageKey(username, 'publicKey'));
-  const serverPublicKey = localStorage.getItem(getUserStorageKey(username, 'serverPublicKey'));
-  const sessionId = localStorage.getItem(getUserStorageKey(username, 'sessionId'));
+
+  const privateKey = localStorage.getItem(
+    getUserStorageKey(username, 'privateKey'),
+  );
+  const publicKey = localStorage.getItem(
+    getUserStorageKey(username, 'publicKey'),
+  );
+  const serverPublicKey = localStorage.getItem(
+    getUserStorageKey(username, 'serverPublicKey'),
+  );
+  const sessionId = localStorage.getItem(
+    getUserStorageKey(username, 'sessionId'),
+  );
 
   if (!privateKey || !publicKey || !serverPublicKey) {
     return null;
@@ -219,7 +246,7 @@ export function loadKeysForUser(username: string): StoredKeys | null {
  */
 export function loadKeys(): StoredKeys | null {
   if (typeof window === 'undefined') return null;
-  
+
   const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
   const privateKey = localStorage.getItem(STORAGE_KEYS.PRIVATE_KEY);
   const publicKey = localStorage.getItem(STORAGE_KEYS.PUBLIC_KEY);
@@ -244,7 +271,9 @@ export function loadKeys(): StoredKeys | null {
 /**
  * Returns true if the armored string is a parseable OpenPGP private key.
  */
-export async function isValidPrivateKey(privateKeyArmored: string): Promise<boolean> {
+export async function isValidPrivateKey(
+  privateKeyArmored: string,
+): Promise<boolean> {
   if (!privateKeyArmored?.trim()) {
     return false;
   }
@@ -281,23 +310,23 @@ export function redirectToLogout(): void {
  */
 export function clearSession(): void {
   if (typeof window === 'undefined') return;
-  
+
   const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
-  
+
   // Clear current session data (legacy storage)
   localStorage.removeItem(STORAGE_KEYS.USERNAME);
   localStorage.removeItem(STORAGE_KEYS.PRIVATE_KEY);
   localStorage.removeItem(STORAGE_KEYS.PUBLIC_KEY);
   localStorage.removeItem(STORAGE_KEYS.SERVER_PUBLIC_KEY);
   localStorage.removeItem(STORAGE_KEYS.SESSION_ID);
-  
+
   // Clear session ID from per-user data (but keep keys)
   if (username) {
     localStorage.removeItem(getUserStorageKey(username, 'sessionId'));
     // Note: We keep the private key, public key, and server public key
     // so the user can log back in without regenerating keys
   }
-  
+
   console.log('[GPG] ✓ Session cleared (keys preserved for re-login)');
 }
 
@@ -307,16 +336,16 @@ export function clearSession(): void {
  */
 export function clearKeys(): void {
   if (typeof window === 'undefined') return;
-  
+
   const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
-  
+
   // Clear current user data
   localStorage.removeItem(STORAGE_KEYS.USERNAME);
   localStorage.removeItem(STORAGE_KEYS.PRIVATE_KEY);
   localStorage.removeItem(STORAGE_KEYS.PUBLIC_KEY);
   localStorage.removeItem(STORAGE_KEYS.SERVER_PUBLIC_KEY);
   localStorage.removeItem(STORAGE_KEYS.SESSION_ID);
-  
+
   // Clear per-user data if username exists
   if (username) {
     localStorage.removeItem(getUserStorageKey(username, 'privateKey'));
@@ -324,7 +353,7 @@ export function clearKeys(): void {
     localStorage.removeItem(getUserStorageKey(username, 'serverPublicKey'));
     localStorage.removeItem(getUserStorageKey(username, 'sessionId'));
   }
-  
+
   console.log('[GPG] ✓ All keys cleared from localStorage');
 }
 
@@ -333,28 +362,28 @@ export function clearKeys(): void {
  */
 export function deleteUserKeys(username: string): void {
   if (typeof window === 'undefined') return;
-  
+
   // Remove per-user data
   localStorage.removeItem(getUserStorageKey(username, 'privateKey'));
   localStorage.removeItem(getUserStorageKey(username, 'publicKey'));
   localStorage.removeItem(getUserStorageKey(username, 'serverPublicKey'));
   localStorage.removeItem(getUserStorageKey(username, 'sessionId'));
-  
+
   // Remove from all users list
   const allUsers = getAllLocalUsers();
-  const updatedUsers = allUsers.filter(u => u !== username);
+  const updatedUsers = allUsers.filter((u) => u !== username);
   if (updatedUsers.length === 0) {
     localStorage.removeItem(STORAGE_KEYS.ALL_USERS);
   } else {
     localStorage.setItem(STORAGE_KEYS.ALL_USERS, JSON.stringify(updatedUsers));
   }
-  
+
   // If this was the current user, clear current user data too
   const currentUser = localStorage.getItem(STORAGE_KEYS.USERNAME);
   if (currentUser === username) {
     clearKeys();
   }
-  
+
   console.log('[GPG] ✓ Deleted keys for user:', username);
 }
 
@@ -375,7 +404,7 @@ export async function fetchServerPublicKey(): Promise<string> {
  */
 export async function decryptMessage(
   encryptedArmored: string,
-  privateKeyArmored: string
+  privateKeyArmored: string,
 ): Promise<string> {
   const privateKey = await openpgp.readPrivateKey({
     armoredKey: privateKeyArmored,
@@ -398,7 +427,7 @@ export async function decryptMessage(
  */
 export async function encryptForServer(
   plaintext: string,
-  serverPublicKeyArmored: string
+  serverPublicKeyArmored: string,
 ): Promise<string> {
   const serverPublicKey = await openpgp.readKey({
     armoredKey: serverPublicKeyArmored,
@@ -420,9 +449,16 @@ export async function encryptForServer(
  */
 export function storeUserPublicKeys(userPubKeys: Record<string, string>): void {
   if (typeof window === 'undefined') return;
-  
-  localStorage.setItem(STORAGE_KEYS.USER_PUBLIC_KEYS, JSON.stringify(userPubKeys));
-  console.log('[GPG] ✓ Stored user public keys:', Object.keys(userPubKeys).length, 'keys');
+
+  localStorage.setItem(
+    STORAGE_KEYS.USER_PUBLIC_KEYS,
+    JSON.stringify(userPubKeys),
+  );
+  console.log(
+    '[GPG] ✓ Stored user public keys:',
+    Object.keys(userPubKeys).length,
+    'keys',
+  );
 }
 
 /**
@@ -430,7 +466,7 @@ export function storeUserPublicKeys(userPubKeys: Record<string, string>): void {
  */
 export function loadUserPublicKeys(): Record<string, string> | null {
   if (typeof window === 'undefined') return null;
-  
+
   const stored = localStorage.getItem(STORAGE_KEYS.USER_PUBLIC_KEYS);
   if (!stored) {
     console.log('[GPG] No user public keys found in localStorage');
@@ -439,7 +475,11 @@ export function loadUserPublicKeys(): Record<string, string> | null {
 
   try {
     const keys = JSON.parse(stored);
-    console.log('[GPG] ✓ Loaded user public keys:', Object.keys(keys).length, 'keys');
+    console.log(
+      '[GPG] ✓ Loaded user public keys:',
+      Object.keys(keys).length,
+      'keys',
+    );
     return keys;
   } catch (e) {
     console.error('[GPG] ✗ Failed to parse user public keys:', e);
@@ -452,7 +492,7 @@ export function loadUserPublicKeys(): Record<string, string> | null {
  */
 export function filterPubKeysForEncryption(
   userPubKeys: Record<string, string>,
-  options: { room?: string; blockedUsers?: string[] }
+  options: { room?: string; blockedUsers?: string[] },
 ): Record<string, string> {
   const blocked = new Set(options.blockedUsers ?? getBlockedUsers());
   const filtered: Record<string, string> = {};
@@ -487,7 +527,7 @@ export async function encryptForAllUsers(
   plaintext: string,
   userPubKeys: Record<string, string>,
   senderPublicKey?: string,
-  senderUsername?: string
+  senderUsername?: string,
 ): Promise<Record<string, string>> {
   const encryptedMap: Record<string, string> = {};
   const message = await openpgp.createMessage({ text: plaintext });
@@ -504,35 +544,44 @@ export async function encryptForAllUsers(
       });
       encryptedMap[senderUsername] = encrypted;
     } catch (error) {
-      console.error(`[GPG] ✗ Failed to encrypt for sender ${senderUsername}:`, error);
+      console.error(
+        `[GPG] ✗ Failed to encrypt for sender ${senderUsername}:`,
+        error,
+      );
     }
   }
 
   // Encrypt for each user
-  const encryptionPromises = Object.entries(userPubKeys).map(async ([username, publicKeyArmored]) => {
-    // Skip if already encrypted for sender
-    if (username === senderUsername) return;
-    
-    try {
-      const publicKey = await openpgp.readKey({
-        armoredKey: publicKeyArmored,
-      });
+  const encryptionPromises = Object.entries(userPubKeys).map(
+    async ([username, publicKeyArmored]) => {
+      // Skip if already encrypted for sender
+      if (username === senderUsername) return;
 
-      const encrypted = await openpgp.encrypt({
-        message,
-        encryptionKeys: publicKey,
-      });
+      try {
+        const publicKey = await openpgp.readKey({
+          armoredKey: publicKeyArmored,
+        });
 
-      // In openpgp v6, encrypt returns a string directly
-      encryptedMap[username] = encrypted;
-    } catch (error) {
-      console.error(`[GPG] ✗ Failed to encrypt for user ${username}:`, error);
-    }
-  });
+        const encrypted = await openpgp.encrypt({
+          message,
+          encryptionKeys: publicKey,
+        });
+
+        // In openpgp v6, encrypt returns a string directly
+        encryptedMap[username] = encrypted;
+      } catch (error) {
+        console.error(`[GPG] ✗ Failed to encrypt for user ${username}:`, error);
+      }
+    },
+  );
 
   await Promise.all(encryptionPromises);
-  console.log('[GPG] ✓ Encrypted message for', Object.keys(encryptedMap).length, 'users');
-  
+  console.log(
+    '[GPG] ✓ Encrypted message for',
+    Object.keys(encryptedMap).length,
+    'users',
+  );
+
   return encryptedMap;
 }
 
@@ -541,7 +590,7 @@ export async function encryptForAllUsers(
  */
 export async function decryptMessageForUser(
   encryptedArmored: string,
-  privateKeyArmored: string
+  privateKeyArmored: string,
 ): Promise<string> {
   try {
     const privateKey = await openpgp.readPrivateKey({
@@ -597,7 +646,10 @@ export async function attemptAutoRelogin(): Promise<string | null> {
     const loginData = await loginResponse.json();
 
     if (loginData.error) {
-      console.warn('[GPG] Auto-relogin: server returned error:', loginData.error);
+      console.warn(
+        '[GPG] Auto-relogin: server returned error:',
+        loginData.error,
+      );
       return null;
     }
 
@@ -614,19 +666,21 @@ export async function attemptAutoRelogin(): Promise<string | null> {
 
     // If we got a challenge, this is an existing user - perform challenge-response
     if (loginData.challenge) {
-      console.log('[GPG] Received challenge, performing challenge-response for auto-relogin');
+      console.log(
+        '[GPG] Received challenge, performing challenge-response for auto-relogin',
+      );
 
       try {
         // Decrypt the challenge with our private key
         const decryptedUUID = await decryptMessage(
           loginData.challenge,
-          keys.privateKey
+          keys.privateKey,
         );
 
         // Encrypt the UUID with server's public key
         const encryptedResponse = await encryptForServer(
           decryptedUUID,
-          keys.serverPublicKey
+          keys.serverPublicKey,
         );
 
         // Send the encrypted response
@@ -647,7 +701,10 @@ export async function attemptAutoRelogin(): Promise<string | null> {
         const verifyData = await verifyResponse.json();
 
         if (verifyData.error) {
-          console.warn('[GPG] Auto-relogin: challenge-response rejected:', verifyData.error);
+          console.warn(
+            '[GPG] Auto-relogin: challenge-response rejected:',
+            verifyData.error,
+          );
           return null;
         }
 
@@ -664,7 +721,10 @@ export async function attemptAutoRelogin(): Promise<string | null> {
         console.warn('[GPG] Auto-relogin: no sessionId in challenge-response');
         return null;
       } catch (err) {
-        console.error('[GPG] Auto-relogin: failed during challenge-response:', err);
+        console.error(
+          '[GPG] Auto-relogin: failed during challenge-response:',
+          err,
+        );
         return null;
       }
     }
@@ -676,4 +736,3 @@ export async function attemptAutoRelogin(): Promise<string | null> {
     return null;
   }
 }
-

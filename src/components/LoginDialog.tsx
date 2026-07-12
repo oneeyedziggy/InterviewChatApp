@@ -103,9 +103,14 @@ export const LoginDialog = ({
   useEffect(() => {
     if (open) {
       checkAutoLogin();
-      fetchServerPublicKey().then(setServerPublicKey).catch((err) => {
-        console.error('[LoginDialog] Failed to fetch server public key:', err);
-      });
+      fetchServerPublicKey()
+        .then(setServerPublicKey)
+        .catch((err) => {
+          console.error(
+            '[LoginDialog] Failed to fetch server public key:',
+            err,
+          );
+        });
     }
   }, [open, checkAutoLogin]);
 
@@ -133,7 +138,7 @@ export const LoginDialog = ({
   const onSubmit = async (username: string) => {
     setIsLoading(true);
     setLoginError('');
-    
+
     const snarkyFallbackError =
       "Something went wrong at login, go grab a cup of tea, maybe we'll figure it out while you're gone";
 
@@ -146,7 +151,7 @@ export const LoginDialog = ({
         // Use existing keys
         console.log('[LoginDialog] Using existing keys for:', username);
         keys = storedKeys;
-        
+
         // Get server public key if we don't have it
         if (!keys.serverPublicKey) {
           keys.serverPublicKey = await fetchServerPublicKey();
@@ -155,10 +160,10 @@ export const LoginDialog = ({
         // Generate new keys
         console.log('[LoginDialog] Generating new keys for:', username);
         const keyPair = await generateKeyPair(username);
-        
+
         // Get server public key
-        const serverPubKey = serverPublicKey || await fetchServerPublicKey();
-        
+        const serverPubKey = serverPublicKey || (await fetchServerPublicKey());
+
         keys = {
           username,
           privateKey: keyPair.privateKey,
@@ -187,19 +192,21 @@ export const LoginDialog = ({
 
       // If we got a challenge, this is an existing user - perform challenge-response
       if (loginData.challenge) {
-        console.log('[LoginDialog] Received challenge, performing challenge-response');
-        
+        console.log(
+          '[LoginDialog] Received challenge, performing challenge-response',
+        );
+
         // Decrypt the challenge with our private key
         const decryptedUUID = await decryptMessage(
           loginData.challenge,
-          keys.privateKey
+          keys.privateKey,
         );
         console.log('[LoginDialog] Decrypted UUID:', decryptedUUID);
 
         // Encrypt the UUID with server's public key
         const encryptedResponse = await encryptForServer(
           decryptedUUID,
-          keys.serverPublicKey
+          keys.serverPublicKey,
         );
         console.log('[LoginDialog] Encrypted response for server');
 
@@ -235,12 +242,12 @@ export const LoginDialog = ({
       } else if (loginData.sessionId) {
         // New user registration successful
         console.log('[LoginDialog] New user registered successfully');
-        
+
         // Store server public key if provided
         if (loginData.serverPublicKey) {
           keys.serverPublicKey = loginData.serverPublicKey;
         }
-        
+
         // Store keys with session ID
         storeKeys({
           ...keys,
