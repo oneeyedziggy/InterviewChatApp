@@ -37,6 +37,8 @@ next-env.d.ts
 # Go
 server-go/chat-server-go
 server-go/*.exe
+/dist
+/bin
 
 # IDE
 .vscode/
