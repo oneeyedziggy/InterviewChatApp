@@ -1,6 +1,8 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -12,7 +14,22 @@ import (
 func main() {
 	log.Println("===== STARTING GO SERVER ======")
 
-	port := os.Getenv("PORT")
+	// Define CLI flags
+	portFlag := flag.String("port", "", "Port to listen on (overrides PORT environment variable)")
+	
+	// Custom usage message for help
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  -port string\n\tPort to listen on (overrides PORT environment variable, defaults to %s)\n", DefaultPort)
+		fmt.Fprintf(os.Stderr, "  -h, --help\n\tShow this help message detailing application usage and format of arguments\n")
+	}
+	
+	flag.Parse()
+
+	port := *portFlag
+	if port == "" {
+		port = os.Getenv("PORT")
+	}
 	if port == "" {
 		port = DefaultPort
 	}
