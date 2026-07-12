@@ -10,6 +10,7 @@ import {
 import io, { type Socket } from 'socket.io-client';
 import { styled } from 'styled-components';
 import * as SimpleMarkdown from 'simple-markdown';
+import { apiPath, socketIoPath } from '@/utils/appPaths';
 
 import { type Messages, type Message } from '../types/types';
 import { SelectableList } from '../components/SelectableList';
@@ -921,7 +922,7 @@ const Home = () => {
       // attempt to re-establish it using stored credentials. Only force re-login
       // if auto-relogin fails.
       try {
-        const resp = await fetch('/api/auth', {
+        const resp = await fetch(apiPath('/api/auth'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sessionId: storedKeys.sessionId }),
@@ -1196,6 +1197,7 @@ const Home = () => {
     console.log('[Socket] Connecting to:', socketUrl);
 
     socket = io(socketUrl, {
+      path: socketIoPath(),
       auth: {
         token: authToken,
         username,

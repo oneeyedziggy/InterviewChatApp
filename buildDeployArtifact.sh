@@ -48,10 +48,16 @@ rm -rf out bin dist/deploy.tar.gz
 
 # ----------------------- Node build -----------------------
 if [ -f package.json ]; then
-  echo "Installing Node dependencies..."
-  npm ci
-  echo "Running Next.js build..."
-  npm run build
+  if [ "${FORCE_NPM_CI:-0}" = "1" ]; then
+    echo "FORCE_NPM_CI=1 set. Reinstalling Node dependencies..."
+    npm ci
+  else
+    echo "Installing/updating Node dependencies without deleting node_modules..."
+    npm install --no-audit --no-fund
+  fi
+
+  echo "Running Next.js build for deploy path /chatApp..."
+  APP_BASE_PATH=/chatApp npm run build
   echo "Node build succeeded."
 else
   echo "No package.json – skipping Node steps."

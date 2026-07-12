@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { apiPath } from '@/utils/appPaths';
 import { LoginDialog } from './LoginDialog';
 
 // Mock fetch globally
@@ -25,7 +26,7 @@ describe('LoginDialog component', () => {
         setUsername={mockSetUsername}
         open={true}
         onSuccess={mockOnSuccess}
-      />
+      />,
     );
 
     expect(screen.getByLabelText(/username/i)).toBeInTheDocument();
@@ -40,7 +41,7 @@ describe('LoginDialog component', () => {
         setUsername={mockSetUsername}
         open={false}
         onSuccess={mockOnSuccess}
-      />
+      />,
     );
 
     // The dialog element exists but is not open/visible
@@ -48,7 +49,9 @@ describe('LoginDialog component', () => {
     expect(dialog).toBeInTheDocument();
     // When open=false, the dialog should not be shown (but still in DOM)
     // Check that login button is not accessible
-    expect(screen.queryByRole('button', { name: /login/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /login/i }),
+    ).not.toBeInTheDocument();
   });
 
   it('displays username error when username is too short', async () => {
@@ -58,11 +61,13 @@ describe('LoginDialog component', () => {
         setUsername={mockSetUsername}
         open={true}
         onSuccess={mockOnSuccess}
-      />
+      />,
     );
 
     await waitFor(() => {
-      expect(screen.getByText(/username must be at least/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/username must be at least/i),
+      ).toBeInTheDocument();
     });
   });
 
@@ -73,14 +78,16 @@ describe('LoginDialog component', () => {
         setUsername={mockSetUsername}
         open={true}
         onSuccess={mockOnSuccess}
-      />
+      />,
     );
 
     const passwordInput = screen.getByLabelText(/password/i);
     await userEvent.type(passwordInput, 'short');
 
     await waitFor(() => {
-      expect(screen.getByText(/password must be at least/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/password must be at least/i),
+      ).toBeInTheDocument();
     });
   });
 
@@ -91,7 +98,7 @@ describe('LoginDialog component', () => {
         setUsername={mockSetUsername}
         open={true}
         onSuccess={mockOnSuccess}
-      />
+      />,
     );
 
     const submitButton = screen.getByRole('button', { name: /login/i });
@@ -105,7 +112,7 @@ describe('LoginDialog component', () => {
         setUsername={mockSetUsername}
         open={true}
         onSuccess={mockOnSuccess}
-      />
+      />,
     );
 
     const passwordInput = screen.getByLabelText(/password/i);
@@ -130,7 +137,7 @@ describe('LoginDialog component', () => {
         setUsername={mockSetUsername}
         open={true}
         onSuccess={mockOnSuccess}
-      />
+      />,
     );
 
     const passwordInput = screen.getByLabelText(/password/i);
@@ -161,7 +168,7 @@ describe('LoginDialog component', () => {
         setUsername={mockSetUsername}
         open={true}
         onSuccess={mockOnSuccess}
-      />
+      />,
     );
 
     const passwordInput = screen.getByLabelText(/password/i);
@@ -190,7 +197,7 @@ describe('LoginDialog component', () => {
         setUsername={mockSetUsername}
         open={true}
         onSuccess={mockOnSuccess}
-      />
+      />,
     );
 
     const passwordInput = screen.getByLabelText(/password/i);
@@ -221,7 +228,7 @@ describe('LoginDialog component', () => {
         setUsername={mockSetUsername}
         open={true}
         onSuccess={mockOnSuccess}
-      />
+      />,
     );
 
     const passwordInput = screen.getByLabelText(/password/i);
@@ -246,7 +253,7 @@ describe('LoginDialog component', () => {
         setUsername={mockSetUsername}
         open={true}
         onSuccess={mockOnSuccess}
-      />
+      />,
     );
 
     const usernameInput = screen.getByLabelText(/username/i);
@@ -268,7 +275,7 @@ describe('LoginDialog component', () => {
         setUsername={mockSetUsername}
         open={true}
         onSuccess={mockOnSuccess}
-      />
+      />,
     );
 
     const passwordInput = screen.getByLabelText(/password/i);
@@ -282,7 +289,7 @@ describe('LoginDialog component', () => {
     await userEvent.click(submitButton);
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith('/api/login', {
+      expect(global.fetch).toHaveBeenCalledWith(apiPath('/api/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: 'testuser', password: 'testpass123' }),
@@ -290,4 +297,3 @@ describe('LoginDialog component', () => {
     });
   });
 });
-

@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Input } from './Input';
 import { styled } from 'styled-components';
 import { VALIDATION } from '../constants';
+import { apiPath } from '@/utils/appPaths';
 import {
   generateKeyPair,
   storeKeys,
@@ -173,7 +174,7 @@ export const LoginDialog = ({
       }
 
       // First login attempt - send username and public key
-      const loginResponse = await fetch('/api/login', {
+      const loginResponse = await fetch(apiPath('/api/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -211,7 +212,7 @@ export const LoginDialog = ({
         console.log('[LoginDialog] Encrypted response for server');
 
         // Send the encrypted response
-        const verifyResponse = await fetch('/api/login', {
+        const verifyResponse = await fetch(apiPath('/api/login'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

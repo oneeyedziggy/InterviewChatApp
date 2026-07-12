@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
+import { apiPath, withBasePath } from '@/utils/appPaths';
 import { Input } from '../components/Input';
 import { styled } from 'styled-components';
 import { VALIDATION } from '../constants';
@@ -193,7 +194,7 @@ export default function LoginPage() {
         }
       } else if (storedKeys?.sessionId) {
         console.log('[LoginPage] Auto-login with stored keys');
-        window.location.href = '/';
+        window.location.href = withBasePath('/');
         return;
       }
 
@@ -311,7 +312,7 @@ export default function LoginPage() {
         // - Send challenge if user exists and public key matches (for existing users)
         // - Register new user if user doesn't exist (for new users)
         // - Reject if user exists but public key doesn't match
-        const loginResponse = await fetch('/api/login', {
+        const loginResponse = await fetch(apiPath('/api/login'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -349,7 +350,7 @@ export default function LoginPage() {
           console.log('[LoginPage] Encrypted response for server');
 
           // Send the encrypted response
-          const verifyResponse = await fetch('/api/login', {
+          const verifyResponse = await fetch(apiPath('/api/login'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -379,7 +380,7 @@ export default function LoginPage() {
 
             setLoginError('');
             // Redirect to main app
-            window.location.href = '/';
+            window.location.href = withBasePath('/');
           } else {
             setLoginError(verifyData.error || snarkyFallbackError);
           }
@@ -405,7 +406,7 @@ export default function LoginPage() {
 
           setLoginError('');
           // Redirect to main app
-          window.location.href = '/';
+          window.location.href = withBasePath('/');
         } else {
           setLoginError(loginData.error || snarkyFallbackError);
         }
@@ -467,7 +468,7 @@ export default function LoginPage() {
         }
 
         // Perform login to get session
-        const loginResponse = await fetch('/api/login', {
+        const loginResponse = await fetch(apiPath('/api/login'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -497,7 +498,7 @@ export default function LoginPage() {
             storedKeys.serverPublicKey,
           );
 
-          const verifyResponse = await fetch('/api/login', {
+          const verifyResponse = await fetch(apiPath('/api/login'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -523,7 +524,7 @@ export default function LoginPage() {
 
         // Now delete the user account
         console.log('[DeleteAccount] Deleting user account...');
-        const deleteResponse = await fetch('/api/delete-user', {
+        const deleteResponse = await fetch(apiPath('/api/delete-user'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -554,7 +555,7 @@ export default function LoginPage() {
 
         // Redirect to login page (refresh)
         console.log('[DeleteAccount] ✓ Account deleted, redirecting...');
-        window.location.href = '/login';
+        window.location.href = withBasePath('/login');
       } catch (err) {
         console.error('[DeleteAccount] Error:', err);
         setLoginError('Failed to delete account. Please try again.');

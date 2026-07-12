@@ -1,4 +1,5 @@
 import * as openpgp from 'openpgp';
+import { apiPath, withBasePath } from '@/utils/appPaths';
 import { getDmParticipants, isDmRoom } from './dmRooms';
 import { getBlockedUsers } from './userSettings';
 
@@ -302,7 +303,7 @@ export async function hasValidStoredKeys(): Promise<boolean> {
  */
 export function redirectToLogout(): void {
   if (typeof window === 'undefined') return;
-  window.location.href = '/logout';
+  window.location.href = withBasePath('/logout');
 }
 
 /**
@@ -391,7 +392,7 @@ export function deleteUserKeys(username: string): void {
  * Get server's public key from the server
  */
 export async function fetchServerPublicKey(): Promise<string> {
-  const response = await fetch('/api/server-public-key');
+  const response = await fetch(apiPath('/api/server-public-key'));
   if (!response.ok) {
     throw new Error('Failed to fetch server public key');
   }
@@ -629,7 +630,7 @@ export async function attemptAutoRelogin(): Promise<string | null> {
     console.log('[GPG] Attempting auto-relogin for user:', keys.username);
 
     // Step 1: Send username and public key to server
-    const loginResponse = await fetch('/api/login', {
+    const loginResponse = await fetch(apiPath('/api/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -684,7 +685,7 @@ export async function attemptAutoRelogin(): Promise<string | null> {
         );
 
         // Send the encrypted response
-        const verifyResponse = await fetch('/api/login', {
+        const verifyResponse = await fetch(apiPath('/api/login'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
