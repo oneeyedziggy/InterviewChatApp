@@ -400,6 +400,91 @@ export async function fetchServerPublicKey(): Promise<string> {
   return data.publicKey;
 }
 
+async function submitChallengeResponse(
+  username: string,
+  decryptedUUID: string,
+  serverPublicKey: string,
+): Promise<{ sessionId?: string; error?: string }> {
+  const encryptedResponse = await encryptForServer(
+    decryptedUUID,
+    serverPublicKey,
+  );
+
+  const verifyResponse = await fetch(apiPath('/api/login'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username,
+      encryptedUUID: encryptedResponse,
+    }),
+  });
+
+  if (!verifyResponse.ok) {
+    return { error: 'Challenge-response request failed' };
+  }
+
+  const verifyData = await verifyResponse.json();
+  return {
+    sessionId: verifyData.sessionId,
+    error: verifyData.error,
+  };
+}
+
+/**
+ * Verify an encrypted challenge response, refreshing server public key once
+ * if verification fails (e.g., after server key rotation).
+ */
+export async function verifyChallengeResponseWithKeyRefresh(params: {
+  username: string;
+  decryptedUUID: string;
+  serverPublicKey: string;
+}): Promise<{ sessionId?: string; error?: string; serverPublicKey: string }> {
+  const { username, decryptedUUID } = params;
+  let currentServerPublicKey = params.serverPublicKey;
+
+  const initial = await submitChallengeResponse(
+    username,
+    decryptedUUID,
+    currentServerPublicKey,
+  );
+  if (initial.sessionId) {
+    return {
+      sessionId: initial.sessionId,
+      serverPublicKey: currentServerPublicKey,
+    };
+  }
+
+  try {
+    const refreshedServerPublicKey = await fetchServerPublicKey();
+    if (refreshedServerPublicKey !== currentServerPublicKey) {
+      currentServerPublicKey = refreshedServerPublicKey;
+      const retried = await submitChallengeResponse(
+        username,
+        decryptedUUID,
+        currentServerPublicKey,
+      );
+      if (retried.sessionId) {
+        return {
+          sessionId: retried.sessionId,
+          serverPublicKey: currentServerPublicKey,
+        };
+      }
+
+      return {
+        error: retried.error || initial.error,
+        serverPublicKey: currentServerPublicKey,
+      };
+    }
+  } catch {
+    // Ignore fetch failure and return original verification error below.
+  }
+
+  return {
+    error: initial.error,
+    serverPublicKey: currentServerPublicKey,
+  };
+}
+
 /**
  * Decrypt a message with the user's private key
  */
@@ -678,28 +763,11 @@ export async function attemptAutoRelogin(): Promise<string | null> {
           keys.privateKey,
         );
 
-        // Encrypt the UUID with server's public key
-        const encryptedResponse = await encryptForServer(
+        const verifyData = await verifyChallengeResponseWithKeyRefresh({
+          username: keys.username,
           decryptedUUID,
-          keys.serverPublicKey,
-        );
-
-        // Send the encrypted response
-        const verifyResponse = await fetch(apiPath('/api/login'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            username: keys.username,
-            encryptedUUID: encryptedResponse,
-          }),
+          serverPublicKey: keys.serverPublicKey,
         });
-
-        if (!verifyResponse.ok) {
-          console.warn('[GPG] Auto-relogin: challenge-response request failed');
-          return null;
-        }
-
-        const verifyData = await verifyResponse.json();
 
         if (verifyData.error) {
           console.warn(
@@ -714,6 +782,7 @@ export async function attemptAutoRelogin(): Promise<string | null> {
           // Store the new session ID
           storeKeys({
             ...keys,
+            serverPublicKey: verifyData.serverPublicKey,
             sessionId: verifyData.sessionId,
           });
           return verifyData.sessionId;

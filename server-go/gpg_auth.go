@@ -265,7 +265,7 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 			// Generate UUID challenge
 			challengeUUID := uuid.New().String()
-			log.Printf("[handleLogin] Generated challenge UUID: %s", challengeUUID)
+			log.Printf("[handleLogin] Generated login challenge for user: %s", req.Username)
 
 			// Encrypt UUID with user's public key
 			userKey, err := crypto.NewKeyFromArmored(userPubKey)
@@ -348,7 +348,6 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 
 		decryptedUUID := string(decrypted.GetString())
-		log.Printf("[handleLogin] Decrypted UUID: %s, Expected: %s", decryptedUUID, storedChallenge)
 
 		// Compare UUIDs
 		if decryptedUUID != storedChallenge {
@@ -365,7 +364,7 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		cs.sessionCache.Delete("challenge_" + req.Username) // Clean up challenge
 		cs.setUser(req.Username, sessionID)
 
-		log.Printf("[handleLogin] ✓ Authentication successful for user: %s, session: %s", req.Username, sessionID)
+		log.Printf("[handleLogin] ✓ Authentication successful for user: %s", req.Username)
 		json.NewEncoder(w).Encode(LoginResponse{
 			SessionID: sessionID,
 		})

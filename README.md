@@ -43,3 +43,43 @@
 ### to start
 
 npm install && npm run dev
+
+## Operations
+
+### Build Modes (Local vs Deploy)
+
+- Local artifact test (root path):
+  - `npm run build`
+  - Run the Go server and load from `http://localhost:3001/`
+- Deploy artifact build (`/chatApp` base path):
+  - `./buildDeployArtifact.sh`
+  - This script builds with `APP_BASE_PATH=/chatApp` and packages `out` + `bin` into `dist/deploy.tar.gz`
+
+Note: `out` reflects the most recent build mode. If you switch modes, rebuild before testing.
+
+### Server Key Rotation
+
+Use the root helper script to rotate server GPG keys:
+
+- `./rotate-server-keys.sh`
+
+What it does:
+
+- Deletes `server-go/server-gpg-private-key.asc` and `server-go/server-gpg-key.asc`
+- Starts the Go server briefly to trigger key regeneration
+- Stops the temporary process after new keys are written
+
+### Client Behavior After Key Rotation
+
+The client now includes a refresh-and-retry path for challenge-response auth:
+
+- If challenge-response fails with a stale cached server public key, the client fetches the latest server public key
+- It retries challenge-response one time with the refreshed key
+- On success, the refreshed server public key is saved locally
+
+In practice, users should not need to manually clear local storage after a server key rotation, though an in-flight login may need one retry.
+
+### Security Notes
+
+- Do not commit server private keys or runtime state files.
+- `.gitignore` excludes `*.asc`, `*.pem`, and `server-go/chat-state.json`, but if sensitive files were ever committed previously, rotate and clean history as needed.

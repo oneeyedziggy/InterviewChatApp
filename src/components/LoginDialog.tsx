@@ -15,7 +15,7 @@ import {
   redirectToLogout,
   fetchServerPublicKey,
   decryptMessage,
-  encryptForServer,
+  verifyChallengeResponseWithKeyRefresh,
   type StoredKeys,
 } from '../utils/gpg';
 
@@ -204,24 +204,11 @@ export const LoginDialog = ({
         );
         console.log('[LoginDialog] Decrypted UUID:', decryptedUUID);
 
-        // Encrypt the UUID with server's public key
-        const encryptedResponse = await encryptForServer(
+        const verifyData = await verifyChallengeResponseWithKeyRefresh({
+          username,
           decryptedUUID,
-          keys.serverPublicKey,
-        );
-        console.log('[LoginDialog] Encrypted response for server');
-
-        // Send the encrypted response
-        const verifyResponse = await fetch(apiPath('/api/login'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            username,
-            encryptedUUID: encryptedResponse,
-          }),
+          serverPublicKey: keys.serverPublicKey,
         });
-
-        const verifyData = await verifyResponse.json();
 
         if (verifyData.error) {
           setLoginError(verifyData.error);
@@ -233,6 +220,7 @@ export const LoginDialog = ({
           // Store keys with session ID
           storeKeys({
             ...keys,
+            serverPublicKey: verifyData.serverPublicKey,
             sessionId: verifyData.sessionId,
           });
           setLoginError('');

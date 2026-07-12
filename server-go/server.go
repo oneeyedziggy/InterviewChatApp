@@ -208,7 +208,7 @@ func generateOrLoadServerKeys() (*crypto.KeyRing, string, error) {
 
 func (cs *ChatServer) setUser(name, sessionID string) {
 	log.Printf("[setUser] ===== ENTERING setUser ======")
-	log.Printf("[setUser] Attempting to acquire lock for user: %s, session: %s", name, sessionID)
+	log.Printf("[setUser] Attempting to acquire lock for user: %s", name)
 	cs.mu.Lock()
 	log.Printf("[setUser] ✓ Lock acquired")
 	oldSessionID, wasLoggedIn := cs.users[name]
@@ -222,7 +222,7 @@ func (cs *ChatServer) setUser(name, sessionID string) {
 			// message will be sent asynchronously; `sendJoinMessage` will set
 			// `hasSentJoinMsg` when it completes.
 			cs.joinScheduled[name] = true
-			log.Printf("[setUser] ✓ Scheduled join message for user %s (was logged in: %v, old session: %s)", name, wasLoggedIn, oldSessionID)
+			log.Printf("[setUser] ✓ Scheduled join message for user %s (was logged in: %v)", name, wasLoggedIn)
 			cs.mu.Unlock()
 			go cs.sendJoinMessage(name)
 			cs.mu.Lock()

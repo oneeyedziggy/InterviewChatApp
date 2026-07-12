@@ -19,7 +19,7 @@ import {
   loadUserPublicKeys,
   fetchServerPublicKey,
   decryptMessage,
-  encryptForServer,
+  verifyChallengeResponseWithKeyRefresh,
   type StoredKeys,
 } from '../utils/gpg';
 
@@ -342,24 +342,11 @@ export default function LoginPage() {
           );
           console.log('[LoginPage] Decrypted UUID:', decryptedUUID);
 
-          // Encrypt the UUID with server's public key
-          const encryptedResponse = await encryptForServer(
+          const verifyData = await verifyChallengeResponseWithKeyRefresh({
+            username,
             decryptedUUID,
-            keys.serverPublicKey,
-          );
-          console.log('[LoginPage] Encrypted response for server');
-
-          // Send the encrypted response
-          const verifyResponse = await fetch(apiPath('/api/login'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              username,
-              encryptedUUID: encryptedResponse,
-            }),
+            serverPublicKey: keys.serverPublicKey,
           });
-
-          const verifyData = await verifyResponse.json();
 
           if (verifyData.error) {
             setLoginError(verifyData.error);
@@ -371,6 +358,7 @@ export default function LoginPage() {
             // Store keys with session ID
             storeKeys({
               ...keys,
+              serverPublicKey: verifyData.serverPublicKey,
               sessionId: verifyData.sessionId,
             });
 
@@ -493,26 +481,17 @@ export default function LoginPage() {
             loginData.challenge,
             storedKeys.privateKey,
           );
-          const encryptedResponse = await encryptForServer(
+          const verifyData = await verifyChallengeResponseWithKeyRefresh({
+            username: usernameToDelete,
             decryptedUUID,
-            storedKeys.serverPublicKey,
-          );
-
-          const verifyResponse = await fetch(apiPath('/api/login'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              username: usernameToDelete,
-              encryptedUUID: encryptedResponse,
-            }),
+            serverPublicKey: storedKeys.serverPublicKey,
           });
-
-          const verifyData = await verifyResponse.json();
           if (verifyData.error || !verifyData.sessionId) {
             setLoginError(verifyData.error || 'Authentication failed');
             setIsLoading(false);
             return;
           }
+          storedKeys.serverPublicKey = verifyData.serverPublicKey;
           sessionId = verifyData.sessionId;
         } else if (loginData.sessionId) {
           sessionId = loginData.sessionId;
