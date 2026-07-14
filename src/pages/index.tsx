@@ -30,6 +30,7 @@ import {
   loadKeys,
   hasValidStoredKeys,
   redirectToLogout,
+  forceReauthToLogin,
   attemptAutoRelogin,
 } from '../utils/gpg';
 import { getDmRoomId, getRoomDisplayLabel } from '../utils/dmRooms';
@@ -914,7 +915,7 @@ const Home = () => {
       const keysValid = await hasValidStoredKeys();
 
       if (!keysValid || !storedKeys?.sessionId) {
-        redirectToLogout();
+        forceReauthToLogin();
         return;
       }
 
@@ -937,7 +938,7 @@ const Home = () => {
             // Use unified initialization after successful auto-relog
             initializeSession(newSessionId, storedKeys.username);
           } else {
-            redirectToLogout();
+            forceReauthToLogin();
           }
           return;
         }
@@ -955,7 +956,7 @@ const Home = () => {
           } else {
             // Auto-relogin failed, force re-login
             console.warn('[Home] Auto-relogin failed; forcing manual re-login');
-            redirectToLogout();
+            forceReauthToLogin();
           }
           return;
         }
@@ -972,7 +973,7 @@ const Home = () => {
           // Use unified initialization after successful auto-relog
           initializeSession(newSessionId, storedKeys.username);
         } else {
-          redirectToLogout();
+          forceReauthToLogin();
         }
         return;
       }

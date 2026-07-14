@@ -12,9 +12,12 @@ node_modules/
 
 # Production
 /build
+*.tar.gz
 
 # Misc
 .DS_Store
+
+# Keys
 *.pem
 *.asc
 

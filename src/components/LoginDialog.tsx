@@ -12,7 +12,7 @@ import {
   loadKeys,
   clearKeys,
   hasValidStoredKeys,
-  redirectToLogout,
+  forceReauthToLogin,
   fetchServerPublicKey,
   decryptMessage,
   verifyChallengeResponseWithKeyRefresh,
@@ -88,7 +88,7 @@ export const LoginDialog = ({
 
     if (!keysValid) {
       if (storedKeys?.sessionId) {
-        redirectToLogout();
+        forceReauthToLogin();
       }
       return;
     }

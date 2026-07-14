@@ -5,42 +5,8 @@ set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
-# Function to calculate checksum of source files
-calculate_source_hash() {
-  # Track ONLY explicit source code file extensions (excluding server-go directory).
-  find src public package.json package-lock.json next.config.cjs -type f 2>/dev/null | \
-    tr '\\' '/' | \
-    grep -E "\.(json|js|ts|tsx|css|html|sh|md|png|jpg|jpeg|svg|txt|json5|cjs|mjs)$" | \
-    grep -v -E "/\.next/|/node_modules/|/out/|/dist/|/bin/" | \
-    sort | \
-    xargs sha256sum 2>/dev/null
-}
-
-get_hash_signature() {
-  calculate_source_hash | sha256sum | cut -d' ' -f1
-}
-
-HASH_FILE="dist/.build_hash"
+DEPLOY_BASE_PATH="/chatApp"
 TAR_FILE="dist/deploy.tar.gz"
-DEBUG_HASH_FILE="dist/.build_hash_debug"
-
-# Check if we can skip the build
-if [ -f "$TAR_FILE" ] && [ -f "$HASH_FILE" ]; then
-  CURRENT_HASH=$(get_hash_signature)
-  SAVED_HASH=$(cat "$HASH_FILE" 2>/dev/null || true)
-  if [ "$CURRENT_HASH" = "$SAVED_HASH" ]; then
-    echo "No project changes detected since the last build. Skipping build and reusing existing package."
-    exit 0
-  else
-    echo "Changes detected. Current hash: $CURRENT_HASH, Saved hash: $SAVED_HASH"
-    if [ -f "$DEBUG_HASH_FILE" ]; then
-      echo "=== File changes causing rebuild ==="
-      calculate_source_hash > "dist/.current_hash_debug"
-      diff "$DEBUG_HASH_FILE" "dist/.current_hash_debug" || true
-      rm -f "dist/.current_hash_debug"
-    fi
-  fi
-fi
 
 # Cleanup previous build artifacts to ensure a fresh, clean build
 echo "Cleaning up previous build directories..."
@@ -56,8 +22,9 @@ if [ -f package.json ]; then
     npm install --no-audit --no-fund
   fi
 
-  echo "Running Next.js build for deploy path /chatApp..."
-  APP_BASE_PATH=/chatApp npm run build
+  echo "Running Next.js build for deploy path $DEPLOY_BASE_PATH..."
+  APP_BASE_PATH="$DEPLOY_BASE_PATH" node --input-type=module -e "const cfgMod = await import('./next.config.mjs'); const cfg = cfgMod.default ?? cfgMod; console.log('[build] next.config basePath=', cfg.basePath || '<empty>', 'assetPrefix=', cfg.assetPrefix || '<empty>');"
+  APP_BASE_PATH="$DEPLOY_BASE_PATH" npx next build
   echo "Node build succeeded."
 else
   echo "No package.json – skipping Node steps."
@@ -66,6 +33,32 @@ fi
 # Verify static site output
 if [ ! -d out ]; then
   echo "Error: ./out directory missing after Node build."
+  exit 1
+fi
+
+# Verify exported HTML uses deploy base path. Fail fast if artifact is stale/root-built.
+if ! grep -q "${DEPLOY_BASE_PATH}/_next/" out/index.html; then
+  echo "Error: out/index.html is not built with base path '${DEPLOY_BASE_PATH}'."
+  echo "Expected to find '${DEPLOY_BASE_PATH}/_next/' in exported HTML."
+  echo "Try forcing a fresh build: rm -rf out dist/deploy.tar.gz && ./buildDeployArtifact.sh"
+  exit 1
+fi
+
+# Verify login/logout exports are present and route metadata is correct.
+if [ ! -f out/login/index.html ]; then
+  echo "Error: out/login/index.html is missing from export."
+  exit 1
+fi
+if [ ! -f out/logout/index.html ]; then
+  echo "Error: out/logout/index.html is missing from export."
+  exit 1
+fi
+if ! grep -q '"page":"/login"' out/login/index.html; then
+  echo "Error: out/login/index.html does not contain __NEXT_DATA__ page '/login'."
+  exit 1
+fi
+if ! grep -q '"page":"/logout"' out/logout/index.html; then
+  echo "Error: out/logout/index.html does not contain __NEXT_DATA__ page '/logout'."
   exit 1
 fi
 
@@ -91,9 +84,5 @@ mkdir -p dist
 # Add any additional config files here, e.g., cp config.yaml dist/
 
 tar --exclude="*.asc" --exclude="*.pem" -czf "$TAR_FILE" out bin
-
-# Save build hash and individual file hashes for debugging next time
-get_hash_signature > "$HASH_FILE"
-calculate_source_hash > "$DEBUG_HASH_FILE"
 
 echo "Package created at $TAR_FILE"

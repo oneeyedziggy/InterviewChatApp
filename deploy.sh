@@ -4,6 +4,7 @@ set -e
 # Target VPS settings
 SSH_USER="oneeyedziggy"
 SSH_HOST="vps70662.dreamhostps.com"
+DEPLOY_BASE_PATH="${APP_BASE_PATH:-/chatApp}"
 
 # Determine script directory
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,6 +26,7 @@ echo "Deploying on remote host..."
 ssh "$SSH_USER@$SSH_HOST" bash -s <<EOS
   set -e
   APP_DIR="\$HOME/chatApp"
+  DEPLOY_BASE_PATH="$DEPLOY_BASE_PATH"
   
   echo "Stopping any existing server instances..."
   pkill -f "bin/server" || true
@@ -47,7 +49,7 @@ ssh "$SSH_USER@$SSH_HOST" bash -s <<EOS
   
   echo "Starting Go web server..."
   # Run in background via nohup so it stays alive when SSH session closes
-  nohup ./bin/server > server.log 2>&1 &
+  nohup bash -lc "cd \"\$APP_DIR/bin\" && APP_BASE_PATH=\"\$DEPLOY_BASE_PATH\" ./server" > "\$APP_DIR/server.log" 2>&1 &
   
   echo "Server started successfully in background! Logs are in \$APP_DIR/server.log"
 EOS

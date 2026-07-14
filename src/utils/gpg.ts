@@ -299,11 +299,32 @@ export async function hasValidStoredKeys(): Promise<boolean> {
 }
 
 /**
- * Navigate to the logout page (clears session, then sends user to login).
+ * Navigate to the logout page (which clears session and sends user to login).
  */
 export function redirectToLogout(): void {
   if (typeof window === 'undefined') return;
-  window.location.href = withBasePath('/logout');
+  window.location.href = withBasePath('/logout/');
+}
+
+/**
+ * Force re-authentication by clearing the current session and sending user to login.
+ *
+ * Use this for auth guard failures to avoid depending on /logout route handling.
+ */
+export function forceReauthToLogin(): void {
+  if (typeof window === 'undefined') return;
+
+  const loginPath = withBasePath('/login/').replace(/\/+$/, '');
+  const currentPath = window.location.pathname.replace(/\/+$/, '');
+
+  clearSession();
+
+  // Avoid hard reload loops when a guard fires while we're already on login.
+  if (currentPath === loginPath) {
+    return;
+  }
+
+  window.location.href = withBasePath('/login/');
 }
 
 /**

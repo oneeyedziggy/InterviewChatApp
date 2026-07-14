@@ -10,7 +10,7 @@ import {
   loadKeys,
   loadKeysForUser,
   hasValidStoredKeys,
-  redirectToLogout,
+  forceReauthToLogin,
   getAllLocalUsers,
   getAllUsersWithPublicKeys,
   isLocalUser,
@@ -189,7 +189,7 @@ export default function LoginPage() {
           console.log(
             '[LoginPage] Invalid or missing private key, redirecting to logout',
           );
-          redirectToLogout();
+          forceReauthToLogin();
           return;
         }
       } else if (storedKeys?.sessionId) {
@@ -534,7 +534,7 @@ export default function LoginPage() {
 
         // Redirect to login page (refresh)
         console.log('[DeleteAccount] ✓ Account deleted, redirecting...');
-        window.location.href = withBasePath('/login');
+        window.location.href = withBasePath('/login/');
       } catch (err) {
         console.error('[DeleteAccount] Error:', err);
         setLoginError('Failed to delete account. Please try again.');
