@@ -58,9 +58,19 @@ func (m *mimeOverrideWriter) WriteHeader(code int) {
 }
 
 func resolveOutDir() string {
+	// Allow explicit override for local dev (e.g. go run . from server-go/ dir).
+	if override := os.Getenv("OUT_DIR"); override != "" {
+		return filepath.Clean(override)
+	}
+
 	execPath, err := os.Executable()
 	if err != nil {
 		log.Printf("Warning: unable to resolve executable path (%v), falling back to ../out", err)
+		return "../out"
+	}
+
+	// go run stores temp binaries under os.TempDir(); fall back to ../out in that case.
+	if strings.HasPrefix(execPath, os.TempDir()) {
 		return "../out"
 	}
 

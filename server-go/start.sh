@@ -80,6 +80,32 @@ if [ -z "$GO_CMD" ]; then
 fi
 
 echo "Using Go command: $GO_CMD"
+
+# Resolve the out directory relative to server-go's parent (project root).
+# This is needed because go run uses a temp binary path, bypassing resolveOutDir's
+# exe-relative logic; OUT_DIR lets the server find the correct static export.
+OUT_DIR="${OUT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)/out}"
+echo "Static out dir: $OUT_DIR"
+
+# APP_BASE_PATH defaults to empty for local runs (served at /).
+# Set it explicitly if testing a prefixed deployment locally, e.g.:
+#   APP_BASE_PATH=/chatApp ./start.sh
+APP_BASE_PATH="${APP_BASE_PATH:-}"
+
+# If APP_BASE_PATH is not explicitly set, infer it from the built export.
+# This keeps local server routing aligned with whatever base path out/ was built with.
+if [ -z "$APP_BASE_PATH" ] && [ -f "$OUT_DIR/index.html" ]; then
+    DETECTED_PREFIX=$(grep -oE '"/[^" ]*/_next/static/' "$OUT_DIR/index.html" | head -n1 | sed -E 's#"/##; s#/_next/static/##')
+    if [ -n "$DETECTED_PREFIX" ]; then
+        APP_BASE_PATH="/$DETECTED_PREFIX"
+        echo "Detected APP_BASE_PATH from export: $APP_BASE_PATH"
+    else
+        echo "Detected root export (no APP_BASE_PATH)"
+    fi
+fi
+
+echo "Using APP_BASE_PATH: ${APP_BASE_PATH:-<root>}"
+
 # Start the server
-PORT=$PORT "$GO_CMD" run .
+PORT=$PORT OUT_DIR="$OUT_DIR" APP_BASE_PATH="$APP_BASE_PATH" "$GO_CMD" run .
 
