@@ -9,6 +9,8 @@ function normalizeBasePath(basePath) {
 }
 
 const basePath = normalizeBasePath(configuredBasePath);
+const buildStamp =
+  process.env.NEXT_PUBLIC_BUILD_STAMP ?? new Date().toISOString();
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -17,6 +19,7 @@ const nextConfig = {
   ...(basePath ? { basePath, assetPrefix: basePath } : {}),
   env: {
     NEXT_PUBLIC_BASE_PATH: basePath,
+    NEXT_PUBLIC_BUILD_STAMP: buildStamp,
   },
   images: {
     unoptimized: true,

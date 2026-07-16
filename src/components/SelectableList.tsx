@@ -22,10 +22,12 @@ const Wrapper = styled.div`
 
 const Option = styled.div<{ $isActive: boolean }>`
   border: 1px solid #556;
-  background-color: ${(props) => (props.$isActive ? '#aab' : '#fffff00')};
-  color: #333344;
-  font-weight: ${(props) => (props.$isActive ? 700 : 300)};
+  background-color: ${(props) => (props.$isActive ? '#b8ccee' : '#e5edf9')};
+  color: #0c1b33;
+  font-weight: ${(props) => (props.$isActive ? 700 : 500)};
   margin: 0px;
+  padding: 3px 6px 3px 10px;
+  cursor: pointer;
 `;
 
 export const SelectableList = ({

@@ -1,5 +1,4 @@
 import React, { type HTMLInputTypeAttribute } from 'react';
-import styled from 'styled-components';
 
 type InputProps = {
   id: string;
@@ -14,25 +13,6 @@ type InputProps = {
   onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement>) => void;
   autoFocus?: boolean;
 };
-
-const BlockLabel = styled.label`
-  min-width: 85px;
-  display: block;
-  text-align: right;
-`;
-const InputError = styled.span`
-  color: red;
-`;
-const BlockInput = styled.input`
-  display: block;
-  margin-top: 5px;
-`;
-const FlexRowWrapper = styled.div`
-  display: flex;
-  flex-direction: row;
-  justify-content: center;
-  align-items: center;
-`;
 
 export const Input = ({
   id,
@@ -52,10 +32,13 @@ export const Input = ({
   };
 
   return (
-    <FlexRowWrapper>
-      <BlockLabel htmlFor={id}>{label}</BlockLabel>
-      <div>
-        <BlockInput
+    <div className="app-auth-input-row">
+      <label className="app-auth-input-label" htmlFor={id}>
+        {label}
+      </label>
+      <div className="app-auth-input-field-wrap">
+        <input
+          className="app-text-input"
           id={id}
           name={name ?? id}
           type={type}
@@ -66,9 +49,9 @@ export const Input = ({
           onKeyDown={onKeyDown}
           autoFocus={autoFocus}
         />
-        {error && <InputError>{error}</InputError>}
+        {error && <span className="app-auth-input-error">{error}</span>}
       </div>
-    </FlexRowWrapper>
+    </div>
   );
 };
 

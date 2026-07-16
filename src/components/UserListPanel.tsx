@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { styled } from 'styled-components';
 import { ScrollableDiv } from './styled/ScrollableDiv';
 import { ConfirmPopover } from './ConfirmPopover';
@@ -18,16 +19,27 @@ const MenuButton = styled.button`
   }
 `;
 
-const UserRow = styled.div<{ $isSelf?: boolean; $loggedIn?: boolean; $blocked?: boolean }>`
+const UserRow = styled.div<{
+  $isSelf?: boolean;
+  $loggedIn?: boolean;
+  $blocked?: boolean;
+}>`
   display: flex;
   align-items: center;
   justify-content: space-between;
   border: 1px solid #556;
-  background-color: ${(p) => (p.$isSelf ? '#aab' : '#fffff00')};
-  color: ${(p) => (p.$blocked ? '#bbb' : p.$loggedIn ? '#000' : '#999')};
-  font-weight: ${(p) => (p.$isSelf ? 700 : p.$loggedIn ? 400 : 300)};
-  margin: 0;
-  padding: 2px 4px 2px 5px;
+  background-color: ${(p) => (p.$isSelf ? '#b8ccee' : '#e5edf9')};
+  color: ${(p) =>
+    p.$blocked
+      ? '#6b7790'
+      : p.$isSelf
+        ? '#0c1b33'
+        : p.$loggedIn
+          ? '#27486c'
+          : '#516b8d'};
+  font-weight: ${(p) => (p.$isSelf ? 700 : p.$loggedIn ? 500 : 400)};
+  margin: 0 0 2px;
+  padding: 2px 4px 2px 8px;
   font-size: 12px;
   position: relative;
 `;
@@ -39,15 +51,15 @@ const UserName = styled.span`
   white-space: nowrap;
 `;
 
-const ContextMenu = styled.div`
-  position: absolute;
-  right: 0;
-  top: 100%;
+const ContextMenu = styled.div<{ $top: number; $left: number }>`
+  position: fixed;
+  left: ${(p) => `${p.$left}px`};
+  top: ${(p) => `${p.$top}px`};
   z-index: 999;
-  background: white;
-  border: 1px solid #ccc;
+  background: #12304f;
+  border: 1px solid #3d628d;
   border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
   min-width: 140px;
 `;
 
@@ -55,18 +67,20 @@ const MenuItem = styled.button`
   display: block;
   width: 100%;
   text-align: left;
-  padding: 8px 12px;
+  padding: 4px 10px;
   border: none;
-  background: white;
+  background: #12304f;
+  color: #c9e7ff;
   font-size: 12px;
+  line-height: 1.2;
   cursor: pointer;
 
   &:hover {
-    background: #f0f0f0;
+    background: #1d466f;
   }
 
   &:not(:last-child) {
-    border-bottom: 1px solid #eee;
+    border-bottom: 1px solid #2c537b;
   }
 `;
 
@@ -110,22 +124,21 @@ function UserListEntry({
   onSendPublicKey: (user: string) => void;
   onBlockUser: (user: string) => void;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
-  const rowRef = useRef<HTMLDivElement>(null);
 
   const isSelf = user === currentUsername;
 
   useEffect(() => {
-    if (!menuOpen) return;
-    const close = () => setMenuOpen(false);
+    if (!menuAnchor) return;
+    const close = () => setMenuAnchor(null);
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
-  }, [menuOpen]);
+  }, [menuAnchor]);
 
   const openConfirm = (type: 'block' | 'sendKey', e: React.MouseEvent) => {
     const anchor = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setMenuOpen(false);
+    setMenuAnchor(null);
     setPending({ type, user, anchor });
   };
 
@@ -140,7 +153,7 @@ function UserListEntry({
   }
 
   return (
-    <UserRow ref={rowRef} $loggedIn={loggedIn} $blocked={blocked}>
+    <UserRow $loggedIn={loggedIn} $blocked={blocked}>
       <UserName>
         {user} {blocked ? '🚫' : loggedIn ? '🟢' : '⚫'}
       </UserName>
@@ -149,30 +162,39 @@ function UserListEntry({
         aria-label={`Actions for ${user}`}
         onClick={(e) => {
           e.stopPropagation();
-          setMenuOpen((o) => !o);
+          const anchor = (
+            e.currentTarget as HTMLElement
+          ).getBoundingClientRect();
+          setMenuAnchor((current) => (current ? null : anchor));
         }}
       >
         ⋯
       </MenuButton>
-      {menuOpen && (
-        <ContextMenu onMouseDown={(e) => e.stopPropagation()}>
-          <MenuItem
-            type="button"
-            onClick={() => {
-              setMenuOpen(false);
-              onMessageUser(user);
-            }}
+      {menuAnchor &&
+        createPortal(
+          <ContextMenu
+            $top={menuAnchor.bottom + 4}
+            $left={Math.max(8, menuAnchor.right - 140)}
+            onMouseDown={(e) => e.stopPropagation()}
           >
-            Message
-          </MenuItem>
-          <MenuItem type="button" onClick={(e) => openConfirm('sendKey', e)}>
-            Send private key
-          </MenuItem>
-          <MenuItem type="button" onClick={(e) => openConfirm('block', e)}>
-            Block
-          </MenuItem>
-        </ContextMenu>
-      )}
+            <MenuItem
+              type="button"
+              onClick={() => {
+                setMenuAnchor(null);
+                onMessageUser(user);
+              }}
+            >
+              Message
+            </MenuItem>
+            <MenuItem type="button" onClick={(e) => openConfirm('sendKey', e)}>
+              Send private key
+            </MenuItem>
+            <MenuItem type="button" onClick={(e) => openConfirm('block', e)}>
+              Block
+            </MenuItem>
+          </ContextMenu>,
+          document.body,
+        )}
       {pending?.type === 'block' && pending.user === user && (
         <ConfirmPopover
           message={`Block ${user}? You will no longer see their messages or encrypt for them.`}
@@ -215,7 +237,7 @@ export function UserListPanel({
 }: UserListPanelProps) {
   const sortByLastSeen = useCallback(
     (a: string, b: string) => (userLastSeen[b] || 0) - (userLastSeen[a] || 0),
-    [userLastSeen]
+    [userLastSeen],
   );
 
   const filteredLoggedIn = loggedInUsers
@@ -228,7 +250,7 @@ export function UserListPanel({
   return (
     <>
       <div style={{ marginBottom: '5px' }}>Users:</div>
-      <ScrollableDiv $padding="0px">
+      <ScrollableDiv $padding="0px" $border="none" $marginLeft="8px">
         {filteredLoggedIn.length > 0 && (
           <>
             <SectionLabel>Logged In ({filteredLoggedIn.length}):</SectionLabel>

@@ -2,8 +2,9 @@
 import { useEffect, useState, useCallback } from 'react';
 import { apiPath, withBasePath } from '@/utils/appPaths';
 import { Input } from '../components/Input';
-import { styled } from 'styled-components';
 import { VALIDATION } from '../constants';
+import { AuthCard, PageShell } from '../components/layout/PageShell';
+import { getUsernameError } from '../utils/authValidation';
 import {
   generateKeyPair,
   storeKeys,
@@ -22,130 +23,6 @@ import {
   verifyChallengeResponseWithKeyRefresh,
   type StoredKeys,
 } from '../utils/gpg';
-
-const LoginContainer = styled.div`
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-  background: #f5f5f5;
-`;
-
-const LoginBox = styled.div`
-  background: white;
-  padding: 40px;
-  border-radius: 8px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-  width: 100%;
-  max-width: 400px;
-  text-align: center;
-`;
-
-const InputError = styled.span`
-  color: red;
-  display: block;
-  margin-top: 5px;
-  font-size: 14px;
-`;
-
-const LoginButton = styled.button`
-  width: 100%;
-  padding: 12px;
-  margin-top: 20px;
-  font-size: 16px;
-  border: none;
-  border-radius: 6px;
-  background: #3498db;
-  color: white;
-  cursor: pointer;
-  transition: background 0.2s;
-
-  &:hover:not(:disabled) {
-    background: #2980b9;
-  }
-
-  &:disabled {
-    background: #95a5a6;
-    cursor: not-allowed;
-  }
-`;
-
-const DeleteButton = styled.button`
-  width: 100%;
-  padding: 12px;
-  margin-top: 10px;
-  font-size: 16px;
-  border: none;
-  border-radius: 6px;
-  background: #e74c3c;
-  color: white;
-  cursor: pointer;
-  transition: background 0.2s;
-
-  &:hover:not(:disabled) {
-    background: #c0392b;
-  }
-
-  &:disabled {
-    background: #95a5a6;
-    cursor: not-allowed;
-  }
-`;
-
-const InfoText = styled.div`
-  margin-top: 10px;
-  font-size: 12px;
-  color: #666;
-`;
-
-const getUsernameError = (username: string): string => {
-  if (!username.length) {
-    return '';
-  }
-  if (username.length < VALIDATION.MIN_USERNAME_LENGTH) {
-    return `Username must be at least ${VALIDATION.MIN_USERNAME_LENGTH} characters`;
-  }
-  if (/\s/.test(username)) {
-    return 'Username cannot contain whitespace';
-  }
-  return '';
-};
-
-const UserSelect = styled.select`
-  width: 100%;
-  padding: 12px;
-  margin-top: 10px;
-  font-size: 16px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-`;
-
-const Divider = styled.div`
-  margin: 20px 0;
-  text-align: center;
-  color: #999;
-  font-size: 14px;
-  position: relative;
-
-  &::before,
-  &::after {
-    content: '';
-    position: absolute;
-    top: 50%;
-    width: 40%;
-    height: 1px;
-    background: #ddd;
-  }
-
-  &::before {
-    left: 0;
-  }
-
-  &::after {
-    right: 0;
-  }
-`;
 
 export default function LoginPage() {
   const [username, setUsername] = useState<string>('');
@@ -545,11 +422,12 @@ export default function LoginPage() {
   );
 
   return (
-    <LoginContainer>
-      <LoginBox>
-        <h1>Login</h1>
-        {loginError && <InputError>{loginError}</InputError>}
+    <PageShell className="app-auth-shell">
+      <AuthCard className="app-auth-card-content">
+        <h1 className="app-auth-title">Login</h1>
+        {loginError && <span className="app-auth-error">{loginError}</span>}
         <form
+          className="app-auth-form"
           onSubmit={(e) => {
             e.preventDefault();
             if (!isSubmitDisabled && !isLoading) {
@@ -559,18 +437,12 @@ export default function LoginPage() {
         >
           {showUserSelect && (
             <>
-              <label
-                htmlFor="userSelect"
-                style={{
-                  display: 'block',
-                  marginBottom: '5px',
-                  textAlign: 'left',
-                }}
-              >
+              <label htmlFor="userSelect" className="app-auth-label">
                 Select existing user:
               </label>
-              <UserSelect
+              <select
                 id="userSelect"
+                className="app-text-input app-auth-select"
                 value={selectedUser}
                 onChange={(e) => {
                   setSelectedUser(e.target.value);
@@ -585,8 +457,8 @@ export default function LoginPage() {
                     {user}
                   </option>
                 ))}
-              </UserSelect>
-              <Divider>or</Divider>
+              </select>
+              <div className="app-auth-divider">or</div>
             </>
           )}
           <Input
@@ -610,29 +482,34 @@ export default function LoginPage() {
             required={true}
             autoFocus={localUsers.length === 0}
           />
-          <LoginButton type="submit" disabled={isSubmitDisabled || isLoading}>
+          <button
+            type="submit"
+            disabled={isSubmitDisabled || isLoading}
+            className="app-primary-button app-auth-submit-button"
+          >
             {isLoading
               ? 'Logging in...'
               : username && localUsers.includes(username)
                 ? 'Login as ' + username
                 : 'Login / Create User'}
-          </LoginButton>
+          </button>
         </form>
         {username && localUsers.includes(username) && (
-          <DeleteButton
+          <button
             type="button"
             onClick={() => handleDeleteAccount(username)}
             disabled={isLoading}
+            className="app-primary-button app-auth-danger-button"
           >
             {isLoading ? 'Processing...' : 'Delete Account'}
-          </DeleteButton>
+          </button>
         )}
-        <InfoText>
+        <div className="app-auth-helper">
           {username && localUsers.includes(username)
             ? 'Logging in with existing keys for ' + username
             : 'GPG keys will be generated automatically for new users'}
-        </InfoText>
-      </LoginBox>
-    </LoginContainer>
+        </div>
+      </AuthCard>
+    </PageShell>
   );
 }
