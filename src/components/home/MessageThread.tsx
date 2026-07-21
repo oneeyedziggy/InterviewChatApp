@@ -1,10 +1,47 @@
+import { createPortal } from 'react-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { type Socket } from 'socket.io-client';
+import { styled } from 'styled-components';
 import { ScrollableDiv } from '../styled/ScrollableDiv';
 import { SOCKET_EVENTS, FEATURES } from '../../constants';
 import { type Messages, type Message } from '../../types/types';
 import { canUserViewMessage } from '../../utils/messages';
+import {
+  CONTEXT_MENU_CLOSE_EVENT,
+  closeOtherContextMenus,
+} from '../../utils/contextMenuEvents';
 import { mdStringToReact } from '../../utils/markdown';
+
+const ActionMenuButton = styled.button<{ $danger?: boolean }>`
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: transparent;
+  color: ${(p) => (p.$danger ? '#a11f2d' : '#18324d')};
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: ${(p) => (p.$danger ? 700 : 600)};
+
+  &:hover {
+    background: ${(p) => (p.$danger ? '#7f1d28' : '#103f6b')};
+    color: #ffffff;
+  }
+`;
+
+const MessageActionMenu = styled.div<{ $top: number; $left: number }>`
+  position: fixed;
+  top: ${(p) => `${p.$top}px`};
+  left: ${(p) => `${p.$left}px`};
+  z-index: 12000;
+  min-width: 150px;
+  padding: 6px;
+  border-radius: 8px;
+  border: 1px solid #6e87a5;
+  background: #f7fbff;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.24);
+`;
 
 const MessageWithReplies = ({
   message,
@@ -67,11 +104,17 @@ const MessageWithReplies = ({
   indentLevel?: number;
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const actionMenuRef = useRef<HTMLDetailsElement | null>(null);
+  const [actionMenuAnchor, setActionMenuAnchor] = useState<DOMRect | null>(
+    null,
+  );
   const replies = childrenByParent.get(message.timestamp) ?? [];
   const hasReplies = replies.length > 0;
   const isOwnNonSystemMessage =
-    !!username && message.username === username && message.username !== 'system';
+    !!username &&
+    message.username === username &&
+    message.username !== 'system';
+  const isDeletedMessage =
+    !!message.deleted || message.content === 'Message deleted';
 
   const sortedReplies = [...replies]
     .filter((r) => canUserViewMessage(r, username))
@@ -86,11 +129,44 @@ const MessageWithReplies = ({
     }
   }, [hasReplies, isExpanded, markDirectRepliesRead, message.timestamp]);
 
+  useEffect(() => {
+    const handleSharedClose = () => {
+      setActionMenuAnchor(null);
+    };
+    window.addEventListener(CONTEXT_MENU_CLOSE_EVENT, handleSharedClose);
+    return () => {
+      window.removeEventListener(CONTEXT_MENU_CLOSE_EVENT, handleSharedClose);
+    };
+  }, []);
+
   const closeActionMenu = () => {
-    if (actionMenuRef.current) {
-      actionMenuRef.current.open = false;
-    }
+    setActionMenuAnchor(null);
   };
+
+  const localTimestamp = new Date(message.timestamp * 1000).toLocaleString();
+
+  const renderAuthorLine = () => (
+    <span
+      title={`Sent at ${localTimestamp}`}
+      style={{
+        cursor: 'help',
+        textDecoration: 'underline',
+        textDecorationStyle: 'dotted',
+      }}
+    >
+      <span>{message.username}</span>
+      <span
+        style={{
+          marginLeft: '6px',
+          fontSize: '0.62em',
+          color: '#8f9bad',
+          fontWeight: 400,
+        }}
+      >
+        {localTimestamp}
+      </span>
+    </span>
+  );
 
   let hasAccess = false;
   let encryptedData: string | null = null;
@@ -102,29 +178,28 @@ const MessageWithReplies = ({
     }
   }
 
-  if (
-    !hasAccess &&
-    username &&
-    message.versions &&
-    message.versions.length > 0
-  ) {
-    const newestVersion = message.versions[0];
-    if (newestVersion.encryptedFor) {
-      hasAccess = !!newestVersion.encryptedFor[username];
-      if (hasAccess) {
-        encryptedData = newestVersion.encryptedFor[username];
-      }
-    }
-  }
-
-  const canDecrypt =
-    hasAccess &&
-    message.content &&
-    message.content.trim() !== '' &&
-    !message.content.includes('🔒') &&
-    !message.content.includes('[Encrypted message]');
-
   const renderMessageContent = () => {
+    if (message.deleted || message.content === 'Message deleted') {
+      return (
+        <div
+          style={{
+            color: '#7d7d7d',
+            fontStyle: 'italic',
+            display: 'inline-block',
+          }}
+        >
+          {renderAuthorLine()}: Message deleted
+        </div>
+      );
+    }
+
+    const canDecrypt =
+      hasAccess &&
+      message.content &&
+      message.content.trim() !== '' &&
+      !message.content.includes('🔒') &&
+      !message.content.includes('[Encrypted message]');
+
     const isAccessRequest =
       message.content &&
       (message.content.includes('requests access') ||
@@ -273,23 +348,10 @@ const MessageWithReplies = ({
     }
 
     if (!canDecrypt && (message.encryptedFor || message.versions)) {
-      const localTime = new Date(message.timestamp * 1000).toLocaleString();
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span>🔒</span>
-          <span>
-            <span
-              title={`Sent at ${localTime}`}
-              style={{
-                cursor: 'help',
-                textDecoration: 'underline',
-                textDecorationStyle: 'dotted',
-              }}
-            >
-              {message.username}
-            </span>
-            : [Encrypted message]
-          </span>
+          <span>{renderAuthorLine()}: [Encrypted message]</span>
           {onRequestAccess && (
             <button
               onClick={() =>
@@ -346,20 +408,10 @@ const MessageWithReplies = ({
           </div>
         )}
         {(() => {
-          const localTime = new Date(message.timestamp * 1000).toLocaleString();
           return (
             <span>
-              <span
-                title={`Sent at ${localTime}`}
-                style={{
-                  cursor: 'help',
-                  textDecoration: 'underline',
-                  textDecorationStyle: 'dotted',
-                }}
-              >
-                {message.username}
-              </span>
-              : {mdStringToReact(message.content || '[No content]')}
+              {renderAuthorLine()}:{' '}
+              {mdStringToReact(message.content || '[No content]')}
               {message.edited && (
                 <span
                   style={{
@@ -496,7 +548,7 @@ const MessageWithReplies = ({
           </div>
         )}
 
-        {FEATURES.MESSAGE_VOTING && onVote && username && (
+        {FEATURES.MESSAGE_VOTING && onVote && username && !isDeletedMessage && (
           <div
             style={{
               display: 'flex',
@@ -585,124 +637,113 @@ const MessageWithReplies = ({
 
         <div style={{ flex: 1, minWidth: 0 }}>{renderMessageContent()}</div>
 
-        {(onReply || (isOwnNonSystemMessage && (onEdit || onDelete))) && (
-          <details
-            ref={actionMenuRef}
-            style={{
-              marginLeft: 'auto',
-              position: 'relative',
-              flexShrink: 0,
-            }}
-          >
-            <summary
-              style={{
-                listStyle: 'none',
-                cursor: 'pointer',
-                border: '1px solid #b8c8de',
-                borderRadius: '6px',
-                padding: '0 6px',
-                height: '22px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#1a3352',
-                background: '#eaf2fb',
-                fontWeight: 700,
-              }}
-              title="Message actions"
-            >
-              ⋯
-            </summary>
+        {!isDeletedMessage &&
+          (onReply || (isOwnNonSystemMessage && (onEdit || onDelete))) && (
             <div
               style={{
-                position: 'absolute',
-                right: 0,
-                top: '26px',
-                minWidth: '132px',
-                background: '#f8fbff',
-                border: '1px solid #a9bfdc',
-                borderRadius: '8px',
-                boxShadow: '0 10px 20px rgba(4, 24, 58, 0.16)',
-                padding: '4px',
-                zIndex: 25,
+                marginLeft: 'auto',
+                position: 'relative',
+                flexShrink: 0,
               }}
             >
-              {onReply && (
-                <button
-                  onClick={() => {
-                    onReply(message.timestamp);
-                    closeActionMenu();
-                  }}
-                  style={{
-                    width: '100%',
-                    textAlign: 'left',
-                    border: 'none',
-                    borderRadius: '6px',
-                    padding: '6px 8px',
-                    background:
-                      replyingTo === message.timestamp ? '#0b7a6f' : 'transparent',
-                    color: replyingTo === message.timestamp ? '#fff' : '#18324d',
-                    cursor: 'pointer',
-                    fontSize: '12px',
-                    fontWeight: 600,
-                  }}
-                >
-                  Reply
-                </button>
-              )}
-              {isOwnNonSystemMessage && onEdit && (
-                <button
-                  onClick={() => {
-                    onEdit(message.timestamp, message.content);
-                    closeActionMenu();
-                  }}
-                  style={{
-                    width: '100%',
-                    textAlign: 'left',
-                    border: 'none',
-                    borderRadius: '6px',
-                    padding: '6px 8px',
-                    background:
-                      editingMessageTimestamp === message.timestamp
-                        ? '#2196f3'
-                        : 'transparent',
-                    color:
-                      editingMessageTimestamp === message.timestamp
-                        ? '#fff'
-                        : '#18324d',
-                    cursor: 'pointer',
-                    fontSize: '12px',
-                    fontWeight: 600,
-                  }}
-                >
-                  Edit
-                </button>
-              )}
-              {isOwnNonSystemMessage && onDelete && (
-                <button
-                  onClick={() => {
-                    onDelete(message.timestamp);
-                    closeActionMenu();
-                  }}
-                  style={{
-                    width: '100%',
-                    textAlign: 'left',
-                    border: 'none',
-                    borderRadius: '6px',
-                    padding: '6px 8px',
-                    background: 'transparent',
-                    color: '#a11f2d',
-                    cursor: 'pointer',
-                    fontSize: '12px',
-                    fontWeight: 700,
-                  }}
-                >
-                  Delete
-                </button>
-              )}
+              <button
+                type="button"
+                aria-label="Message actions"
+                title="Message actions"
+                style={{
+                  listStyle: 'none',
+                  cursor: 'pointer',
+                  border: '1px solid #b8c8de',
+                  borderRadius: '6px',
+                  padding: '0 6px',
+                  height: '22px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#1a3352',
+                  background: '#eaf2fb',
+                  fontWeight: 700,
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const anchor = (
+                    e.currentTarget as HTMLElement
+                  ).getBoundingClientRect();
+                  setActionMenuAnchor((current) => {
+                    if (current) return null;
+                    closeOtherContextMenus();
+                    return anchor;
+                  });
+                }}
+              >
+                ⋯
+              </button>
+              {actionMenuAnchor &&
+                createPortal(
+                  <MessageActionMenu
+                    $top={actionMenuAnchor.bottom + 4}
+                    $left={Math.max(8, actionMenuAnchor.right - 152)}
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    {onReply && (
+                      <ActionMenuButton
+                        type="button"
+                        onClick={() => {
+                          onReply(message.timestamp);
+                          closeActionMenu();
+                        }}
+                        style={{
+                          background:
+                            replyingTo === message.timestamp
+                              ? '#0b7a6f'
+                              : 'transparent',
+                          color:
+                            replyingTo === message.timestamp
+                              ? '#fff'
+                              : '#18324d',
+                        }}
+                      >
+                        Reply
+                      </ActionMenuButton>
+                    )}
+                    {isOwnNonSystemMessage && onEdit && (
+                      <ActionMenuButton
+                        type="button"
+                        onClick={() => {
+                          onEdit(message.timestamp, message.content);
+                          closeActionMenu();
+                        }}
+                        style={{
+                          background:
+                            editingMessageTimestamp === message.timestamp
+                              ? '#2196f3'
+                              : 'transparent',
+                          color:
+                            editingMessageTimestamp === message.timestamp
+                              ? '#fff'
+                              : '#18324d',
+                        }}
+                      >
+                        Edit
+                      </ActionMenuButton>
+                    )}
+                    {isOwnNonSystemMessage && onDelete && (
+                      <ActionMenuButton
+                        type="button"
+                        $danger
+                        onClick={() => {
+                          onDelete(message.timestamp);
+                          closeActionMenu();
+                        }}
+                      >
+                        Delete
+                      </ActionMenuButton>
+                    )}
+                  </MessageActionMenu>,
+                  document.body,
+                )}
             </div>
-          </details>
-        )}
+          )}
       </div>
 
       {hasReplies && (

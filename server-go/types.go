@@ -64,6 +64,7 @@ type Message struct {
 	VoteTotal      *int              `json:"voteTotal,omitempty"`
 	UserVotes      map[string]string `json:"userVotes,omitempty"`
 	Edited         bool              `json:"edited,omitempty"`
+	Deleted        bool              `json:"deleted,omitempty"`
 }
 
 type Messages map[string][]Message

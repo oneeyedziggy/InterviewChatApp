@@ -16,6 +16,25 @@ type JoinRequest = {
   timestamp: number;
 };
 
+function normalizeMessageState(message: Message): Message {
+  if (message.deleted || message.content === 'Message deleted') {
+    return {
+      ...message,
+      content: 'Message deleted',
+      deleted: true,
+      encryptedFor: undefined,
+      versions: undefined,
+      currentVersion: undefined,
+      visibleTo: undefined,
+      voteTotal: undefined,
+      userVotes: undefined,
+      edited: false,
+    };
+  }
+
+  return message;
+}
+
 type InitSocketArgs = {
   authToken: string;
   username: string;
@@ -81,7 +100,6 @@ export async function initializeHomeSocket({
   socket = io(socketUrl, {
     path: socketIoPath(),
     auth: {
-      token: authToken,
       username,
     },
     transports: ['polling', 'websocket'],
@@ -102,13 +120,6 @@ export async function initializeHomeSocket({
   console.log('[Socket] Socket ID:', activeSocket.id);
   console.log('[Socket] Socket connected:', activeSocket.connected);
   console.log('[Socket] Setting up listeners...');
-
-  // Handle connection events
-  socket.on('connect', () => {
-    console.log('[Socket] ✓ Socket connected, ID:', activeSocket.id);
-    // Update window reference
-    (window as any).__socket = activeSocket;
-  });
 
   socket.on('disconnect', (reason) => {
     console.log('[Socket] ✗ Socket disconnected, reason:', reason);
@@ -152,10 +163,8 @@ export async function initializeHomeSocket({
     console.warn('[ActionResult] rejected:', { action, code, message });
   });
 
-  // Set up listeners immediately - Socket.IO queues events emitted during connection
   socket.on(SOCKET_EVENTS.INITIAL_DATA, async (data) => {
     console.log('[Socket] ===== INITIAL_DATA RECEIVED =====');
-    console.log('[Socket] Full data object:', JSON.stringify(data, null, 2));
     console.log('[Socket] Messages:', data?.messages);
     console.log('[Socket] Messages type:', typeof data?.messages);
     console.log(
@@ -175,7 +184,6 @@ export async function initializeHomeSocket({
       Array.isArray(data?.users) ? data.users.length : 'not array',
     );
 
-    // Store user public keys first (needed for decryption)
     if (data?.userPubKeys) {
       console.log(
         '[Socket] ✓ Storing user public keys:',
@@ -187,17 +195,14 @@ export async function initializeHomeSocket({
       console.warn('[Socket] ✗ No userPubKeys in INITIAL_DATA');
     }
 
-    // Decrypt messages if needed
     if (data?.messages) {
       const keys = loadKeys();
       const decryptedMessages: Messages = {};
 
       for (const [room, messages] of Object.entries(data.messages)) {
-        // Type assertion: messages from INITIAL_DATA should be Message[]
         const roomMessages = messages as Message[];
         decryptedMessages[room] = await Promise.all(
           roomMessages.map(async (msg: Message) => {
-            // If message has encryptedFor and we have keys, decrypt it
             if (msg.encryptedFor && keys) {
               const encrypted = msg.encryptedFor[keys.username];
               if (encrypted) {
@@ -206,14 +211,14 @@ export async function initializeHomeSocket({
                     encrypted,
                     keys.privateKey,
                   );
-                  return { ...msg, content: decrypted };
+                  return normalizeMessageState({ ...msg, content: decrypted });
                 } catch (error) {
                   console.error('[Socket] ✗ Failed to decrypt message:', error);
-                  return msg; // Return original if decryption fails
+                  return normalizeMessageState(msg);
                 }
               }
             }
-            return msg;
+            return normalizeMessageState(msg);
           }),
         );
       }
@@ -241,14 +246,12 @@ export async function initializeHomeSocket({
       console.warn('[Socket] ✗ No users in INITIAL_DATA');
     }
 
-    // Handle new format with loggedInUsers and activeUsers
     if (data?.loggedInUsers || data?.activeUsers) {
       console.log('[Socket] ✓ Setting logged in users:', data.loggedInUsers);
       console.log('[Socket] ✓ Setting active users:', data.activeUsers);
       setLoggedInUsers(data.loggedInUsers || []);
       setActiveUsers(data.activeUsers || []);
     } else if (data?.users) {
-      // Fallback: if only old format, treat all as logged in
       setLoggedInUsers(data.users || []);
       setActiveUsers([]);
     }
@@ -701,9 +704,12 @@ export async function initializeHomeSocket({
                 if (updated[originalRoom]) {
                   updated[originalRoom] = updated[originalRoom].map((msg) => {
                     if (msg.timestamp === messageTimestamp) {
-                      return { ...msg, content: decrypted };
+                      return normalizeMessageState({
+                        ...msg,
+                        content: decrypted,
+                      });
                     }
-                    return msg;
+                    return normalizeMessageState(msg);
                   });
                 }
                 return updated;
@@ -802,11 +808,11 @@ export async function initializeHomeSocket({
                 };
               } catch (error) {
                 console.error('[Socket] ✗ Failed to decrypt message:', error);
-                return msg; // Return original if decryption fails (should preserve replyTo)
+                return normalizeMessageState(msg); // Return original if decryption fails (should preserve replyTo)
               }
             }
             // Return message with preserved replyTo
-            return { ...msg, replyTo: preservedReplyTo };
+            return normalizeMessageState({ ...msg, replyTo: preservedReplyTo });
           }),
         );
       }
@@ -954,6 +960,9 @@ export async function initializeHomeSocket({
       if ('loggedInUsers' in data || 'activeUsers' in data) {
         setLoggedInUsers((data as any).loggedInUsers || []);
         setActiveUsers((data as any).activeUsers || []);
+        if ((data as any).userLastSeen) {
+          setUserLastSeen((data as any).userLastSeen as Record<string, number>);
+        }
         // Also update userList for backward compatibility
         const allUsers = [
           ...((data as any).loggedInUsers || []),
@@ -1132,10 +1141,10 @@ export async function initializeHomeSocket({
                     encrypted,
                     keys.privateKey,
                   );
-                  return { ...msg, content: decrypted };
+                  return normalizeMessageState({ ...msg, content: decrypted });
                 } catch (error) {
                   console.error('[Socket] ✗ Failed to decrypt message:', error);
-                  return msg;
+                  return normalizeMessageState(msg);
                 }
               }
             }
@@ -1175,6 +1184,14 @@ export async function initializeHomeSocket({
     console.log('[Socket] ===== CONNECTED =====');
     console.log('[Socket] Socket ID:', activeSocket.id);
     console.log('[Socket] Socket connected:', activeSocket.connected);
+    const keys = loadKeys();
+    if (keys?.publicKey && username) {
+      activeSocket.emit(SOCKET_EVENTS.CLIENT_SEND_PUBLIC_KEY, {
+        fromUser: username,
+        publicKey: keys.publicKey,
+      });
+      console.log('[Socket] ✓ Announced public key for', username);
+    }
     // Join messages are now sent automatically by the server
   });
 

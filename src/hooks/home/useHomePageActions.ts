@@ -170,7 +170,11 @@ export function useHomePageActions(state: HomePageState) {
       return;
     }
 
-    if (!window.confirm('Delete this message? Replies will be deleted too.')) {
+    if (
+      !window.confirm(
+        'Delete this message? It will be replaced with a deleted placeholder and replies will remain.',
+      )
+    ) {
       return;
     }
 
@@ -179,6 +183,33 @@ export function useHomePageActions(state: HomePageState) {
       messageTimestamp,
       username: state.username,
       sessionId: keys.sessionId,
+    });
+
+    state.setChatValuesState((prev) => {
+      const next = { ...prev };
+      const roomMessages = next[state.currentRoom];
+      if (roomMessages) {
+        next[state.currentRoom] = roomMessages.map((message) => {
+          if (message.timestamp !== messageTimestamp) {
+            return message;
+          }
+
+          return {
+            ...message,
+            content: 'Message deleted',
+            deleted: true,
+            encryptedFor: undefined,
+            versions: undefined,
+            currentVersion: undefined,
+            visibleTo: undefined,
+            voteTotal: undefined,
+            userVotes: undefined,
+            edited: false,
+          };
+        });
+      }
+
+      return next;
     });
 
     if (state.editingMessageTimestamp === messageTimestamp) {

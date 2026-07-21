@@ -17,6 +17,7 @@ export type Message = {
   voteTotal?: number; // Total vote count (upvotes - downvotes)
   userVotes?: Record<string, 'up' | 'down'>; // Map of username -> vote type
   edited?: boolean; // Whether the message has been edited
+  deleted?: boolean; // Whether the message was deleted by the original author
 };
 export type Messages = {
   [key: string]: Message[];

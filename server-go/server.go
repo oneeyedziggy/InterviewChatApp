@@ -243,6 +243,10 @@ func (cs *ChatServer) setUser(name, sessionID string) {
 func (cs *ChatServer) broadcastUserListUpdate() {
 	cs.mu.RLock()
 	nsp := cs.defaultNsp
+	userLastSeenCopy := make(map[string]int64, len(cs.userLastSeen))
+	for user, lastSeen := range cs.userLastSeen {
+		userLastSeenCopy[user] = lastSeen
+	}
 	cs.mu.RUnlock()
 
 	if nsp == nil {
@@ -253,6 +257,7 @@ func (cs *ChatServer) broadcastUserListUpdate() {
 	userListData := map[string]interface{}{
 		"loggedInUsers": loggedInUsers,
 		"activeUsers":   activeUsers,
+		"userLastSeen":  userLastSeenCopy,
 	}
 	nsp.Emit(EventServerUserListUpdate, userListData)
 	log.Printf("[broadcastUserListUpdate] ✓ Broadcasted user list (%d logged in, %d active)", len(loggedInUsers), len(activeUsers))

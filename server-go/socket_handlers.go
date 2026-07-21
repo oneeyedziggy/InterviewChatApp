@@ -211,12 +211,10 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		}
 		cs.mu.Unlock()
 
-		// Save to disk (outside of lock to avoid blocking)
-		go func() {
-			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
-				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-			}
-		}()
+		// Save to disk
+		if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
+			log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+		}
 
 		cs.mu.Lock() // Re-acquire lock for response preparation
 
@@ -336,12 +334,10 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		}
 		cs.mu.Unlock()
 
-		// Save to disk (outside of lock to avoid blocking)
-		go func() {
-			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
-				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-			}
-		}()
+		// Save to disk
+		if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
+			log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+		}
 
 		// Prepare response
 		response := map[string]interface{}{
@@ -388,12 +384,10 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		}
 		cs.mu.Unlock()
 
-		// Save to disk (outside of lock to avoid blocking)
-		go func() {
-			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
-				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-			}
-		}()
+		// Save to disk
+		if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
+			log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+		}
 
 		log.Printf("[%s] client disconnecting", socketIDStr)
 	})
@@ -536,12 +530,10 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 		cs.mu.Unlock()
 
-		// Save state in background (outside of lock)
-		go func() {
-			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
-				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-			}
-		}()
+		// Save state to disk
+		if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+			log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+		}
 
 		response := map[string]interface{}{
 			"messages": messagesCopy,
@@ -650,6 +642,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		targetMessage.Content = "" // Clear plaintext (encrypted only)
 		targetMessage.EncryptedFor = encryptedFor
 		targetMessage.Edited = true
+		cs.userLastSeen[username] = time.Now().Unix()
 
 		log.Printf("[%s] ✓ Message %d edited by %s", socketIDStr, messageTimestamp, username)
 
@@ -683,23 +676,31 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			userPubKeysCopy[k] = v
 		}
 
-		cs.mu.Unlock()
+		userLastSeenCopy := make(map[string]int64)
+		for user, lastSeen := range cs.userLastSeen {
+			userLastSeenCopy[user] = lastSeen
+		}
 
-		// Save state in background (outside of lock)
-		go func() {
-			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
-				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-			}
-		}()
+		cs.mu.Unlock()
+		loggedInUsers, activeUsers := cs.getUserLists()
+
+		// Save state to disk
+		if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+			log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+		}
 
 		response := map[string]interface{}{
 			"messages": messagesCopy,
 			"users":    usersList,
+			"loggedInUsers": loggedInUsers,
+			"activeUsers":   activeUsers,
+			"userLastSeen":  userLastSeenCopy,
 		}
 
 		// Broadcast to all clients
 		defaultNsp.Emit(EventServerMessage, response)
 		log.Printf("[%s] ✓ Broadcasted message edit update", socketIDStr)
+		cs.broadcastUserListUpdate()
 		emitActionResult(socket, "edit", true, "ok", "Message updated")
 	})
 
@@ -764,6 +765,13 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			return
 		}
 
+		if targetMessage.Deleted {
+			cs.mu.Unlock()
+			log.Printf("[%s] ✓ Message %d already deleted; treating delete as idempotent", socketIDStr, messageTimestamp)
+			emitActionResult(socket, "delete", true, "ok", "Message deleted")
+			return
+		}
+
 		if targetMessage.Username != username {
 			cs.mu.Unlock()
 			log.Printf("[%s] ✗ User %s attempted to delete message by %s (unauthorized)", socketIDStr, username, targetMessage.Username)
@@ -778,27 +786,18 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			return
 		}
 
-		timestampsToDelete := map[int64]bool{messageTimestamp: true}
-		changed := true
-		for changed {
-			changed = false
-			for _, msg := range messages {
-				if msg.ReplyTo != nil && timestampsToDelete[*msg.ReplyTo] && !timestampsToDelete[msg.Timestamp] {
-					timestampsToDelete[msg.Timestamp] = true
-					changed = true
-				}
-			}
-		}
+		targetMessage.Content = "Message deleted"
+		targetMessage.EncryptedFor = nil
+		targetMessage.Versions = nil
+		targetMessage.CurrentVersion = nil
+		targetMessage.VisibleTo = nil
+		targetMessage.VoteTotal = nil
+		targetMessage.UserVotes = nil
+		targetMessage.Edited = false
+		targetMessage.Deleted = true
+		cs.userLastSeen[username] = time.Now().Unix()
 
-		filteredMessages := make([]Message, 0, len(messages))
-		for _, msg := range messages {
-			if !timestampsToDelete[msg.Timestamp] {
-				filteredMessages = append(filteredMessages, msg)
-			}
-		}
-		cs.messages[room] = filteredMessages
-
-		log.Printf("[%s] ✓ Deleted message %d by %s with %d total removed nodes", socketIDStr, messageTimestamp, username, len(timestampsToDelete))
+		log.Printf("[%s] ✓ Marked message %d by %s as deleted", socketIDStr, messageTimestamp, username)
 
 		messagesCopyForSave := make(Messages)
 		for k, v := range cs.messages {
@@ -827,21 +826,29 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			userPubKeysCopy[k] = v
 		}
 
-		cs.mu.Unlock()
+		userLastSeenCopy := make(map[string]int64)
+		for user, lastSeen := range cs.userLastSeen {
+			userLastSeenCopy[user] = lastSeen
+		}
 
-		go func() {
-			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
-				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-			}
-		}()
+		cs.mu.Unlock()
+		loggedInUsers, activeUsers := cs.getUserLists()
+
+		if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+			log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+		}
 
 		response := map[string]interface{}{
 			"messages": messagesCopy,
 			"users":    usersList,
+			"loggedInUsers": loggedInUsers,
+			"activeUsers":   activeUsers,
+			"userLastSeen":  userLastSeenCopy,
 		}
 
 		defaultNsp.Emit(EventServerMessage, response)
 		log.Printf("[%s] ✓ Broadcasted message delete update", socketIDStr)
+		cs.broadcastUserListUpdate()
 		emitActionResult(socket, "delete", true, "ok", "Message deleted")
 	})
 
@@ -1045,12 +1052,10 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			}
 			cs.mu.Unlock()
 
-			// Save to disk (outside of lock to avoid blocking)
-			go func() {
-				if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
-					log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-				}
-			}()
+			// Save to disk
+			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
+				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+			}
 
 			cs.mu.Lock() // Re-acquire lock for response preparation
 
@@ -1182,17 +1187,53 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			targetUser, _ := dataMap["targetUser"].(string)
 			fromUser, _ := dataMap["fromUser"].(string)
 			publicKey, _ := dataMap["publicKey"].(string)
-			if targetUser == "" || fromUser == "" || publicKey == "" {
+			if fromUser == "" || publicKey == "" {
 				log.Printf("[%s] ✗ Missing fields in send public key payload", socketIDStr)
 				return
 			}
+
 			cs.mu.Lock()
 			cs.userPubKeys[fromUser] = publicKey
+			messagesCopyForSave := make(Messages)
+			for k, v := range cs.messages {
+				messagesCopyForSave[k] = make([]Message, len(v))
+				copy(messagesCopyForSave[k], v)
+			}
+			roomsCopyForSave := make([]string, len(cs.rooms))
+			copy(roomsCopyForSave, cs.rooms)
+			usersCopyForSave := make(map[string]string)
+			for k, v := range cs.users {
+				usersCopyForSave[k] = v
+			}
+			userPubKeysCopy := make(map[string]string)
+			for k, v := range cs.userPubKeys {
+				userPubKeysCopy[k] = v
+			}
+			activeUsers := make([]string, 0, len(cs.users))
+			for user := range cs.users {
+				if user != fromUser {
+					activeUsers = append(activeUsers, user)
+				}
+			}
 			cs.mu.Unlock()
+
+			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+			}
+
 			payload := map[string]interface{}{
 				"fromUser":  fromUser,
 				"publicKey": publicKey,
 			}
+
+			if targetUser == "" {
+				if len(activeUsers) > 0 {
+					cs.sendToUsers(defaultNsp, activeUsers, EventServerPublicKeyReceived, payload)
+				}
+				log.Printf("[%s] ✓ Broadcasted public key from %s to %d active users", socketIDStr, fromUser, len(activeUsers))
+				return
+			}
+
 			cs.sendToUsers(defaultNsp, []string{targetUser}, EventServerPublicKeyReceived, payload)
 			log.Printf("[%s] ✓ Relayed public key from %s to %s", socketIDStr, fromUser, targetUser)
 		})
@@ -1374,14 +1415,14 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 					// Send message update to original sender (only their visible message)
 					responseForOriginalSender := map[string]interface{}{
-						"messages": map[string][]Message{dmRoomForOriginalSender: []Message{originalSenderMsg}},
+						"messages": map[string][]Message{dmRoomForOriginalSender: {originalSenderMsg}},
 						"rooms":    cs.rooms,
 					}
 					cs.sendToUsers(defaultNsp, []string{originalSender}, EventServerMessage, responseForOriginalSender)
 
 					// Send message update to requesting user (only their visible message)
 					responseForRequestingUser := map[string]interface{}{
-						"messages": map[string][]Message{dmRoomForRequestingUser: []Message{requestingUserMsg}},
+						"messages": map[string][]Message{dmRoomForRequestingUser: {requestingUserMsg}},
 						"rooms":    cs.rooms,
 					}
 					cs.sendToUsers(defaultNsp, []string{requestingUser}, EventServerMessage, responseForRequestingUser)
@@ -1641,8 +1682,8 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 									keys = append(keys, k)
 								}
 								return keys
-							}(), msg.Versions != nil && len(msg.Versions) > 0)
-						if msg.Versions != nil && len(msg.Versions) > 0 {
+							}(), len(msg.Versions) > 0)
+						if len(msg.Versions) > 0 {
 							log.Printf("[%s] Target message newest version encryptedFor keys=%v",
 								socketIDStr, func() []string {
 									keys := make([]string, 0, len(msg.Versions[0].EncryptedFor))
@@ -1678,7 +1719,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 								}
 								return keys
 							}(), len(msg.EncryptedFor))
-						if len(msg.EncryptedFor) == 0 {
+						if msg.EncryptedFor == nil {
 							log.Printf("[%s] ⚠ WARNING: Target message has empty encryptedFor! This should not happen!", socketIDStr)
 						}
 					}
@@ -2029,12 +2070,10 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			cs.mu.Unlock()
 
-			// Save state in background (outside of lock)
-			go func() {
-				if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
-					log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-				}
-			}()
+			// Save state to disk
+			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+			}
 
 			response := map[string]interface{}{
 				"messages": messagesCopy,
@@ -2133,6 +2172,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			targetMessage.Content = "" // Clear plaintext (encrypted only)
 			targetMessage.EncryptedFor = encryptedFor
 			targetMessage.Edited = true
+			cs.userLastSeen[username] = time.Now().Unix()
 
 			log.Printf("[%s] ✓ Message %d edited by %s", socketIDStr, messageTimestamp, username)
 
@@ -2166,23 +2206,31 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				userPubKeysCopy[k] = v
 			}
 
-			cs.mu.Unlock()
+			userLastSeenCopy := make(map[string]int64)
+			for user, lastSeen := range cs.userLastSeen {
+				userLastSeenCopy[user] = lastSeen
+			}
 
-			// Save state in background (outside of lock)
-			go func() {
-				if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
-					log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-				}
-			}()
+			cs.mu.Unlock()
+			loggedInUsers, activeUsers := cs.getUserLists()
+
+			// Save state to disk
+			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+			}
 
 			response := map[string]interface{}{
 				"messages": messagesCopy,
 				"users":    usersList,
+				"loggedInUsers": loggedInUsers,
+				"activeUsers":   activeUsers,
+				"userLastSeen":  userLastSeenCopy,
 			}
 
 			// Broadcast to all clients
 			defaultNsp.Emit(EventServerMessage, response)
 			log.Printf("[%s] ✓ Broadcasted message edit update", socketIDStr)
+			cs.broadcastUserListUpdate()
 		})
 
 		socket.OnEvent(EventClientVoteJoin, func(voteData interface{}) {
@@ -2372,12 +2420,10 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			}
 			cs.mu.Unlock()
 
-			// Save to disk (outside of lock to avoid blocking)
-			go func() {
-				if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
-					log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-				}
-			}()
+			// Save to disk
+			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
+				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+			}
 
 			log.Printf("[%s] client disconnecting", socketIDStr)
 		})

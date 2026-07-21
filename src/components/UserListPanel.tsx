@@ -3,6 +3,10 @@ import { createPortal } from 'react-dom';
 import { styled } from 'styled-components';
 import { ScrollableDiv } from './styled/ScrollableDiv';
 import { ConfirmPopover } from './ConfirmPopover';
+import {
+  CONTEXT_MENU_CLOSE_EVENT,
+  closeOtherContextMenus,
+} from '../utils/contextMenuEvents';
 import { isUserBlocked } from '../utils/userSettings';
 
 const MenuButton = styled.button`
@@ -55,11 +59,11 @@ const ContextMenu = styled.div<{ $top: number; $left: number }>`
   position: fixed;
   left: ${(p) => `${p.$left}px`};
   top: ${(p) => `${p.$top}px`};
-  z-index: 999;
+  z-index: 6000;
   background: #12304f;
-  border: 1px solid #3d628d;
+  border: 1px solid #5d83ae;
   border-radius: 4px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
   min-width: 140px;
 `;
 
@@ -76,7 +80,8 @@ const MenuItem = styled.button`
   cursor: pointer;
 
   &:hover {
-    background: #1d466f;
+    background: #e7f1fb;
+    color: #12304f;
   }
 
   &:not(:last-child) {
@@ -132,13 +137,22 @@ function UserListEntry({
   useEffect(() => {
     if (!menuAnchor) return;
     const close = () => setMenuAnchor(null);
+    const closeViaSharedSignal = () => setMenuAnchor(null);
     document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
+    window.addEventListener(CONTEXT_MENU_CLOSE_EVENT, closeViaSharedSignal);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      window.removeEventListener(
+        CONTEXT_MENU_CLOSE_EVENT,
+        closeViaSharedSignal,
+      );
+    };
   }, [menuAnchor]);
 
   const openConfirm = (type: 'block' | 'sendKey', e: React.MouseEvent) => {
     const anchor = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setMenuAnchor(null);
+    closeOtherContextMenus();
     setPending({ type, user, anchor });
   };
 
@@ -165,7 +179,14 @@ function UserListEntry({
           const anchor = (
             e.currentTarget as HTMLElement
           ).getBoundingClientRect();
-          setMenuAnchor((current) => (current ? null : anchor));
+          setPending(null);
+          setMenuAnchor((current) => {
+            const next = current ? null : anchor;
+            if (!current) {
+              closeOtherContextMenus();
+            }
+            return next;
+          });
         }}
       >
         ⋯
