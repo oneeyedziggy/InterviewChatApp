@@ -18,6 +18,7 @@ const MessageWithReplies = ({
   onSelectVersion,
   onReply,
   onEdit,
+  onDelete,
   onVote,
   getUnreadDirectRepliesCount,
   markDirectRepliesRead,
@@ -53,6 +54,7 @@ const MessageWithReplies = ({
   ) => void;
   onReply?: (messageTimestamp: number) => void;
   onEdit?: (messageTimestamp: number, content: string) => void;
+  onDelete?: (messageTimestamp: number) => void;
   onVote?: (
     room: string,
     messageTimestamp: number,
@@ -65,8 +67,11 @@ const MessageWithReplies = ({
   indentLevel?: number;
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
+  const actionMenuRef = useRef<HTMLDetailsElement | null>(null);
   const replies = childrenByParent.get(message.timestamp) ?? [];
   const hasReplies = replies.length > 0;
+  const isOwnNonSystemMessage =
+    !!username && message.username === username && message.username !== 'system';
 
   const sortedReplies = [...replies]
     .filter((r) => canUserViewMessage(r, username))
@@ -80,6 +85,12 @@ const MessageWithReplies = ({
       markDirectRepliesRead(message.timestamp);
     }
   }, [hasReplies, isExpanded, markDirectRepliesRead, message.timestamp]);
+
+  const closeActionMenu = () => {
+    if (actionMenuRef.current) {
+      actionMenuRef.current.open = false;
+    }
+  };
 
   let hasAccess = false;
   let encryptedData: string | null = null;
@@ -574,59 +585,124 @@ const MessageWithReplies = ({
 
         <div style={{ flex: 1, minWidth: 0 }}>{renderMessageContent()}</div>
 
-        <div
-          style={{
-            display: 'flex',
-            gap: '4px',
-            marginLeft: 'auto',
-            flexShrink: 0,
-          }}
-        >
-          {onEdit &&
-            username &&
-            message.username === username &&
-            message.username !== 'system' && (
-              <button
-                onClick={() => onEdit(message.timestamp, message.content)}
-                style={{
-                  padding: '2px 6px',
-                  fontSize: '11px',
-                  cursor: 'pointer',
-                  backgroundColor:
-                    editingMessageTimestamp === message.timestamp
-                      ? '#2196f3'
-                      : 'transparent',
-                  border: '1px solid #ccc',
-                  borderRadius: '4px',
-                  color:
-                    editingMessageTimestamp === message.timestamp
-                      ? 'white'
-                      : '#666',
-                }}
-                title="Edit this message"
-              >
-                Edit
-              </button>
-            )}
-          {onReply && (
-            <button
-              onClick={() => onReply(message.timestamp)}
+        {(onReply || (isOwnNonSystemMessage && (onEdit || onDelete))) && (
+          <details
+            ref={actionMenuRef}
+            style={{
+              marginLeft: 'auto',
+              position: 'relative',
+              flexShrink: 0,
+            }}
+          >
+            <summary
               style={{
-                padding: '2px 6px',
-                fontSize: '11px',
+                listStyle: 'none',
                 cursor: 'pointer',
-                backgroundColor:
-                  replyingTo === message.timestamp ? '#0b7a6f' : '#dbe7f6',
-                border: '1px solid #86a3c8',
-                borderRadius: '4px',
-                color: replyingTo === message.timestamp ? 'white' : '#18324d',
+                border: '1px solid #b8c8de',
+                borderRadius: '6px',
+                padding: '0 6px',
+                height: '22px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#1a3352',
+                background: '#eaf2fb',
+                fontWeight: 700,
               }}
-              title="Reply to this message"
+              title="Message actions"
             >
-              Reply
-            </button>
-          )}
-        </div>
+              ⋯
+            </summary>
+            <div
+              style={{
+                position: 'absolute',
+                right: 0,
+                top: '26px',
+                minWidth: '132px',
+                background: '#f8fbff',
+                border: '1px solid #a9bfdc',
+                borderRadius: '8px',
+                boxShadow: '0 10px 20px rgba(4, 24, 58, 0.16)',
+                padding: '4px',
+                zIndex: 25,
+              }}
+            >
+              {onReply && (
+                <button
+                  onClick={() => {
+                    onReply(message.timestamp);
+                    closeActionMenu();
+                  }}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '6px 8px',
+                    background:
+                      replyingTo === message.timestamp ? '#0b7a6f' : 'transparent',
+                    color: replyingTo === message.timestamp ? '#fff' : '#18324d',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                  }}
+                >
+                  Reply
+                </button>
+              )}
+              {isOwnNonSystemMessage && onEdit && (
+                <button
+                  onClick={() => {
+                    onEdit(message.timestamp, message.content);
+                    closeActionMenu();
+                  }}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '6px 8px',
+                    background:
+                      editingMessageTimestamp === message.timestamp
+                        ? '#2196f3'
+                        : 'transparent',
+                    color:
+                      editingMessageTimestamp === message.timestamp
+                        ? '#fff'
+                        : '#18324d',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                  }}
+                >
+                  Edit
+                </button>
+              )}
+              {isOwnNonSystemMessage && onDelete && (
+                <button
+                  onClick={() => {
+                    onDelete(message.timestamp);
+                    closeActionMenu();
+                  }}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '6px 8px',
+                    background: 'transparent',
+                    color: '#a11f2d',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                  }}
+                >
+                  Delete
+                </button>
+              )}
+            </div>
+          </details>
+        )}
       </div>
 
       {hasReplies && (
@@ -688,6 +764,7 @@ const MessageWithReplies = ({
                   onSelectVersion={onSelectVersion}
                   onReply={onReply}
                   onEdit={onEdit}
+                  onDelete={onDelete}
                   onVote={onVote}
                   getUnreadDirectRepliesCount={getUnreadDirectRepliesCount}
                   markDirectRepliesRead={markDirectRepliesRead}
@@ -714,6 +791,7 @@ function MessageThreadCard({
   onSelectVersion,
   onReply,
   onEdit,
+  onDelete,
   onVote,
   replyingTo,
   editingMessageTimestamp,
@@ -741,6 +819,7 @@ function MessageThreadCard({
   ) => void;
   onReply?: (messageTimestamp: number) => void;
   onEdit?: (messageTimestamp: number, content: string) => void;
+  onDelete?: (messageTimestamp: number) => void;
   onVote?: (
     room: string,
     messageTimestamp: number,
@@ -902,6 +981,7 @@ function MessageThreadCard({
           onSelectVersion={onSelectVersion}
           onReply={onReply}
           onEdit={onEdit}
+          onDelete={onDelete}
           onVote={onVote}
           getUnreadDirectRepliesCount={getUnreadDirectRepliesCount}
           markDirectRepliesRead={markDirectRepliesRead}
@@ -938,6 +1018,7 @@ export const renderMessageThread = (
   allMessages?: Messages,
   onReply?: (messageTimestamp: number) => void,
   onEdit?: (messageTimestamp: number, content: string) => void,
+  onDelete?: (messageTimestamp: number) => void,
   onVote?: (
     room: string,
     messageTimestamp: number,
@@ -973,6 +1054,7 @@ export const renderMessageThread = (
         onSelectVersion={onSelectVersion}
         onReply={onReply}
         onEdit={onEdit}
+        onDelete={onDelete}
         onVote={onVote}
         replyingTo={replyingTo}
         editingMessageTimestamp={editingMessageTimestamp}

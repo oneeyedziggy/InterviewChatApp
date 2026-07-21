@@ -55,6 +55,7 @@ export function HomePageProvider({ children }: { children: ReactNode }) {
     handleSelectVersion: actions.handleSelectVersion,
     handleReply: actions.handleReply,
     handleEdit: actions.handleEdit,
+    handleDeleteMessage: actions.handleDeleteMessage,
     handleVote: actions.handleVote,
     handleCancelReplyOrEdit: actions.handleCancelReplyOrEdit,
   };

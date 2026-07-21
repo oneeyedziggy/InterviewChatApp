@@ -161,6 +161,35 @@ export function useHomePageActions(state: HomePageState) {
     focusDraftInput();
   };
 
+  const handleDeleteMessage = (messageTimestamp: number) => {
+    const socket = state.getSocket();
+    const keys = loadKeys();
+
+    if (!socket || !state.username || !keys?.sessionId || !state.currentRoom) {
+      alert('Unable to delete message: missing active session.');
+      return;
+    }
+
+    if (!window.confirm('Delete this message? Replies will be deleted too.')) {
+      return;
+    }
+
+    socket.emit(SOCKET_EVENTS.CLIENT_DELETE_MESSAGE, {
+      room: state.currentRoom,
+      messageTimestamp,
+      username: state.username,
+      sessionId: keys.sessionId,
+    });
+
+    if (state.editingMessageTimestamp === messageTimestamp) {
+      state.setEditingMessageTimestampState(undefined);
+      state.setUserDraftMessageState('');
+    }
+    if (state.replyingTo === messageTimestamp) {
+      state.setReplyingToState(undefined);
+    }
+  };
+
   const handleVote = (
     room: string,
     messageTimestamp: number,
@@ -245,6 +274,7 @@ export function useHomePageActions(state: HomePageState) {
     handleSelectVersion,
     handleReply,
     handleEdit,
+    handleDeleteMessage,
     handleVote,
     handleCancelReplyOrEdit,
     handleVoteJoin,

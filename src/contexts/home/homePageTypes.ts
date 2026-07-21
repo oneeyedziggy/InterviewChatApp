@@ -55,6 +55,7 @@ export type HomeComposerContextValue = {
   ) => Promise<void>;
   handleReply: (timestamp: number) => void;
   handleEdit: (messageTimestamp: number, content: string) => void;
+  handleDeleteMessage: (messageTimestamp: number) => void;
   handleVote: (
     room: string,
     messageTimestamp: number,

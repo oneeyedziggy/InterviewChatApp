@@ -128,8 +128,13 @@ export async function doSendAction({
       room: currentRoom,
       messageTimestamp: editingMessageTimestamp,
       username,
+      sessionId: keys.sessionId,
       encryptedFor,
     };
+    if (!keys.sessionId) {
+      alert('Session expired. Please log in again.');
+      return;
+    }
     activeSocket.emit(SOCKET_EVENTS.CLIENT_EDIT_MESSAGE, editData);
     console.log('[doSend] ✓ Edit message emitted');
     setEditingMessageTimestamp(undefined);

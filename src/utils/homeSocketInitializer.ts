@@ -128,6 +128,30 @@ export async function initializeHomeSocket({
     (window as any).__socket = activeSocket;
   });
 
+  socket.on(SOCKET_EVENTS.SERVER_ACTION_RESULT, (result) => {
+    const action = result?.action || 'action';
+    const success = !!result?.success;
+    const code = result?.code || 'unknown';
+    const message = result?.message || 'Request failed';
+
+    if (success) {
+      console.log(`[ActionResult] ${action} success: ${message}`);
+      return;
+    }
+
+    let userMessage = `${action} failed: ${message}`;
+    if (code === 'session_expired') {
+      userMessage = 'Session expired. Please log in again.';
+    } else if (code === 'unauthorized') {
+      userMessage = 'Unauthorized action.';
+    } else if (code === 'not_owner') {
+      userMessage = 'You can only edit or delete your own messages.';
+    }
+
+    alert(userMessage);
+    console.warn('[ActionResult] rejected:', { action, code, message });
+  });
+
   // Set up listeners immediately - Socket.IO queues events emitted during connection
   socket.on(SOCKET_EVENTS.INITIAL_DATA, async (data) => {
     console.log('[Socket] ===== INITIAL_DATA RECEIVED =====');

@@ -11,6 +11,51 @@ import (
 	socketio "github.com/karagenc/socket.io-go"
 )
 
+func (cs *ChatServer) isSessionAuthorizedForUser(sessionID, username string) bool {
+	if sessionID == "" || username == "" {
+		return false
+	}
+
+	storedUsername, exists := cs.sessionCache.Get(sessionID)
+	if !exists || storedUsername == "" {
+		return false
+	}
+
+	return storedUsername == username
+}
+
+func (cs *ChatServer) getSessionAuthFailure(sessionID, username string) (string, string) {
+	if sessionID == "" || username == "" {
+		return "invalid_request", "Missing authentication fields"
+	}
+
+	storedUsername, exists := cs.sessionCache.Get(sessionID)
+	if !exists || storedUsername == "" {
+		return "session_expired", "Session expired"
+	}
+
+	if storedUsername != username {
+		return "unauthorized", "Unauthorized"
+	}
+
+	return "", ""
+}
+
+func emitActionResult(
+	socket socketio.ServerSocket,
+	action string,
+	success bool,
+	code string,
+	message string,
+) {
+	socket.Emit(EventServerActionResult, map[string]interface{}{
+		"action":  action,
+		"success": success,
+		"code":    code,
+		"message": message,
+	})
+}
+
 func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 	log.Println("===== SETTING UP SOCKET HANDLERS =====")
 
@@ -522,10 +567,19 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		room, _ := editMap["room"].(string)
 		messageTimestampRaw, hasTimestamp := editMap["messageTimestamp"]
 		username, _ := editMap["username"].(string)
+		sessionID, _ := editMap["sessionId"].(string)
 		encryptedForRaw, hasEncrypted := editMap["encryptedFor"]
 
-		if !hasTimestamp || username == "" || room == "" {
+		if !hasTimestamp || username == "" || room == "" || sessionID == "" {
 			log.Printf("[%s] ✗ Missing required edit fields", socketIDStr)
+			emitActionResult(socket, "edit", false, "invalid_request", "Missing required edit fields")
+			return
+		}
+
+		if !cs.isSessionAuthorizedForUser(sessionID, username) {
+			code, message := cs.getSessionAuthFailure(sessionID, username)
+			log.Printf("[%s] ✗ Rejected edit attempt by %s (%s)", socketIDStr, username, code)
+			emitActionResult(socket, "edit", false, code, message)
 			return
 		}
 
@@ -534,6 +588,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			messageTimestamp = int64(tsFloat)
 		} else {
 			log.Printf("[%s] ✗ Invalid messageTimestamp format", socketIDStr)
+			emitActionResult(socket, "edit", false, "invalid_request", "Invalid message timestamp")
 			return
 		}
 
@@ -556,6 +611,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		if !exists {
 			cs.mu.Unlock()
 			log.Printf("[%s] ✗ Room %s not found", socketIDStr, room)
+			emitActionResult(socket, "edit", false, "not_found", "Room not found")
 			return
 		}
 
@@ -570,6 +626,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		if targetMessage == nil {
 			cs.mu.Unlock()
 			log.Printf("[%s] ✗ Message with timestamp %d not found in room %s", socketIDStr, messageTimestamp, room)
+			emitActionResult(socket, "edit", false, "not_found", "Message not found")
 			return
 		}
 
@@ -577,6 +634,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		if targetMessage.Username != username {
 			cs.mu.Unlock()
 			log.Printf("[%s] ✗ User %s attempted to edit message by %s (unauthorized)", socketIDStr, username, targetMessage.Username)
+			emitActionResult(socket, "edit", false, "not_owner", "Not owner")
 			return
 		}
 
@@ -584,6 +642,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		if targetMessage.Username == "system" {
 			cs.mu.Unlock()
 			log.Printf("[%s] ✗ User %s attempted to edit system message (not allowed)", socketIDStr, username)
+			emitActionResult(socket, "edit", false, "not_allowed", "System messages cannot be edited")
 			return
 		}
 
@@ -641,6 +700,149 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		// Broadcast to all clients
 		defaultNsp.Emit(EventServerMessage, response)
 		log.Printf("[%s] ✓ Broadcasted message edit update", socketIDStr)
+		emitActionResult(socket, "edit", true, "ok", "Message updated")
+	})
+
+	defaultNsp.OnEvent(EventClientDeleteMessage, func(socket socketio.ServerSocket, deleteData interface{}) {
+		socketIDStr := string(socket.ID())
+		log.Printf("[%s] ===== CLIENT_DELETE_MESSAGE EVENT ======", socketIDStr)
+
+		deleteMap, ok := deleteData.(map[string]interface{})
+		if !ok {
+			log.Printf("[%s] ✗ Invalid delete data format, type: %T", socketIDStr, deleteData)
+			return
+		}
+
+		room, _ := deleteMap["room"].(string)
+		messageTimestampRaw, hasTimestamp := deleteMap["messageTimestamp"]
+		username, _ := deleteMap["username"].(string)
+		sessionID, _ := deleteMap["sessionId"].(string)
+
+		if !hasTimestamp || username == "" || room == "" || sessionID == "" {
+			log.Printf("[%s] ✗ Missing required delete fields", socketIDStr)
+			emitActionResult(socket, "delete", false, "invalid_request", "Missing required delete fields")
+			return
+		}
+
+		if !cs.isSessionAuthorizedForUser(sessionID, username) {
+			code, message := cs.getSessionAuthFailure(sessionID, username)
+			log.Printf("[%s] ✗ Rejected delete attempt by %s (%s)", socketIDStr, username, code)
+			emitActionResult(socket, "delete", false, code, message)
+			return
+		}
+
+		var messageTimestamp int64
+		if tsFloat, ok := messageTimestampRaw.(float64); ok {
+			messageTimestamp = int64(tsFloat)
+		} else {
+			log.Printf("[%s] ✗ Invalid messageTimestamp format for delete", socketIDStr)
+			emitActionResult(socket, "delete", false, "invalid_request", "Invalid message timestamp")
+			return
+		}
+
+		cs.mu.Lock()
+		messages, exists := cs.messages[room]
+		if !exists {
+			cs.mu.Unlock()
+			log.Printf("[%s] ✗ Room %s not found for delete", socketIDStr, room)
+			emitActionResult(socket, "delete", false, "not_found", "Room not found")
+			return
+		}
+
+		var targetMessage *Message
+		for i := range messages {
+			if messages[i].Timestamp == messageTimestamp {
+				targetMessage = &messages[i]
+				break
+			}
+		}
+
+		if targetMessage == nil {
+			cs.mu.Unlock()
+			log.Printf("[%s] ✗ Message with timestamp %d not found in room %s", socketIDStr, messageTimestamp, room)
+			emitActionResult(socket, "delete", false, "not_found", "Message not found")
+			return
+		}
+
+		if targetMessage.Username != username {
+			cs.mu.Unlock()
+			log.Printf("[%s] ✗ User %s attempted to delete message by %s (unauthorized)", socketIDStr, username, targetMessage.Username)
+			emitActionResult(socket, "delete", false, "not_owner", "Not owner")
+			return
+		}
+
+		if targetMessage.Username == "system" {
+			cs.mu.Unlock()
+			log.Printf("[%s] ✗ User %s attempted to delete system message (not allowed)", socketIDStr, username)
+			emitActionResult(socket, "delete", false, "not_allowed", "System messages cannot be deleted")
+			return
+		}
+
+		timestampsToDelete := map[int64]bool{messageTimestamp: true}
+		changed := true
+		for changed {
+			changed = false
+			for _, msg := range messages {
+				if msg.ReplyTo != nil && timestampsToDelete[*msg.ReplyTo] && !timestampsToDelete[msg.Timestamp] {
+					timestampsToDelete[msg.Timestamp] = true
+					changed = true
+				}
+			}
+		}
+
+		filteredMessages := make([]Message, 0, len(messages))
+		for _, msg := range messages {
+			if !timestampsToDelete[msg.Timestamp] {
+				filteredMessages = append(filteredMessages, msg)
+			}
+		}
+		cs.messages[room] = filteredMessages
+
+		log.Printf("[%s] ✓ Deleted message %d by %s with %d total removed nodes", socketIDStr, messageTimestamp, username, len(timestampsToDelete))
+
+		messagesCopyForSave := make(Messages)
+		for k, v := range cs.messages {
+			messagesCopyForSave[k] = make([]Message, len(v))
+			copy(messagesCopyForSave[k], v)
+		}
+		roomsCopyForSave := make([]string, len(cs.rooms))
+		copy(roomsCopyForSave, cs.rooms)
+		usersCopyForSave := make(map[string]string)
+		for k, v := range cs.users {
+			usersCopyForSave[k] = v
+		}
+
+		messagesCopy := make(Messages)
+		for k, v := range cs.messages {
+			messagesCopy[k] = make([]Message, len(v))
+			copy(messagesCopy[k], v)
+		}
+		usersList := make([]string, 0, len(cs.users))
+		for user := range cs.users {
+			usersList = append(usersList, user)
+		}
+
+		userPubKeysCopy := make(map[string]string)
+		for k, v := range cs.userPubKeys {
+			userPubKeysCopy[k] = v
+		}
+
+		cs.mu.Unlock()
+
+		go func() {
+			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
+			}
+		}()
+
+		response := map[string]interface{}{
+			"messages": messagesCopy,
+			"users":    usersList,
+		}
+
+		defaultNsp.Emit(EventServerMessage, response)
+		log.Printf("[%s] ✓ Broadcasted message delete update", socketIDStr)
+		emitActionResult(socket, "delete", true, "ok", "Message deleted")
 	})
 
 	// Register per-socket connection handler
