@@ -1,19 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { type Socket } from 'socket.io-client';
 import { type Messages } from '../../types/types';
+import { SOCKET_EVENTS } from '../../constants';
 import {
   type HomePageState,
   type JoinRequest,
 } from '../../contexts/home/homePageTypes';
 import { useHomeAutoDecrypt } from './useHomeAutoDecrypt';
 import { useHomeSessionLifecycle } from './useHomeSessionLifecycle';
-import { forceReauthToLogin } from '../../utils/gpg';
-import { computeRoomNotifications } from '../../utils/roomNotifications';
+import { forceReauthToLogin, loadKeys } from '../../utils/gpg';
+
+type StoredRoomPrefs = {
+  leftRooms?: string[];
+  currentRoom?: string;
+  openRooms?: string[];
+};
+
+function roomPrefsStorageKey(username: string): string {
+  return `home_room_prefs_${username}`;
+}
 
 export function useHomePageState(): HomePageState {
   const socketRef = useRef<Socket | undefined>(undefined);
-
-  const [oldChatValues, setOldChatValues] = useState<Messages>({});
   const [chatValues, setChatValuesState] = useState<Messages>({});
   const [, setUserList] = useState<string[]>([]);
   const [loggedInUsers, setLoggedInUsers] = useState<string[]>([]);
@@ -21,7 +29,7 @@ export function useHomePageState(): HomePageState {
   const [roomList, setRoomList] = useState<string[]>([]);
   const [leftRooms, setLeftRoomsState] = useState<Set<string>>(new Set());
   const [roomNotifications, setRoomNotifications] = useState<
-    Record<string, string>
+    Record<string, number>
   >({});
   const [currentRoomState, setCurrentRoomState] = useState<string>('');
 
@@ -42,8 +50,24 @@ export function useHomePageState(): HomePageState {
   const [editingMessageTimestamp, setEditingMessageTimestampState] = useState<
     number | undefined
   >(undefined);
+  const [editingMessageId, setEditingMessageIdState] = useState<
+    string | undefined
+  >(undefined);
 
   const getSocket = () => socketRef.current;
+  const currentRoomRef = useRef<string>('');
+  const roomListRef = useRef<string[]>([]);
+  const getCurrentRoom = () => currentRoomRef.current;
+  const getRoomList = () => roomListRef.current;
+
+  useEffect(() => {
+    currentRoomRef.current = currentRoomState;
+  }, [currentRoomState]);
+
+  useEffect(() => {
+    roomListRef.current = roomList;
+  }, [roomList]);
+
   const setSocket = (next: Socket | undefined) => {
     socketRef.current = next;
   };
@@ -61,20 +85,26 @@ export function useHomePageState(): HomePageState {
     setActiveUsers,
     setRoomList,
     setCurrentRoom: setCurrentRoomState,
+    setRoomNotifications,
     setUserLastSeen,
     setRoomMembers,
     setActiveJoinRequests,
     onForceReauth: forceReauthToLogin,
     getSocket,
+    getCurrentRoom,
+    getRoomList,
     setSocket,
   });
 
   useEffect(() => {
     setRoomNotifications((roomNotificationState) => {
-      const baseRoomName = currentRoomState?.replace(/-\(\d+ NEW!\)/, '');
+      const baseRoomName = currentRoomState?.trim();
+      if (!baseRoomName) {
+        return roomNotificationState;
+      }
       return {
         ...roomNotificationState,
-        [baseRoomName]: '',
+        [baseRoomName]: 0,
       };
     });
   }, [currentRoomState]);
@@ -85,20 +115,47 @@ export function useHomePageState(): HomePageState {
     }
   }, [currentRoomState, roomList]);
 
+  useEffect(() => {
+    if (!username || typeof window === 'undefined') return;
+
+    const raw = localStorage.getItem(roomPrefsStorageKey(username));
+    if (!raw) return;
+
+    try {
+      const prefs = JSON.parse(raw) as StoredRoomPrefs;
+      const restoredLeftRooms = Array.isArray(prefs.leftRooms)
+        ? prefs.leftRooms.filter((room) => typeof room === 'string')
+        : [];
+      setLeftRoomsState(new Set(restoredLeftRooms));
+
+      if (prefs.currentRoom && typeof prefs.currentRoom === 'string') {
+        setCurrentRoomState(prefs.currentRoom);
+      }
+    } catch (error) {
+      console.warn('[RoomPrefs] Failed to restore room preferences', error);
+    }
+  }, [username]);
+
+  useEffect(() => {
+    if (!username || typeof window === 'undefined') return;
+
+    const openRooms = roomList.filter((room) => !leftRooms.has(room));
+    const payload: StoredRoomPrefs = {
+      leftRooms: Array.from(leftRooms),
+      currentRoom: currentRoomState || undefined,
+      openRooms,
+    };
+    localStorage.setItem(
+      roomPrefsStorageKey(username),
+      JSON.stringify(payload),
+    );
+  }, [username, leftRooms, currentRoomState, roomList]);
+
   useHomeAutoDecrypt({
     chatValues,
     username,
     setChatValues: setChatValuesState,
   });
-
-  useEffect(() => {
-    if (oldChatValues) {
-      setRoomNotifications(
-        computeRoomNotifications(oldChatValues, chatValues, currentRoomState),
-      );
-    }
-    setOldChatValues(chatValues);
-  }, [chatValues, currentRoomState, oldChatValues]);
 
   return {
     authToken,
@@ -117,10 +174,29 @@ export function useHomePageState(): HomePageState {
     userDraftMessage: userDraftMessageState,
     replyingTo,
     editingMessageTimestamp,
+    editingMessageId,
     socket: socketRef.current,
     getSocket,
     setSocket,
-    setCurrentRoom: (room: string) => setCurrentRoomState(room),
+    setCurrentRoom: (room: string) => {
+      setCurrentRoomState(room);
+
+      if (!room || chatValues[room]) {
+        return;
+      }
+
+      const socket = getSocket() || (window as any).__socket;
+      const keys = loadKeys();
+      if (!socket || !username || !keys?.sessionId) {
+        return;
+      }
+
+      socket.emit(SOCKET_EVENTS.CLIENT_REQUEST_ROOM_DATA, {
+        username,
+        sessionId: keys.sessionId,
+        room,
+      });
+    },
     setNewRoomName: (roomName: string) => setNewRoomNameState(roomName),
     setUserDraftMessage: (message: string) => setUserDraftMessageState(message),
     setLeftRoomsState,
@@ -130,6 +206,7 @@ export function useHomePageState(): HomePageState {
     setUsernameState,
     setReplyingToState,
     setEditingMessageTimestampState,
+    setEditingMessageIdState,
     setUserDraftMessageState,
   };
 }

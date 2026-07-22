@@ -4,6 +4,7 @@ const USER_PUBLIC_KEYS_KEY = 'gpg_user_public_keys';
 type UserPublicKeyEntry = {
   publicKey: string;
   blocked?: boolean;
+  blockedAt?: number;
 };
 
 function readUserKeyEntries(): Record<string, UserPublicKeyEntry> {
@@ -23,12 +24,20 @@ function readUserKeyEntries(): Record<string, UserPublicKeyEntry> {
       }
 
       if (raw && typeof raw === 'object') {
-        const maybeEntry = raw as { publicKey?: unknown; blocked?: unknown };
+        const maybeEntry = raw as {
+          publicKey?: unknown;
+          blocked?: unknown;
+          blockedAt?: unknown;
+        };
         const publicKey =
           typeof maybeEntry.publicKey === 'string' ? maybeEntry.publicKey : '';
         normalized[username] = {
           publicKey,
           blocked: !!maybeEntry.blocked,
+          blockedAt:
+            typeof maybeEntry.blockedAt === 'number'
+              ? maybeEntry.blockedAt
+              : undefined,
         };
       }
     }
@@ -89,16 +98,26 @@ export function blockUser(username: string): void {
   if (typeof window === 'undefined' || !username) return;
   const entries = migrateLegacyBlockedUsers(readUserKeyEntries());
   const existing = entries[username] || { publicKey: '' };
-  entries[username] = { ...existing, blocked: true };
+  entries[username] = {
+    ...existing,
+    blocked: true,
+    blockedAt: Math.floor(Date.now() / 1000),
+  };
   writeUserKeyEntries(entries);
 }
 
-export function unblockUser(username: string): void {
-  if (typeof window === 'undefined' || !username) return;
+export function unblockUser(username: string): number | undefined {
+  if (typeof window === 'undefined' || !username) return undefined;
   const entries = migrateLegacyBlockedUsers(readUserKeyEntries());
   if (!entries[username]) {
-    return;
+    return undefined;
   }
-  entries[username] = { ...entries[username], blocked: false };
+  const blockedAt = entries[username].blockedAt;
+  entries[username] = {
+    ...entries[username],
+    blocked: false,
+    blockedAt: undefined,
+  };
   writeUserKeyEntries(entries);
+  return blockedAt;
 }

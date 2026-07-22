@@ -16,7 +16,7 @@ export type HomeRoomsContextValue = {
   username: string;
   roomList: string[];
   leftRooms: Set<string>;
-  roomNotifications: Record<string, string>;
+  roomNotifications: Record<string, number>;
   currentRoom: string;
   newRoomName: string;
   setCurrentRoom: (room: string) => void;
@@ -36,6 +36,7 @@ export type HomeComposerContextValue = {
   userDraftMessage: string;
   replyingTo: number | undefined;
   editingMessageTimestamp: number | undefined;
+  editingMessageId: string | undefined;
   setUserDraftMessage: (message: string) => void;
   onDraftKeyDownHandler: (e: KeyboardEvent<HTMLInputElement>) => void;
   doSend: () => Promise<void>;
@@ -56,8 +57,12 @@ export type HomeComposerContextValue = {
     versionIndex: number,
   ) => Promise<void>;
   handleReply: (timestamp: number) => void;
-  handleEdit: (messageTimestamp: number, content: string) => void;
-  handleDeleteMessage: (messageTimestamp: number) => void;
+  handleEdit: (
+    messageTimestamp: number,
+    content: string,
+    messageId?: string,
+  ) => void;
+  handleDeleteMessage: (messageTimestamp: number, messageId?: string) => void;
   handleVote: (
     room: string,
     messageTimestamp: number,
@@ -87,7 +92,7 @@ export type HomePageState = {
   username: string;
   roomList: string[];
   leftRooms: Set<string>;
-  roomNotifications: Record<string, string>;
+  roomNotifications: Record<string, number>;
   currentRoom: string;
   chatValues: Messages;
   blockedUsers: string[];
@@ -99,6 +104,7 @@ export type HomePageState = {
   userDraftMessage: string;
   replyingTo: number | undefined;
   editingMessageTimestamp: number | undefined;
+  editingMessageId: string | undefined;
   socket: Socket | undefined;
   getSocket: () => Socket | undefined;
   setSocket: (next: Socket | undefined) => void;
@@ -112,5 +118,6 @@ export type HomePageState = {
   setUsernameState: Dispatch<SetStateAction<string>>;
   setReplyingToState: Dispatch<SetStateAction<number | undefined>>;
   setEditingMessageTimestampState: Dispatch<SetStateAction<number | undefined>>;
+  setEditingMessageIdState: Dispatch<SetStateAction<string | undefined>>;
   setUserDraftMessageState: Dispatch<SetStateAction<string>>;
 };

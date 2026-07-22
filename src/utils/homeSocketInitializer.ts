@@ -17,6 +17,60 @@ type JoinRequest = {
   timestamp: number;
 };
 
+function createClientMessageId(prefix = 'client'): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return `${prefix}:${crypto.randomUUID()}`;
+  }
+  return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+}
+
+function ensureMessageId(message: Message): Message {
+  if (message.id && message.id.trim() !== '') {
+    return message;
+  }
+  return {
+    ...message,
+    id: createClientMessageId('legacy'),
+  };
+}
+
+type StoredRoomPrefs = {
+  leftRooms?: string[];
+  currentRoom?: string;
+  openRooms?: string[];
+};
+
+function roomPrefsStorageKey(username: string): string {
+  return `home_room_prefs_${username}`;
+}
+
+function loadRoomPrefs(username: string): StoredRoomPrefs {
+  if (!username || typeof window === 'undefined') {
+    return {};
+  }
+
+  const raw = localStorage.getItem(roomPrefsStorageKey(username));
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as StoredRoomPrefs;
+    return {
+      leftRooms: Array.isArray(parsed.leftRooms)
+        ? parsed.leftRooms.filter((room) => typeof room === 'string')
+        : [],
+      currentRoom:
+        typeof parsed.currentRoom === 'string' ? parsed.currentRoom : undefined,
+      openRooms: Array.isArray(parsed.openRooms)
+        ? parsed.openRooms.filter((room) => typeof room === 'string')
+        : [],
+    };
+  } catch {
+    return {};
+  }
+}
+
 function normalizeMessageState(message: Message): Message {
   if (message.deleted || message.content === 'Message deleted') {
     return {
@@ -40,6 +94,17 @@ function isBlockedAuthor(message: Message, blockedUsers: Set<string>): boolean {
   return message.username !== 'system' && blockedUsers.has(message.username);
 }
 
+function messageIdentity(message: Pick<Message, 'id' | 'timestamp'>): string {
+  if (message.id && message.id.trim() !== '') {
+    return `id:${message.id}`;
+  }
+  const msg = message as Message;
+  const username = msg.username || 'unknown';
+  const replyTo = msg.replyTo ?? 'none';
+  const content = (msg.content || '').slice(0, 48);
+  return `ts:${message.timestamp}:u:${username}:r:${replyTo}:c:${content}`;
+}
+
 type InitSocketArgs = {
   authToken: string;
   username: string;
@@ -51,10 +116,13 @@ type InitSocketArgs = {
   setActiveUsers: Dispatch<SetStateAction<string[]>>;
   setRoomList: Dispatch<SetStateAction<string[]>>;
   setCurrentRoom: Dispatch<SetStateAction<string>>;
+  setRoomNotifications: Dispatch<SetStateAction<Record<string, number>>>;
   setUserLastSeen: Dispatch<SetStateAction<Record<string, number>>>;
   setRoomMembers: Dispatch<SetStateAction<Record<string, Set<string>>>>;
   setActiveJoinRequests: Dispatch<SetStateAction<JoinRequest[]>>;
   getSocket: () => Socket | undefined;
+  getCurrentRoom: () => string;
+  getRoomList: () => string[];
   setSocket: (next: Socket | undefined) => void;
 };
 
@@ -69,10 +137,13 @@ export async function initializeHomeSocket({
   setActiveUsers,
   setRoomList,
   setCurrentRoom,
+  setRoomNotifications,
   setUserLastSeen,
   setRoomMembers,
   setActiveJoinRequests,
   getSocket,
+  getCurrentRoom,
+  getRoomList,
   setSocket,
 }: InitSocketArgs) {
   let socket = getSocket();
@@ -211,7 +282,8 @@ export async function initializeHomeSocket({
           (msg) => !isBlockedAuthor(msg, blockedUsers),
         );
         decryptedMessages[room] = await Promise.all(
-          visibleRoomMessages.map(async (msg: Message) => {
+          visibleRoomMessages.map(async (rawMsg: Message) => {
+            const msg = ensureMessageId(rawMsg);
             if (msg.encryptedFor && keys) {
               const encrypted = msg.encryptedFor[keys.username];
               if (encrypted) {
@@ -220,14 +292,16 @@ export async function initializeHomeSocket({
                     encrypted,
                     keys.privateKey,
                   );
-                  return normalizeMessageState({ ...msg, content: decrypted });
+                  return ensureMessageId(
+                    normalizeMessageState({ ...msg, content: decrypted }),
+                  );
                 } catch (error) {
                   console.error('[Socket] ✗ Failed to decrypt message:', error);
-                  return normalizeMessageState(msg);
+                  return ensureMessageId(normalizeMessageState(msg));
                 }
               }
             }
-            return normalizeMessageState(msg);
+            return ensureMessageId(normalizeMessageState(msg));
           }),
         );
       }
@@ -495,12 +569,14 @@ export async function initializeHomeSocket({
 
           // Create a map of existing messages by timestamp for efficient lookup
           const existingMessagesMap = new Map(
-            updated[originalRoom].map((msg) => [msg.timestamp, msg]),
+            updated[originalRoom].map((msg) => [messageIdentity(msg), msg]),
           );
 
           // Update or add decrypted messages
           const mergedMessages = decryptedMessages.map((decryptedMsg) => {
-            const existing = existingMessagesMap.get(decryptedMsg.timestamp);
+            const existing = existingMessagesMap.get(
+              messageIdentity(decryptedMsg),
+            );
             if (existing) {
               // Merge: prioritize decrypted content that's not a placeholder
               let finalContent = decryptedMsg.content;
@@ -536,8 +612,10 @@ export async function initializeHomeSocket({
           });
 
           // Add any existing messages that weren't in the decrypted set
-          existingMessagesMap.forEach((msg, timestamp) => {
-            if (!decryptedMessages.find((m) => m.timestamp === timestamp)) {
+          existingMessagesMap.forEach((msg, identity) => {
+            if (
+              !decryptedMessages.find((m) => messageIdentity(m) === identity)
+            ) {
               mergedMessages.push(msg);
             }
           });
@@ -768,7 +846,8 @@ export async function initializeHomeSocket({
         }
 
         decryptedMessages[room] = await Promise.all(
-          visibleRoomMessages.map(async (msg: Message) => {
+          visibleRoomMessages.map(async (rawMsg: Message) => {
+            const msg = ensureMessageId(rawMsg);
             // Preserve replyTo field
             const preservedReplyTo = msg.replyTo;
 
@@ -814,38 +893,43 @@ export async function initializeHomeSocket({
                   preservedReplyTo,
                 );
                 // Preserve all fields including replyTo
-                return {
+                return ensureMessageId({
                   ...msg,
                   content: decrypted,
                   replyTo: preservedReplyTo,
-                };
+                });
               } catch (error) {
                 console.error('[Socket] ✗ Failed to decrypt message:', error);
                 return normalizeMessageState(msg); // Return original if decryption fails (should preserve replyTo)
               }
             }
             // Return message with preserved replyTo
-            return normalizeMessageState({ ...msg, replyTo: preservedReplyTo });
+            return ensureMessageId(
+              normalizeMessageState({ ...msg, replyTo: preservedReplyTo }),
+            );
           }),
         );
       }
 
       // Merge with existing chat values instead of replacing
       // Important: preserve replyTo fields when merging
+      const unreadIncrements: Record<string, number> = {};
       setChatValues((prev) => {
         const merged = { ...prev };
         for (const [room, messages] of Object.entries(decryptedMessages)) {
           // Merge messages by timestamp to preserve replyTo and other fields
           if (!merged[room]) {
             merged[room] = messages;
+            unreadIncrements[room] = messages.length;
           } else {
             // Create a map of existing messages by timestamp
             const existingMap = new Map(
-              merged[room].map((m) => [m.timestamp, m]),
+              merged[room].map((m) => [messageIdentity(m), m]),
             );
             // Update or add new messages, preserving replyTo
+            let newMessageCount = 0;
             messages.forEach((msg) => {
-              const existing = existingMap.get(msg.timestamp);
+              const existing = existingMap.get(messageIdentity(msg));
               if (existing) {
                 // Update existing message but preserve replyTo if it exists
                 Object.assign(existing, msg, {
@@ -854,9 +938,14 @@ export async function initializeHomeSocket({
                 });
               } else {
                 // Add new message
-                existingMap.set(msg.timestamp, msg);
+                existingMap.set(messageIdentity(msg), msg);
+                newMessageCount += 1;
               }
             });
+            if (newMessageCount > 0) {
+              unreadIncrements[room] =
+                (unreadIncrements[room] || 0) + newMessageCount;
+            }
             merged[room] = Array.from(existingMap.values());
           }
         }
@@ -871,6 +960,23 @@ export async function initializeHomeSocket({
           })),
         );
         return merged;
+      });
+
+      const currentRoom = getCurrentRoom();
+      const roomsInList = new Set(getRoomList());
+      setRoomNotifications((prev) => {
+        const updated = { ...prev };
+        for (const [room, increment] of Object.entries(unreadIncrements)) {
+          if (!roomsInList.has(room)) {
+            continue;
+          }
+          if (room === currentRoom) {
+            updated[room] = 0;
+            continue;
+          }
+          updated[room] = (updated[room] || 0) + increment;
+        }
+        return updated;
       });
 
       // Ensure all rooms from messages are in the room list
@@ -1173,7 +1279,27 @@ export async function initializeHomeSocket({
         );
       }
 
-      setChatValues(decryptedMessages);
+      setChatValues((prev) => {
+        const merged = { ...prev };
+        for (const [room, messages] of Object.entries(decryptedMessages)) {
+          if (!merged[room]) {
+            merged[room] = messages;
+            continue;
+          }
+
+          const existingMap = new Map(
+            merged[room].map((m) => [messageIdentity(m), m]),
+          );
+          messages.forEach((msg) => {
+            existingMap.set(messageIdentity(msg), {
+              ...existingMap.get(messageIdentity(msg)),
+              ...msg,
+            });
+          });
+          merged[room] = Array.from(existingMap.values());
+        }
+        return merged;
+      });
     }
   });
 
@@ -1215,6 +1341,25 @@ export async function initializeHomeSocket({
       });
       console.log('[Socket] ✓ Announced public key for', username);
     }
+
+    const prefs = loadRoomPrefs(username);
+    const requestedCurrentRoom = prefs.currentRoom || DEFAULT_ROOM;
+    const requestedOpenRooms =
+      prefs.openRooms && prefs.openRooms.length > 0
+        ? prefs.openRooms
+        : [DEFAULT_ROOM];
+
+    activeSocket.emit(SOCKET_EVENTS.CLIENT_REQUEST_INITIAL_DATA, {
+      username,
+      sessionId: authToken,
+      defaultRoom: DEFAULT_ROOM,
+      currentRoom: requestedCurrentRoom,
+      openRooms: requestedOpenRooms,
+    });
+    console.log('[Socket] ✓ Requested filtered initial data', {
+      currentRoom: requestedCurrentRoom,
+      openRooms: requestedOpenRooms,
+    });
     // Join messages are now sent automatically by the server
   });
 

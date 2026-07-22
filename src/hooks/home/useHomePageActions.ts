@@ -30,10 +30,12 @@ export function useHomePageActions(state: HomePageState) {
       userDraftMessage: state.userDraftMessage,
       currentRoom: state.currentRoom,
       editingMessageTimestamp: state.editingMessageTimestamp,
+      editingMessageId: state.editingMessageId,
       blockedUsers: state.blockedUsers,
       username: state.username,
       replyingTo: state.replyingTo,
       setEditingMessageTimestamp: state.setEditingMessageTimestampState,
+      setEditingMessageId: state.setEditingMessageIdState,
       setUserDraftMessage: state.setUserDraftMessageState,
       setReplyingTo: state.setReplyingToState,
     });
@@ -125,9 +127,22 @@ export function useHomePageActions(state: HomePageState) {
   };
 
   const handleUnblockUser = (targetUser: string) => {
-    unblockUser(targetUser);
+    const blockedAt = unblockUser(targetUser);
     state.setBlockedUsersState(getBlockedUsers());
     console.log('[UserList] Unblocked user', targetUser);
+
+    const activeSocket = (window as any).__socket || state.getSocket();
+    const keys = loadKeys();
+    if (!activeSocket || !state.username || !keys?.sessionId) {
+      return;
+    }
+
+    activeSocket.emit(SOCKET_EVENTS.CLIENT_UNBLOCK_USER_DELTA, {
+      username: state.username,
+      sessionId: keys.sessionId,
+      targetUser,
+      blockedSince: blockedAt ?? 0,
+    });
   };
 
   const handleRequestAccess = (
@@ -190,18 +205,26 @@ export function useHomePageActions(state: HomePageState) {
     focusDraftInput();
   };
 
-  const handleEdit = (messageTimestamp: number, content: string) => {
+  const handleEdit = (
+    messageTimestamp: number,
+    content: string,
+    messageId?: string,
+  ) => {
     console.log(
       '[onEdit] Edit button clicked, setting editingMessageTimestamp to:',
       messageTimestamp,
     );
     state.setEditingMessageTimestampState(messageTimestamp);
+    state.setEditingMessageIdState(messageId);
     state.setReplyingToState(undefined);
     state.setUserDraftMessageState(content);
     focusDraftInput();
   };
 
-  const handleDeleteMessage = (messageTimestamp: number) => {
+  const handleDeleteMessage = (
+    messageTimestamp: number,
+    messageId?: string,
+  ) => {
     const socket = state.getSocket();
     const keys = loadKeys();
 
@@ -220,40 +243,15 @@ export function useHomePageActions(state: HomePageState) {
 
     socket.emit(SOCKET_EVENTS.CLIENT_DELETE_MESSAGE, {
       room: state.currentRoom,
+      ...(messageId ? { messageId } : {}),
       messageTimestamp,
       username: state.username,
       sessionId: keys.sessionId,
     });
 
-    state.setChatValuesState((prev) => {
-      const next = { ...prev };
-      const roomMessages = next[state.currentRoom];
-      if (roomMessages) {
-        next[state.currentRoom] = roomMessages.map((message) => {
-          if (message.timestamp !== messageTimestamp) {
-            return message;
-          }
-
-          return {
-            ...message,
-            content: 'Message deleted',
-            deleted: true,
-            encryptedFor: undefined,
-            versions: undefined,
-            currentVersion: undefined,
-            visibleTo: undefined,
-            voteTotal: undefined,
-            userVotes: undefined,
-            edited: false,
-          };
-        });
-      }
-
-      return next;
-    });
-
     if (state.editingMessageTimestamp === messageTimestamp) {
       state.setEditingMessageTimestampState(undefined);
+      state.setEditingMessageIdState(undefined);
       state.setUserDraftMessageState('');
     }
     if (state.replyingTo === messageTimestamp) {
@@ -288,6 +286,7 @@ export function useHomePageActions(state: HomePageState) {
   const handleCancelReplyOrEdit = () => {
     state.setReplyingToState(undefined);
     state.setEditingMessageTimestampState(undefined);
+    state.setEditingMessageIdState(undefined);
   };
 
   const handleVoteJoin = (

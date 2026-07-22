@@ -49,6 +49,7 @@ export function HomePageProvider({ children }: { children: ReactNode }) {
     userDraftMessage: state.userDraftMessage,
     replyingTo: state.replyingTo,
     editingMessageTimestamp: state.editingMessageTimestamp,
+    editingMessageId: state.editingMessageId,
     setUserDraftMessage: state.setUserDraftMessage,
     onDraftKeyDownHandler: actions.onDraftKeyDownHandler,
     doSend: actions.doSend,

@@ -81,8 +81,8 @@ export function HomeLeftPanel() {
                         title={room}
                       >
                         {getRoomDisplayLabel(room, username)}
-                        {roomNotifications[room]
-                          ? `-${roomNotifications[room]}`
+                        {!isActive && roomNotifications[room] > 0
+                          ? ` (${roomNotifications[room]})`
                           : ''}
                       </button>
                       <button

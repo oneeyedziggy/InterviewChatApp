@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 type FileStore struct {
@@ -92,6 +94,19 @@ func (fs *FileStore) Load() (Messages, []string, map[string]string, map[string]s
 	}
 	if state.Messages["#cats"] == nil {
 		state.Messages["#cats"] = []Message{}
+	}
+
+	for room, roomMessages := range state.Messages {
+		changed := false
+		for i := range roomMessages {
+			if roomMessages[i].ID == "" {
+				roomMessages[i].ID = uuid.NewString()
+				changed = true
+			}
+		}
+		if changed {
+			state.Messages[room] = roomMessages
+		}
 	}
 
 	log.Printf("[FileStore] ✓ State loaded from %s - rooms: %d, users: %d, message rooms: %d, pub keys: %d",

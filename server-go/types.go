@@ -20,10 +20,13 @@ const (
 	EventClientLeaveRoom         = "clientLeaveRoom"
 	EventClientRejoinRoom        = "clientRejoinRoom"
 	EventClientVoteJoin          = "clientVoteJoin"
+	EventClientRequestInitialData = "clientRequestInitialData"
+	EventClientRequestRoomData    = "clientRequestRoomData"
 	EventClientVoteMessage       = "clientVoteMessage"
 	EventClientEditMessage       = "clientEditMessage"
 	EventClientDeleteMessage     = "clientDeleteMessage"
 	EventClientSendPublicKey     = "clientSendPublicKey"
+	EventClientUnblockUserDelta  = "clientUnblockUserDelta"
 	EventServerMessage           = "serverMessage"
 	EventServerPublicKeyReceived = "serverPublicKeyReceived"
 	EventServerVoteUpdate        = "serverVoteUpdate"
@@ -53,6 +56,7 @@ type MessageVersion struct {
 }
 
 type Message struct {
+    ID             string            `json:"id,omitempty"`
 	Timestamp      int64             `json:"timestamp"`
 	Username       string            `json:"username"`
 	Content        string            `json:"content"`

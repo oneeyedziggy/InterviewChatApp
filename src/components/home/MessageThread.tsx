@@ -13,6 +13,27 @@ import {
 } from '../../utils/contextMenuEvents';
 import { mdStringToReact } from '../../utils/markdown';
 
+function messageKey(message: Message, index: number): string {
+  if (message.id && message.id.trim() !== '') {
+    return `id:${message.id}`;
+  }
+  return `ts:${message.timestamp}:u:${message.username}:i:${index}`;
+}
+
+function isSameMessageRun(
+  previous: Message | undefined,
+  current: Message,
+): boolean {
+  if (!previous) {
+    return false;
+  }
+  const previousReplyTo = previous.replyTo ?? null;
+  const currentReplyTo = current.replyTo ?? null;
+  return (
+    previous.username === current.username && previousReplyTo === currentReplyTo
+  );
+}
+
 const MessageWithReplies = ({
   message,
   allMessages,
@@ -37,6 +58,7 @@ const MessageWithReplies = ({
   replyingTo,
   editingMessageTimestamp,
   indentLevel = 0,
+  collapseIntoPrevious = false,
 }: {
   message: Message;
   allMessages: Message[];
@@ -65,8 +87,12 @@ const MessageWithReplies = ({
     versionIndex: number,
   ) => void;
   onReply?: (messageTimestamp: number) => void;
-  onEdit?: (messageTimestamp: number, content: string) => void;
-  onDelete?: (messageTimestamp: number) => void;
+  onEdit?: (
+    messageTimestamp: number,
+    content: string,
+    messageId?: string,
+  ) => void;
+  onDelete?: (messageTimestamp: number, messageId?: string) => void;
   onVote?: (
     room: string,
     messageTimestamp: number,
@@ -82,8 +108,10 @@ const MessageWithReplies = ({
   replyingTo?: number;
   editingMessageTimestamp?: number;
   indentLevel?: number;
+  collapseIntoPrevious?: boolean;
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isCompactHovered, setIsCompactHovered] = useState(false);
   const [actionMenuAnchor, setActionMenuAnchor] = useState<DOMRect | null>(
     null,
   );
@@ -95,8 +123,10 @@ const MessageWithReplies = ({
     !!username &&
     message.username === username &&
     message.username !== 'system';
+  const isSystemMessage = message.username === 'system';
   const isDeletedMessage =
     !!message.deleted || message.content === 'Message deleted';
+  const isCompactMessage = collapseIntoPrevious;
 
   const sortedReplies = [...replies]
     .filter((r) => canUserViewMessage(r, username))
@@ -231,7 +261,8 @@ const MessageWithReplies = ({
             display: 'inline-block',
           }}
         >
-          {renderAuthorLine()}: Message deleted
+          {!isCompactMessage && <>{renderAuthorLine()}: </>}
+          Message deleted
         </div>
       );
     }
@@ -394,7 +425,10 @@ const MessageWithReplies = ({
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span>🔒</span>
-          <span>{renderAuthorLine()}: [Encrypted message]</span>
+          <span>
+            {!isCompactMessage && <>{renderAuthorLine()}: </>}
+            [Encrypted message]
+          </span>
           {onRequestAccess && (
             <button
               onClick={() =>
@@ -453,7 +487,7 @@ const MessageWithReplies = ({
         {(() => {
           return (
             <span>
-              {renderAuthorLine()}:{' '}
+              {!isCompactMessage && <>{renderAuthorLine()}: </>}
               {mdStringToReact(message.content || '[No content]')}
               {message.edited && (
                 <span
@@ -477,10 +511,45 @@ const MessageWithReplies = ({
     <div
       style={{
         position: 'relative',
-        marginBottom: '8px',
+        marginBottom: isCompactMessage ? '2px' : '8px',
         paddingLeft: indentLevel > 0 ? '24px' : '0',
       }}
+      onMouseEnter={() => {
+        if (isCompactMessage) {
+          setIsCompactHovered(true);
+        }
+      }}
+      onMouseLeave={() => {
+        if (isCompactMessage) {
+          setIsCompactHovered(false);
+        }
+      }}
     >
+      {isCompactMessage && (
+        <span
+          style={{
+            position: 'absolute',
+            left: indentLevel > 0 ? '-44px' : '-128px',
+            top: '4px',
+            fontSize: '11px',
+            color: '#6c7f9b',
+            background:
+              'color-mix(in srgb, var(--app-surface) 90%, transparent)',
+            border:
+              '1px solid color-mix(in srgb, var(--app-border) 70%, transparent)',
+            borderRadius: '10px',
+            padding: '1px 6px',
+            opacity: isCompactHovered ? 1 : 0,
+            transform: isCompactHovered ? 'translateX(0)' : 'translateX(4px)',
+            transition: 'opacity 140ms ease, transform 140ms ease',
+            pointerEvents: 'none',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {localTimestamp}
+        </span>
+      )}
+
       {indentLevel > 0 && (
         <>
           <div
@@ -591,73 +660,79 @@ const MessageWithReplies = ({
           </div>
         )}
 
-        {FEATURES.MESSAGE_VOTING && onVote && username && !isDeletedMessage && (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: '2px',
-              flexShrink: 0,
-              marginRight: '4px',
-              alignSelf: 'center',
-            }}
-          >
-            <button
-              onClick={() => onVote(room, message.timestamp, 'up')}
+        {FEATURES.MESSAGE_VOTING &&
+          onVote &&
+          username &&
+          !isDeletedMessage &&
+          !isSystemMessage && (
+            <div
               style={{
-                padding: '0',
-                fontSize: '16px',
-                cursor: 'pointer',
-                backgroundColor: 'transparent',
-                border: 'none',
-                color:
-                  message.userVotes?.[username] === 'up' ? '#4caf50' : '#999',
                 display: 'flex',
+                flexDirection: 'column',
                 alignItems: 'center',
-                justifyContent: 'center',
-                width: '20px',
-                height: '20px',
-                lineHeight: '1',
-              }}
-              title="Upvote"
-            >
-              ▲
-            </button>
-            <span
-              style={{
-                fontSize: '12px',
-                fontWeight: 'bold',
-                color: '#666',
-                minWidth: '20px',
-                textAlign: 'center',
+                gap: '2px',
+                flexShrink: 0,
+                marginRight: '4px',
+                alignSelf: 'center',
               }}
             >
-              {message.voteTotal ?? 0}
-            </span>
-            <button
-              onClick={() => onVote(room, message.timestamp, 'down')}
-              style={{
-                padding: '0',
-                fontSize: '16px',
-                cursor: 'pointer',
-                backgroundColor: 'transparent',
-                border: 'none',
-                color:
-                  message.userVotes?.[username] === 'down' ? '#f44336' : '#999',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: '20px',
-                height: '20px',
-                lineHeight: '1',
-              }}
-              title="Downvote"
-            >
-              ▼
-            </button>
-          </div>
-        )}
+              <button
+                onClick={() => onVote(room, message.timestamp, 'up')}
+                style={{
+                  padding: '0',
+                  fontSize: '16px',
+                  cursor: 'pointer',
+                  backgroundColor: 'transparent',
+                  border: 'none',
+                  color:
+                    message.userVotes?.[username] === 'up' ? '#4caf50' : '#999',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '20px',
+                  height: '20px',
+                  lineHeight: '1',
+                }}
+                title="Upvote"
+              >
+                ▲
+              </button>
+              <span
+                style={{
+                  fontSize: '12px',
+                  fontWeight: 'bold',
+                  color: '#666',
+                  minWidth: '20px',
+                  textAlign: 'center',
+                }}
+              >
+                {message.voteTotal ?? 0}
+              </span>
+              <button
+                onClick={() => onVote(room, message.timestamp, 'down')}
+                style={{
+                  padding: '0',
+                  fontSize: '16px',
+                  cursor: 'pointer',
+                  backgroundColor: 'transparent',
+                  border: 'none',
+                  color:
+                    message.userVotes?.[username] === 'down'
+                      ? '#f44336'
+                      : '#999',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '20px',
+                  height: '20px',
+                  lineHeight: '1',
+                }}
+                title="Downvote"
+              >
+                ▼
+              </button>
+            </div>
+          )}
 
         {(unreadDirectRepliesCount ?? 0) > 0 && (
           <span
@@ -741,6 +816,7 @@ const MessageWithReplies = ({
           )}
 
         {!isDeletedMessage &&
+          !isSystemMessage &&
           (onReply || (isOwnNonSystemMessage && (onEdit || onDelete))) && (
             <div
               style={{
@@ -758,8 +834,8 @@ const MessageWithReplies = ({
                   cursor: 'pointer',
                   border: '1px solid #b8c8de',
                   borderRadius: '6px',
-                  padding: '0 6px',
-                  height: '22px',
+                  padding: isCompactMessage ? '0 4px' : '0 6px',
+                  height: isCompactMessage ? '18px' : '22px',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -790,7 +866,7 @@ const MessageWithReplies = ({
                     $minWidth={152}
                     onMouseDown={(e) => e.stopPropagation()}
                   >
-                    {onReply && (
+                    {!isSystemMessage && onReply && (
                       <ContextMenuItem
                         type="button"
                         $active={replyingTo === message.timestamp}
@@ -807,7 +883,11 @@ const MessageWithReplies = ({
                         type="button"
                         $active={editingMessageTimestamp === message.timestamp}
                         onClick={() => {
-                          onEdit(message.timestamp, message.content);
+                          onEdit(
+                            message.timestamp,
+                            message.content,
+                            message.id,
+                          );
                           closeActionMenu();
                         }}
                       >
@@ -819,7 +899,7 @@ const MessageWithReplies = ({
                         type="button"
                         $danger
                         onClick={() => {
-                          onDelete(message.timestamp);
+                          onDelete(message.timestamp, message.id);
                           closeActionMenu();
                         }}
                       >
@@ -865,48 +945,60 @@ const MessageWithReplies = ({
               />
             )}
 
-            {sortedReplies.map((reply) => (
-              <div key={reply.timestamp} style={{ position: 'relative' }}>
+            {sortedReplies.map((reply, index) => {
+              const previousReply =
+                index > 0 ? sortedReplies[index - 1] : undefined;
+              const collapseIntoPrevious = isSameMessageRun(
+                previousReply,
+                reply,
+              );
+              return (
                 <div
-                  style={{
-                    position: 'absolute',
-                    left: '-12px',
-                    top: '12px',
-                    width: '12px',
-                    height: '1px',
-                    backgroundColor: '#d0d0d0',
-                    borderTopLeftRadius: '6px',
-                    borderBottomLeftRadius: '6px',
-                  }}
-                />
+                  key={messageKey(reply, index)}
+                  style={{ position: 'relative' }}
+                >
+                  <div
+                    style={{
+                      position: 'absolute',
+                      left: '-12px',
+                      top: '12px',
+                      width: '12px',
+                      height: '1px',
+                      backgroundColor: '#d0d0d0',
+                      borderTopLeftRadius: '6px',
+                      borderBottomLeftRadius: '6px',
+                    }}
+                  />
 
-                <MessageWithReplies
-                  message={reply}
-                  allMessages={allMessages}
-                  childrenByParent={childrenByParent}
-                  room={room}
-                  username={username}
-                  onRequestAccess={onRequestAccess}
-                  onGrantAccess={onGrantAccess}
-                  onDenyAccess={onDenyAccess}
-                  onSelectVersion={onSelectVersion}
-                  onReply={onReply}
-                  onEdit={onEdit}
-                  onDelete={onDelete}
-                  onVote={onVote}
-                  onMessageUser={onMessageUser}
-                  onSendPublicKeyToUser={onSendPublicKeyToUser}
-                  onBlockUser={onBlockUser}
-                  onUnblockUser={onUnblockUser}
-                  blockedUsers={blockedUsers}
-                  getUnreadDirectRepliesCount={getUnreadDirectRepliesCount}
-                  markDirectRepliesRead={markDirectRepliesRead}
-                  replyingTo={replyingTo}
-                  editingMessageTimestamp={editingMessageTimestamp}
-                  indentLevel={indentLevel + 1}
-                />
-              </div>
-            ))}
+                  <MessageWithReplies
+                    message={reply}
+                    allMessages={allMessages}
+                    childrenByParent={childrenByParent}
+                    room={room}
+                    username={username}
+                    onRequestAccess={onRequestAccess}
+                    onGrantAccess={onGrantAccess}
+                    onDenyAccess={onDenyAccess}
+                    onSelectVersion={onSelectVersion}
+                    onReply={onReply}
+                    onEdit={onEdit}
+                    onDelete={onDelete}
+                    onVote={onVote}
+                    onMessageUser={onMessageUser}
+                    onSendPublicKeyToUser={onSendPublicKeyToUser}
+                    onBlockUser={onBlockUser}
+                    onUnblockUser={onUnblockUser}
+                    blockedUsers={blockedUsers}
+                    getUnreadDirectRepliesCount={getUnreadDirectRepliesCount}
+                    markDirectRepliesRead={markDirectRepliesRead}
+                    replyingTo={replyingTo}
+                    editingMessageTimestamp={editingMessageTimestamp}
+                    indentLevel={indentLevel + 1}
+                    collapseIntoPrevious={collapseIntoPrevious}
+                  />
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -956,8 +1048,12 @@ function MessageThreadCard({
     versionIndex: number,
   ) => void;
   onReply?: (messageTimestamp: number) => void;
-  onEdit?: (messageTimestamp: number, content: string) => void;
-  onDelete?: (messageTimestamp: number) => void;
+  onEdit?: (
+    messageTimestamp: number,
+    content: string,
+    messageId?: string,
+  ) => void;
+  onDelete?: (messageTimestamp: number, messageId?: string) => void;
   onVote?: (
     room: string,
     messageTimestamp: number,
@@ -1098,46 +1194,52 @@ function MessageThreadCard({
       $border="none"
       onScroll={handleScroll}
     >
-      {messages.map((message) => (
-        <MessageWithReplies
-          key={message.timestamp}
-          message={message}
-          allMessages={allMessages}
-          childrenByParent={childrenByParent}
-          room={currentRoom}
-          username={username}
-          onRequestAccess={onRequestAccess}
-          onGrantAccess={onGrantAccess}
-          onDenyAccess={(
-            requestingUser: string,
-            originalRoom: string,
-            messageTimestamp: number,
-          ) => {
-            if (socket) {
-              socket.emit(SOCKET_EVENTS.CLIENT_DENY_ACCESS, {
-                requestingUser,
-                originalRoom,
-                messageTimestamp,
-              });
-            }
-          }}
-          onSelectVersion={onSelectVersion}
-          onReply={onReply}
-          onEdit={onEdit}
-          onDelete={onDelete}
-          onVote={onVote}
-          onMessageUser={onMessageUser}
-          onSendPublicKeyToUser={onSendPublicKeyToUser}
-          onBlockUser={onBlockUser}
-          onUnblockUser={onUnblockUser}
-          blockedUsers={blockedUsers}
-          getUnreadDirectRepliesCount={getUnreadDirectRepliesCount}
-          markDirectRepliesRead={markDirectRepliesRead}
-          replyingTo={replyingTo}
-          editingMessageTimestamp={editingMessageTimestamp}
-          indentLevel={0}
-        />
-      ))}
+      {messages.map((message, index) => {
+        const previousMessage = index > 0 ? messages[index - 1] : undefined;
+        const collapseIntoPrevious = isSameMessageRun(previousMessage, message);
+
+        return (
+          <MessageWithReplies
+            key={messageKey(message, index)}
+            message={message}
+            allMessages={allMessages}
+            childrenByParent={childrenByParent}
+            room={currentRoom}
+            username={username}
+            onRequestAccess={onRequestAccess}
+            onGrantAccess={onGrantAccess}
+            onDenyAccess={(
+              requestingUser: string,
+              originalRoom: string,
+              messageTimestamp: number,
+            ) => {
+              if (socket) {
+                socket.emit(SOCKET_EVENTS.CLIENT_DENY_ACCESS, {
+                  requestingUser,
+                  originalRoom,
+                  messageTimestamp,
+                });
+              }
+            }}
+            onSelectVersion={onSelectVersion}
+            onReply={onReply}
+            onEdit={onEdit}
+            onDelete={onDelete}
+            onVote={onVote}
+            onMessageUser={onMessageUser}
+            onSendPublicKeyToUser={onSendPublicKeyToUser}
+            onBlockUser={onBlockUser}
+            onUnblockUser={onUnblockUser}
+            blockedUsers={blockedUsers}
+            getUnreadDirectRepliesCount={getUnreadDirectRepliesCount}
+            markDirectRepliesRead={markDirectRepliesRead}
+            replyingTo={replyingTo}
+            editingMessageTimestamp={editingMessageTimestamp}
+            indentLevel={0}
+            collapseIntoPrevious={collapseIntoPrevious}
+          />
+        );
+      })}
     </ScrollableDiv>
   );
 }
@@ -1165,8 +1267,12 @@ export const renderMessageThread = (
   ) => void,
   allMessages?: Messages,
   onReply?: (messageTimestamp: number) => void,
-  onEdit?: (messageTimestamp: number, content: string) => void,
-  onDelete?: (messageTimestamp: number) => void,
+  onEdit?: (
+    messageTimestamp: number,
+    content: string,
+    messageId?: string,
+  ) => void,
+  onDelete?: (messageTimestamp: number, messageId?: string) => void,
   onVote?: (
     room: string,
     messageTimestamp: number,

@@ -14,6 +14,8 @@ export const SOCKET_EVENTS = {
   CLIENT_LEAVE_ROOM: 'clientLeaveRoom',
   CLIENT_REJOIN_ROOM: 'clientRejoinRoom',
   CLIENT_VOTE_JOIN: 'clientVoteJoin',
+  CLIENT_REQUEST_INITIAL_DATA: 'clientRequestInitialData',
+  CLIENT_REQUEST_ROOM_DATA: 'clientRequestRoomData',
   SERVER_MESSAGE: 'serverMessage',
   SERVER_NEW_ROOM: 'serverNewRoom',
   SERVER_USER_LIST_UPDATE: 'serverUserListUpdate',
@@ -26,6 +28,7 @@ export const SOCKET_EVENTS = {
   CLIENT_EDIT_MESSAGE: 'clientEditMessage',
   CLIENT_DELETE_MESSAGE: 'clientDeleteMessage',
   CLIENT_SEND_PUBLIC_KEY: 'clientSendPublicKey',
+  CLIENT_UNBLOCK_USER_DELTA: 'clientUnblockUserDelta',
   SERVER_PUBLIC_KEY_RECEIVED: 'serverPublicKeyReceived',
   SERVER_VOTE_UPDATE: 'serverVoteUpdate',
   SERVER_ACTION_RESULT: 'serverActionResult',
@@ -44,4 +47,3 @@ export const SYSTEM_MESSAGES = {
 export const FEATURES = {
   MESSAGE_VOTING: true, // Enable/disable message voting feature
 } as const;
-

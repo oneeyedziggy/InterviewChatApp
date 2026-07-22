@@ -17,10 +17,12 @@ export async function doSendAction({
   userDraftMessage,
   currentRoom,
   editingMessageTimestamp,
+  editingMessageId,
   blockedUsers,
   username,
   replyingTo,
   setEditingMessageTimestamp,
+  setEditingMessageId,
   setUserDraftMessage,
   setReplyingTo,
 }: {
@@ -28,10 +30,12 @@ export async function doSendAction({
   userDraftMessage: string;
   currentRoom: string;
   editingMessageTimestamp: number | undefined;
+  editingMessageId: string | undefined;
   blockedUsers: string[];
   username: string;
   replyingTo: number | undefined;
   setEditingMessageTimestamp: Dispatch<SetStateAction<number | undefined>>;
+  setEditingMessageId: Dispatch<SetStateAction<string | undefined>>;
   setUserDraftMessage: Dispatch<SetStateAction<string>>;
   setReplyingTo: Dispatch<SetStateAction<number | undefined>>;
 }) {
@@ -126,6 +130,7 @@ export async function doSendAction({
 
     const editData = {
       room: currentRoom,
+      ...(editingMessageId ? { messageId: editingMessageId } : {}),
       messageTimestamp: editingMessageTimestamp,
       username,
       sessionId: keys.sessionId,
@@ -138,6 +143,7 @@ export async function doSendAction({
     activeSocket.emit(SOCKET_EVENTS.CLIENT_EDIT_MESSAGE, editData);
     console.log('[doSend] ✓ Edit message emitted');
     setEditingMessageTimestamp(undefined);
+    setEditingMessageId(undefined);
     setUserDraftMessage('');
     return;
   }

@@ -24,11 +24,14 @@ type UseHomeSessionLifecycleArgs = {
   setActiveUsers: Dispatch<SetStateAction<string[]>>;
   setRoomList: Dispatch<SetStateAction<string[]>>;
   setCurrentRoom: Dispatch<SetStateAction<string>>;
+  setRoomNotifications: Dispatch<SetStateAction<Record<string, number>>>;
   setUserLastSeen: Dispatch<SetStateAction<Record<string, number>>>;
   setRoomMembers: Dispatch<SetStateAction<Record<string, Set<string>>>>;
   setActiveJoinRequests: Dispatch<SetStateAction<JoinRequest[]>>;
   onForceReauth: () => void;
   getSocket: () => Socket | undefined;
+  getCurrentRoom: () => string;
+  getRoomList: () => string[];
   setSocket: (next: Socket | undefined) => void;
 };
 
@@ -45,11 +48,14 @@ export function useHomeSessionLifecycle({
   setActiveUsers,
   setRoomList,
   setCurrentRoom,
+  setRoomNotifications,
   setUserLastSeen,
   setRoomMembers,
   setActiveJoinRequests,
   onForceReauth,
   getSocket,
+  getCurrentRoom,
+  getRoomList,
   setSocket,
 }: UseHomeSessionLifecycleArgs) {
   const initializeSession = async (
@@ -116,10 +122,13 @@ export function useHomeSessionLifecycle({
         setActiveUsers,
         setRoomList,
         setCurrentRoom,
+        setRoomNotifications,
         setUserLastSeen,
         setRoomMembers,
         setActiveJoinRequests,
         getSocket,
+        getCurrentRoom,
+        getRoomList,
         setSocket,
       });
     } else {

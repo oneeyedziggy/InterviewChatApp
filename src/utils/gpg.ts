@@ -29,6 +29,7 @@ export interface StoredKeys {
 export type UserPublicKeyEntry = {
   publicKey: string;
   blocked?: boolean;
+  blockedAt?: number;
 };
 
 type UserPublicKeyInput = string | UserPublicKeyEntry;
@@ -49,6 +50,8 @@ function normalizeUserPublicKeyEntries(
       normalized[username] = {
         publicKey: raw.publicKey || '',
         blocked: !!raw.blocked,
+        blockedAt:
+          typeof raw.blockedAt === 'number' ? raw.blockedAt : undefined,
       };
     }
   }
@@ -598,6 +601,7 @@ export function storeUserPublicKeys(
     merged[username] = {
       publicKey: nextEntry.publicKey || prior?.publicKey || '',
       blocked: prior?.blocked || nextEntry.blocked || false,
+      blockedAt: prior?.blockedAt || nextEntry.blockedAt,
     };
   }
 

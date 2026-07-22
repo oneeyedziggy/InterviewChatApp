@@ -6,6 +6,7 @@ export type MessageVersion = {
 };
 
 export type Message = {
+  id?: string;
   timestamp: number;
   username: string;
   content: string;
