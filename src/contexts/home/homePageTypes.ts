@@ -21,6 +21,8 @@ export type HomeRoomsContextValue = {
   newRoomName: string;
   setCurrentRoom: (room: string) => void;
   setNewRoomName: (roomName: string) => void;
+  hideRoom: (room: string) => void;
+  showRoom: (room: string) => void;
   onNewRoomKeyDownHandler: (e: KeyboardEvent<HTMLInputElement>) => void;
   makeNewRoom: () => void;
 };
@@ -75,6 +77,7 @@ export type HomePresenceContextValue = {
   handleMessageUser: (targetUser: string) => void;
   handleSendPublicKeyToUser: (targetUser: string) => void;
   handleBlockUser: (targetUser: string) => void;
+  handleUnblockUser: (targetUser: string) => void;
   handleVoteJoin: (requestingUser: string, room: string, vote: boolean) => void;
   handleLogout: () => Promise<void>;
 };

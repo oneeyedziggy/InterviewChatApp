@@ -1,4 +1,5 @@
 import { UserListPanel } from '../UserListPanel';
+import { ThemeToggle } from '../ThemeToggle';
 import {
   SidePanel,
   PrimaryButton,
@@ -20,6 +21,7 @@ export function HomeRightPanel() {
     handleMessageUser,
     handleSendPublicKeyToUser,
     handleBlockUser,
+    handleUnblockUser,
     handleVoteJoin,
     handleLogout,
   } = useHomePresence();
@@ -31,6 +33,9 @@ export function HomeRightPanel() {
         defaultTopSize={82}
         top={
           <div className="flex h-full min-h-0 flex-col">
+            <div className="mb-2 flex justify-start">
+              <ThemeToggle compact />
+            </div>
             <UserListPanel
               currentUsername={username}
               loggedInUsers={loggedInUsers}
@@ -40,6 +45,7 @@ export function HomeRightPanel() {
               onMessageUser={handleMessageUser}
               onSendPublicKey={handleSendPublicKeyToUser}
               onBlockUser={handleBlockUser}
+              onUnblockUser={handleUnblockUser}
             />
           </div>
         }

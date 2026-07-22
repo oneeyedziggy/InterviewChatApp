@@ -4,10 +4,11 @@ import { type Message, type Messages } from '../types/types';
 import { SOCKET_EVENTS, DEFAULT_ROOM, SYSTEM_MESSAGES } from '../constants';
 import {
   storeUserPublicKeys,
-  loadUserPublicKeys,
+  loadUserPublicKeyEntries,
   decryptMessageForUser,
   loadKeys,
 } from '../utils/gpg';
+import { getBlockedUsers } from '../utils/userSettings';
 import type { Dispatch, SetStateAction } from 'react';
 
 type JoinRequest = {
@@ -33,6 +34,10 @@ function normalizeMessageState(message: Message): Message {
   }
 
   return message;
+}
+
+function isBlockedAuthor(message: Message, blockedUsers: Set<string>): boolean {
+  return message.username !== 'system' && blockedUsers.has(message.username);
 }
 
 type InitSocketArgs = {
@@ -201,8 +206,12 @@ export async function initializeHomeSocket({
 
       for (const [room, messages] of Object.entries(data.messages)) {
         const roomMessages = messages as Message[];
+        const blockedUsers = new Set(getBlockedUsers());
+        const visibleRoomMessages = roomMessages.filter(
+          (msg) => !isBlockedAuthor(msg, blockedUsers),
+        );
         decryptedMessages[room] = await Promise.all(
-          roomMessages.map(async (msg: Message) => {
+          visibleRoomMessages.map(async (msg: Message) => {
             if (msg.encryptedFor && keys) {
               const encrypted = msg.encryptedFor[keys.username];
               if (encrypted) {
@@ -736,11 +745,15 @@ export async function initializeHomeSocket({
 
         // Type assertion: messages from SERVER_MESSAGE should be Message[]
         const roomMessages = messages as Message[];
+        const blockedUsers = new Set(getBlockedUsers());
+        const visibleRoomMessages = roomMessages.filter(
+          (msg) => !isBlockedAuthor(msg, blockedUsers),
+        );
         console.log(
-          `[Socket] SERVER_MESSAGE: Received ${roomMessages.length} messages for room ${room}`,
+          `[Socket] SERVER_MESSAGE: Received ${visibleRoomMessages.length} visible messages for room ${room}`,
         );
         // Log replyTo fields
-        const messagesWithReplies = roomMessages.filter(
+        const messagesWithReplies = visibleRoomMessages.filter(
           (m) => m.replyTo !== undefined && m.replyTo !== null,
         );
         if (messagesWithReplies.length > 0) {
@@ -755,7 +768,7 @@ export async function initializeHomeSocket({
         }
 
         decryptedMessages[room] = await Promise.all(
-          roomMessages.map(async (msg: Message) => {
+          visibleRoomMessages.map(async (msg: Message) => {
             // Preserve replyTo field
             const preservedReplyTo = msg.replyTo;
 
@@ -1082,8 +1095,11 @@ export async function initializeHomeSocket({
           '[AccessRequest] Storing requesting user public key for:',
           requestingUser,
         );
-        const userPubKeys = loadUserPublicKeys() || {};
-        userPubKeys[requestingUser] = data.requestingUserPubKey;
+        const userPubKeys = loadUserPublicKeyEntries() || {};
+        userPubKeys[requestingUser] = {
+          publicKey: data.requestingUserPubKey,
+          blocked: !!userPubKeys[requestingUser]?.blocked,
+        };
         storeUserPublicKeys(userPubKeys);
         console.log(
           '[AccessRequest] ✓ Stored public key for requesting user:',
@@ -1130,8 +1146,12 @@ export async function initializeHomeSocket({
 
       for (const [room, messages] of Object.entries(data.messages)) {
         const roomMessages = messages as Message[];
+        const blockedUsers = new Set(getBlockedUsers());
+        const visibleRoomMessages = roomMessages.filter(
+          (msg) => !isBlockedAuthor(msg, blockedUsers),
+        );
         decryptedMessages[room] = await Promise.all(
-          roomMessages.map(async (msg: Message) => {
+          visibleRoomMessages.map(async (msg: Message) => {
             // If message has encryptedFor and we have keys, decrypt it
             if (msg.encryptedFor && keys) {
               const encrypted = msg.encryptedFor[keys.username];
@@ -1173,8 +1193,11 @@ export async function initializeHomeSocket({
 
   socket.on(SOCKET_EVENTS.SERVER_PUBLIC_KEY_RECEIVED, (data) => {
     if (data?.fromUser && data?.publicKey) {
-      const userPubKeys = loadUserPublicKeys() || {};
-      userPubKeys[data.fromUser] = data.publicKey;
+      const userPubKeys = loadUserPublicKeyEntries() || {};
+      userPubKeys[data.fromUser] = {
+        publicKey: data.publicKey,
+        blocked: !!userPubKeys[data.fromUser]?.blocked,
+      };
       storeUserPublicKeys(userPubKeys);
       console.log('[Socket] ✓ Stored public key from', data.fromUser);
     }

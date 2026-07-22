@@ -33,6 +33,36 @@
   }
 }
 
+:root[data-theme='light'] {
+  color-scheme: light;
+  --app-bg: #f6fbff;
+  --app-fg: #0c1b33;
+  --app-surface: #ffffff;
+  --app-input-bg: #ffffff;
+  --app-input-fg: #091426;
+  --app-panel: #eef6ff;
+  --app-border: #b9cce8;
+  --app-muted: #4a5e83;
+  --brand-blue: #004ca8;
+  --brand-cyan: #006f84;
+  --brand-amber: #9a5c00;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --app-bg: #08111f;
+  --app-fg: #f5f8ff;
+  --app-surface: #0f1f36;
+  --app-input-bg: #132949;
+  --app-input-fg: #f5f8ff;
+  --app-panel: #132949;
+  --app-border: #43679d;
+  --app-muted: #b5c8e8;
+  --brand-blue: #67b3ff;
+  --brand-cyan: #1ccbe4;
+  --brand-amber: #ffbf47;
+}
+
 @theme {
   --color-app-bg: var(--app-bg);
   --color-app-fg: var(--app-fg);
@@ -412,16 +442,67 @@ a {
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  .app-auth-title {
-    color: var(--brand-cyan);
-  }
+.app-auth-title {
+  color: var(--brand-cyan);
+}
 
-  .app-auth-error {
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .app-auth-error {
     background: rgba(126, 18, 34, 0.35);
     color: #ffd8de;
     border-color: rgba(255, 128, 147, 0.65);
   }
+}
+
+:root[data-theme='dark'] .app-auth-error {
+  background: rgba(126, 18, 34, 0.35);
+  color: #ffd8de;
+  border-color: rgba(255, 128, 147, 0.65);
+}
+
+.app-theme-toggle-group {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  gap: 2px;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--app-surface) 88%, transparent);
+  padding: 2px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(6px);
+}
+
+.app-theme-toggle-option {
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--app-fg);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 6px 9px;
+  cursor: pointer;
+}
+
+.app-theme-toggle-group--compact {
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.2);
+  padding: 1px;
+}
+
+.app-theme-toggle-group--compact .app-theme-toggle-option {
+  font-size: 11px;
+  padding: 5px 7px;
+}
+
+.app-theme-toggle-option:hover {
+  border-color: var(--brand-cyan);
+  color: var(--brand-cyan);
+}
+
+.app-theme-toggle-option[data-active='true'] {
+  background: var(--brand-blue);
+  color: #ffffff;
 }
 
 @media (max-width: 640px) {

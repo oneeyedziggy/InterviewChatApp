@@ -26,6 +26,36 @@ export interface StoredKeys {
   sessionId?: string;
 }
 
+export type UserPublicKeyEntry = {
+  publicKey: string;
+  blocked?: boolean;
+};
+
+type UserPublicKeyInput = string | UserPublicKeyEntry;
+
+function normalizeUserPublicKeyEntries(
+  input: Record<string, UserPublicKeyInput> | null,
+): Record<string, UserPublicKeyEntry> {
+  if (!input) return {};
+
+  const normalized: Record<string, UserPublicKeyEntry> = {};
+  for (const [username, raw] of Object.entries(input)) {
+    if (typeof raw === 'string') {
+      normalized[username] = { publicKey: raw, blocked: false };
+      continue;
+    }
+
+    if (raw && typeof raw === 'object') {
+      normalized[username] = {
+        publicKey: raw.publicKey || '',
+        blocked: !!raw.blocked,
+      };
+    }
+  }
+
+  return normalized;
+}
+
 /**
  * Generate a new GPG key pair for a user
  */
@@ -554,24 +584,35 @@ export async function encryptForServer(
 /**
  * Store all user public keys
  */
-export function storeUserPublicKeys(userPubKeys: Record<string, string>): void {
+export function storeUserPublicKeys(
+  userPubKeys: Record<string, UserPublicKeyInput>,
+): void {
   if (typeof window === 'undefined') return;
 
-  localStorage.setItem(
-    STORAGE_KEYS.USER_PUBLIC_KEYS,
-    JSON.stringify(userPubKeys),
-  );
+  const existing = loadUserPublicKeyEntries() || {};
+  const incoming = normalizeUserPublicKeyEntries(userPubKeys);
+  const merged: Record<string, UserPublicKeyEntry> = { ...existing };
+
+  for (const [username, nextEntry] of Object.entries(incoming)) {
+    const prior = existing[username];
+    merged[username] = {
+      publicKey: nextEntry.publicKey || prior?.publicKey || '',
+      blocked: prior?.blocked || nextEntry.blocked || false,
+    };
+  }
+
+  localStorage.setItem(STORAGE_KEYS.USER_PUBLIC_KEYS, JSON.stringify(merged));
   console.log(
     '[GPG] ✓ Stored user public keys:',
-    Object.keys(userPubKeys).length,
+    Object.keys(merged).length,
     'keys',
   );
 }
 
-/**
- * Load all user public keys
- */
-export function loadUserPublicKeys(): Record<string, string> | null {
+export function loadUserPublicKeyEntries(): Record<
+  string,
+  UserPublicKeyEntry
+> | null {
   if (typeof window === 'undefined') return null;
 
   const stored = localStorage.getItem(STORAGE_KEYS.USER_PUBLIC_KEYS);
@@ -581,13 +622,9 @@ export function loadUserPublicKeys(): Record<string, string> | null {
   }
 
   try {
-    const keys = JSON.parse(stored);
-    console.log(
-      '[GPG] ✓ Loaded user public keys:',
-      Object.keys(keys).length,
-      'keys',
-    );
-    return keys;
+    const parsed = JSON.parse(stored) as Record<string, UserPublicKeyInput>;
+    const entries = normalizeUserPublicKeyEntries(parsed);
+    return entries;
   } catch (e) {
     console.error('[GPG] ✗ Failed to parse user public keys:', e);
     return null;
@@ -595,18 +632,41 @@ export function loadUserPublicKeys(): Record<string, string> | null {
 }
 
 /**
+ * Load all user public keys
+ */
+export function loadUserPublicKeys(): Record<string, string> | null {
+  const entries = loadUserPublicKeyEntries();
+  if (!entries) return null;
+
+  const keys: Record<string, string> = {};
+  for (const [username, entry] of Object.entries(entries)) {
+    if (entry.publicKey) {
+      keys[username] = entry.publicKey;
+    }
+  }
+
+  console.log(
+    '[GPG] ✓ Loaded user public keys:',
+    Object.keys(keys).length,
+    'keys',
+  );
+  return keys;
+}
+
+/**
  * Filter public keys for outbound encryption (respects blocks and DM room scope).
  */
 export function filterPubKeysForEncryption(
-  userPubKeys: Record<string, string>,
+  userPubKeys: Record<string, UserPublicKeyInput>,
   options: { room?: string; blockedUsers?: string[] },
 ): Record<string, string> {
+  const entries = normalizeUserPublicKeyEntries(userPubKeys);
   const blocked = new Set(options.blockedUsers ?? getBlockedUsers());
   const filtered: Record<string, string> = {};
 
-  for (const [user, key] of Object.entries(userPubKeys)) {
-    if (!blocked.has(user)) {
-      filtered[user] = key;
+  for (const [user, entry] of Object.entries(entries)) {
+    if (!blocked.has(user) && !entry.blocked && entry.publicKey) {
+      filtered[user] = entry.publicKey;
     }
   }
 

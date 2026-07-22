@@ -1,13 +1,15 @@
 import { useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { styled } from 'styled-components';
 import { CONTEXT_MENU_CLOSE_EVENT } from '../utils/contextMenuEvents';
 
 const Popover = styled.div`
-  position: absolute;
-  z-index: 7000;
-  background: #ffffff;
-  border: 1px solid #9aa8b8;
-  border-radius: 6px;
+  position: fixed;
+  z-index: 13000;
+  background: color-mix(in srgb, var(--app-surface) 96%, var(--app-panel));
+  color: var(--app-fg);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
   box-shadow: 0 12px 28px rgba(5, 18, 34, 0.24);
   padding: 10px;
   min-width: 200px;
@@ -22,28 +24,39 @@ const PopoverActions = styled.div`
 `;
 
 const ActionButton = styled.button<{ $variant?: 'danger' | 'primary' }>`
-  padding: 4px 10px;
+  padding: 5px 10px;
   font-size: 12px;
-  border: none;
+  font-weight: 700;
+  border: 1px solid var(--app-border);
   border-radius: 4px;
   cursor: pointer;
   background: ${(p) =>
     p.$variant === 'danger'
-      ? '#b02a37'
+      ? 'color-mix(in srgb, #b32030 22%, var(--app-surface))'
       : p.$variant === 'primary'
-        ? '#165d9f'
-        : '#edf2f7'};
+        ? 'color-mix(in srgb, var(--brand-blue) 22%, var(--app-surface))'
+        : 'color-mix(in srgb, var(--app-panel) 88%, var(--app-surface))'};
+  border-color: ${(p) =>
+    p.$variant === 'danger'
+      ? 'color-mix(in srgb, #b32030 70%, var(--app-border))'
+      : p.$variant === 'primary'
+        ? 'color-mix(in srgb, var(--brand-blue) 70%, var(--app-border))'
+        : 'var(--app-border)'};
   color: ${(p) =>
-    p.$variant === 'danger' || p.$variant === 'primary' ? '#fff' : '#223042'};
+    p.$variant === 'danger'
+      ? 'color-mix(in srgb, #b32030 82%, var(--app-fg))'
+      : p.$variant === 'primary'
+        ? 'color-mix(in srgb, var(--brand-blue) 82%, var(--app-fg))'
+        : 'var(--app-fg)'};
 
   &:hover {
     background: ${(p) =>
       p.$variant === 'danger'
-        ? '#7f1d28'
+        ? 'color-mix(in srgb, #b32030 30%, var(--app-surface))'
         : p.$variant === 'primary'
-          ? '#103f6b'
-          : '#dbe7f3'};
-    color: #fff;
+          ? 'color-mix(in srgb, var(--brand-cyan) 28%, var(--app-surface))'
+          : 'color-mix(in srgb, var(--brand-cyan) 16%, var(--app-surface))'};
+    color: var(--app-fg);
   }
 `;
 
@@ -85,7 +98,9 @@ export function ConfirmPopover({
 
   if (!anchorRect) return null;
 
-  return (
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
     <Popover
       ref={ref}
       style={{
@@ -102,6 +117,7 @@ export function ConfirmPopover({
           {confirmLabel}
         </ActionButton>
       </PopoverActions>
-    </Popover>
+    </Popover>,
+    document.body,
   );
 }

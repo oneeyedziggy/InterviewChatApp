@@ -8,7 +8,11 @@ import {
 import { type HomePageState } from '../../contexts/home/homePageTypes';
 import { getDmRoomId } from '../../utils/dmRooms';
 import { loadKeys, redirectToLogout } from '../../utils/gpg';
-import { blockUser, getBlockedUsers } from '../../utils/userSettings';
+import {
+  blockUser,
+  getBlockedUsers,
+  unblockUser,
+} from '../../utils/userSettings';
 
 function focusDraftInput() {
   const input = document.getElementById(
@@ -55,6 +59,36 @@ export function useHomePageActions(state: HomePageState) {
     }
   };
 
+  const hideRoom = (room: string) => {
+    if (!room) return;
+
+    state.setLeftRoomsState((prev) => {
+      const next = new Set(prev);
+      next.add(room);
+      return next;
+    });
+
+    if (state.currentRoom === room) {
+      const availableRooms = state.roomList.filter(
+        (r) => !state.leftRooms.has(r) && r !== room,
+      );
+      if (availableRooms.length > 0) {
+        state.setCurrentRoom(availableRooms[0]);
+      }
+    }
+  };
+
+  const showRoom = (room: string) => {
+    if (!room) return;
+
+    state.setLeftRoomsState((prev) => {
+      const next = new Set(prev);
+      next.delete(room);
+      return next;
+    });
+    state.setCurrentRoom(room);
+  };
+
   const handleMessageUser = (targetUser: string) => {
     if (!state.username || targetUser === state.username) return;
     const dmRoomId = getDmRoomId(state.username, targetUser);
@@ -88,6 +122,12 @@ export function useHomePageActions(state: HomePageState) {
     blockUser(targetUser);
     state.setBlockedUsersState(getBlockedUsers());
     console.log('[UserList] Blocked user', targetUser);
+  };
+
+  const handleUnblockUser = (targetUser: string) => {
+    unblockUser(targetUser);
+    state.setBlockedUsersState(getBlockedUsers());
+    console.log('[UserList] Unblocked user', targetUser);
   };
 
   const handleRequestAccess = (
@@ -296,10 +336,13 @@ export function useHomePageActions(state: HomePageState) {
     doSend,
     onDraftKeyDownHandler,
     makeNewRoom,
+    hideRoom,
+    showRoom,
     onNewRoomKeyDownHandler,
     handleMessageUser,
     handleSendPublicKeyToUser,
     handleBlockUser,
+    handleUnblockUser,
     handleRequestAccess,
     handleGrantAccess,
     handleSelectVersion,

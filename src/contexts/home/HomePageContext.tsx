@@ -34,6 +34,8 @@ export function HomePageProvider({ children }: { children: ReactNode }) {
     newRoomName: state.newRoomName,
     setCurrentRoom: state.setCurrentRoom,
     setNewRoomName: state.setNewRoomName,
+    hideRoom: actions.hideRoom,
+    showRoom: actions.showRoom,
     onNewRoomKeyDownHandler: actions.onNewRoomKeyDownHandler,
     makeNewRoom: actions.makeNewRoom,
   };
@@ -71,6 +73,7 @@ export function HomePageProvider({ children }: { children: ReactNode }) {
     handleMessageUser: actions.handleMessageUser,
     handleSendPublicKeyToUser: actions.handleSendPublicKeyToUser,
     handleBlockUser: actions.handleBlockUser,
+    handleUnblockUser: actions.handleUnblockUser,
     handleVoteJoin: actions.handleVoteJoin,
     handleLogout: actions.handleLogout,
   };

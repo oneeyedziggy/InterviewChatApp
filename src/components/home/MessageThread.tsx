@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { type Socket } from 'socket.io-client';
 import { styled } from 'styled-components';
 import { ScrollableDiv } from '../styled/ScrollableDiv';
+import { ContextMenuItem, ContextMenuSurface } from '../styled/ContextMenu';
 import { SOCKET_EVENTS, FEATURES } from '../../constants';
 import { type Messages, type Message } from '../../types/types';
 import { canUserViewMessage } from '../../utils/messages';
@@ -11,37 +12,6 @@ import {
   closeOtherContextMenus,
 } from '../../utils/contextMenuEvents';
 import { mdStringToReact } from '../../utils/markdown';
-
-const ActionMenuButton = styled.button<{ $danger?: boolean }>`
-  width: 100%;
-  text-align: left;
-  border: none;
-  border-radius: 6px;
-  padding: 6px 8px;
-  background: transparent;
-  color: ${(p) => (p.$danger ? '#a11f2d' : '#18324d')};
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: ${(p) => (p.$danger ? 700 : 600)};
-
-  &:hover {
-    background: ${(p) => (p.$danger ? '#7f1d28' : '#103f6b')};
-    color: #ffffff;
-  }
-`;
-
-const MessageActionMenu = styled.div<{ $top: number; $left: number }>`
-  position: fixed;
-  top: ${(p) => `${p.$top}px`};
-  left: ${(p) => `${p.$left}px`};
-  z-index: 12000;
-  min-width: 150px;
-  padding: 6px;
-  border-radius: 8px;
-  border: 1px solid #6e87a5;
-  background: #f7fbff;
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.24);
-`;
 
 const MessageWithReplies = ({
   message,
@@ -57,6 +27,11 @@ const MessageWithReplies = ({
   onEdit,
   onDelete,
   onVote,
+  onMessageUser,
+  onSendPublicKeyToUser,
+  onBlockUser,
+  onUnblockUser,
+  blockedUsers,
   getUnreadDirectRepliesCount,
   markDirectRepliesRead,
   replyingTo,
@@ -97,6 +72,11 @@ const MessageWithReplies = ({
     messageTimestamp: number,
     voteType: 'up' | 'down',
   ) => void;
+  onMessageUser?: (targetUser: string) => void;
+  onSendPublicKeyToUser?: (targetUser: string) => void;
+  onBlockUser?: (targetUser: string) => void;
+  onUnblockUser?: (targetUser: string) => void;
+  blockedUsers?: string[];
   getUnreadDirectRepliesCount?: (messageTimestamp: number) => number;
   markDirectRepliesRead?: (messageTimestamp: number) => void;
   replyingTo?: number;
@@ -107,6 +87,8 @@ const MessageWithReplies = ({
   const [actionMenuAnchor, setActionMenuAnchor] = useState<DOMRect | null>(
     null,
   );
+  const [userContextMenuAnchor, setUserContextMenuAnchor] =
+    useState<DOMRect | null>(null);
   const replies = childrenByParent.get(message.timestamp) ?? [];
   const hasReplies = replies.length > 0;
   const isOwnNonSystemMessage =
@@ -132,6 +114,7 @@ const MessageWithReplies = ({
   useEffect(() => {
     const handleSharedClose = () => {
       setActionMenuAnchor(null);
+      setUserContextMenuAnchor(null);
     };
     window.addEventListener(CONTEXT_MENU_CLOSE_EVENT, handleSharedClose);
     return () => {
@@ -139,11 +122,44 @@ const MessageWithReplies = ({
     };
   }, []);
 
+  useEffect(() => {
+    if (!actionMenuAnchor && !userContextMenuAnchor) return;
+
+    const handleOutsidePointer = () => {
+      setActionMenuAnchor(null);
+      setUserContextMenuAnchor(null);
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setActionMenuAnchor(null);
+        setUserContextMenuAnchor(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsidePointer);
+    document.addEventListener('touchstart', handleOutsidePointer);
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('mousedown', handleOutsidePointer);
+      document.removeEventListener('touchstart', handleOutsidePointer);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [actionMenuAnchor, userContextMenuAnchor]);
+
   const closeActionMenu = () => {
     setActionMenuAnchor(null);
   };
 
+  const closeUserContextMenu = () => {
+    setUserContextMenuAnchor(null);
+  };
+
   const localTimestamp = new Date(message.timestamp * 1000).toLocaleString();
+
+  const isBlockedAuthor =
+    !!blockedUsers && blockedUsers.includes(message.username);
 
   const renderAuthorLine = () => (
     <span
@@ -152,6 +168,33 @@ const MessageWithReplies = ({
         cursor: 'help',
         textDecoration: 'underline',
         textDecorationStyle: 'dotted',
+      }}
+      onContextMenu={(event) => {
+        if (
+          !onMessageUser ||
+          !onSendPublicKeyToUser ||
+          !onBlockUser ||
+          !onUnblockUser ||
+          !username ||
+          message.username === username ||
+          message.username === 'system'
+        ) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+
+        const rect = (
+          event.currentTarget as HTMLElement
+        ).getBoundingClientRect();
+        setUserContextMenuAnchor((current) => {
+          if (current) {
+            return null;
+          }
+          closeOtherContextMenus();
+          return rect;
+        });
       }}
     >
       <span>{message.username}</span>
@@ -637,6 +680,66 @@ const MessageWithReplies = ({
 
         <div style={{ flex: 1, minWidth: 0 }}>{renderMessageContent()}</div>
 
+        {userContextMenuAnchor &&
+          onMessageUser &&
+          onSendPublicKeyToUser &&
+          onBlockUser &&
+          onUnblockUser &&
+          username &&
+          message.username !== username &&
+          message.username !== 'system' &&
+          createPortal(
+            <ContextMenuSurface
+              $top={userContextMenuAnchor.bottom + 4}
+              $left={Math.max(8, userContextMenuAnchor.left)}
+              $zIndex={12010}
+              $minWidth={165}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <ContextMenuItem
+                type="button"
+                onClick={() => {
+                  onMessageUser(message.username);
+                  closeUserContextMenu();
+                }}
+              >
+                Message
+              </ContextMenuItem>
+              <ContextMenuItem
+                type="button"
+                onClick={() => {
+                  onSendPublicKeyToUser(message.username);
+                  closeUserContextMenu();
+                }}
+              >
+                Send private key
+              </ContextMenuItem>
+              {isBlockedAuthor ? (
+                <ContextMenuItem
+                  type="button"
+                  onClick={() => {
+                    onUnblockUser(message.username);
+                    closeUserContextMenu();
+                  }}
+                >
+                  Unblock
+                </ContextMenuItem>
+              ) : (
+                <ContextMenuItem
+                  type="button"
+                  $danger
+                  onClick={() => {
+                    onBlockUser(message.username);
+                    closeUserContextMenu();
+                  }}
+                >
+                  Block
+                </ContextMenuItem>
+              )}
+            </ContextMenuSurface>,
+            document.body,
+          )}
+
         {!isDeletedMessage &&
           (onReply || (isOwnNonSystemMessage && (onEdit || onDelete))) && (
             <div
@@ -680,55 +783,39 @@ const MessageWithReplies = ({
               </button>
               {actionMenuAnchor &&
                 createPortal(
-                  <MessageActionMenu
+                  <ContextMenuSurface
                     $top={actionMenuAnchor.bottom + 4}
                     $left={Math.max(8, actionMenuAnchor.right - 152)}
+                    $zIndex={12000}
+                    $minWidth={152}
                     onMouseDown={(e) => e.stopPropagation()}
                   >
                     {onReply && (
-                      <ActionMenuButton
+                      <ContextMenuItem
                         type="button"
+                        $active={replyingTo === message.timestamp}
                         onClick={() => {
                           onReply(message.timestamp);
                           closeActionMenu();
                         }}
-                        style={{
-                          background:
-                            replyingTo === message.timestamp
-                              ? '#0b7a6f'
-                              : 'transparent',
-                          color:
-                            replyingTo === message.timestamp
-                              ? '#fff'
-                              : '#18324d',
-                        }}
                       >
                         Reply
-                      </ActionMenuButton>
+                      </ContextMenuItem>
                     )}
                     {isOwnNonSystemMessage && onEdit && (
-                      <ActionMenuButton
+                      <ContextMenuItem
                         type="button"
+                        $active={editingMessageTimestamp === message.timestamp}
                         onClick={() => {
                           onEdit(message.timestamp, message.content);
                           closeActionMenu();
                         }}
-                        style={{
-                          background:
-                            editingMessageTimestamp === message.timestamp
-                              ? '#2196f3'
-                              : 'transparent',
-                          color:
-                            editingMessageTimestamp === message.timestamp
-                              ? '#fff'
-                              : '#18324d',
-                        }}
                       >
                         Edit
-                      </ActionMenuButton>
+                      </ContextMenuItem>
                     )}
                     {isOwnNonSystemMessage && onDelete && (
-                      <ActionMenuButton
+                      <ContextMenuItem
                         type="button"
                         $danger
                         onClick={() => {
@@ -737,9 +824,9 @@ const MessageWithReplies = ({
                         }}
                       >
                         Delete
-                      </ActionMenuButton>
+                      </ContextMenuItem>
                     )}
-                  </MessageActionMenu>,
+                  </ContextMenuSurface>,
                   document.body,
                 )}
             </div>
@@ -807,6 +894,11 @@ const MessageWithReplies = ({
                   onEdit={onEdit}
                   onDelete={onDelete}
                   onVote={onVote}
+                  onMessageUser={onMessageUser}
+                  onSendPublicKeyToUser={onSendPublicKeyToUser}
+                  onBlockUser={onBlockUser}
+                  onUnblockUser={onUnblockUser}
+                  blockedUsers={blockedUsers}
                   getUnreadDirectRepliesCount={getUnreadDirectRepliesCount}
                   markDirectRepliesRead={markDirectRepliesRead}
                   replyingTo={replyingTo}
@@ -834,6 +926,11 @@ function MessageThreadCard({
   onEdit,
   onDelete,
   onVote,
+  onMessageUser,
+  onSendPublicKeyToUser,
+  onBlockUser,
+  onUnblockUser,
+  blockedUsers,
   replyingTo,
   editingMessageTimestamp,
   socket,
@@ -866,6 +963,11 @@ function MessageThreadCard({
     messageTimestamp: number,
     voteType: 'up' | 'down',
   ) => void;
+  onMessageUser?: (targetUser: string) => void;
+  onSendPublicKeyToUser?: (targetUser: string) => void;
+  onBlockUser?: (targetUser: string) => void;
+  onUnblockUser?: (targetUser: string) => void;
+  blockedUsers?: string[];
   replyingTo?: number;
   editingMessageTimestamp?: number;
   socket?: Socket;
@@ -1024,6 +1126,11 @@ function MessageThreadCard({
           onEdit={onEdit}
           onDelete={onDelete}
           onVote={onVote}
+          onMessageUser={onMessageUser}
+          onSendPublicKeyToUser={onSendPublicKeyToUser}
+          onBlockUser={onBlockUser}
+          onUnblockUser={onUnblockUser}
+          blockedUsers={blockedUsers}
           getUnreadDirectRepliesCount={getUnreadDirectRepliesCount}
           markDirectRepliesRead={markDirectRepliesRead}
           replyingTo={replyingTo}
@@ -1065,6 +1172,10 @@ export const renderMessageThread = (
     messageTimestamp: number,
     voteType: 'up' | 'down',
   ) => void,
+  onMessageUser?: (targetUser: string) => void,
+  onSendPublicKeyToUser?: (targetUser: string) => void,
+  onBlockUser?: (targetUser: string) => void,
+  onUnblockUser?: (targetUser: string) => void,
   replyingTo?: number,
   editingMessageTimestamp?: number,
   socket?: Socket,
@@ -1097,6 +1208,11 @@ export const renderMessageThread = (
         onEdit={onEdit}
         onDelete={onDelete}
         onVote={onVote}
+        onMessageUser={onMessageUser}
+        onSendPublicKeyToUser={onSendPublicKeyToUser}
+        onBlockUser={onBlockUser}
+        onUnblockUser={onUnblockUser}
+        blockedUsers={blockedUsers}
         replyingTo={replyingTo}
         editingMessageTimestamp={editingMessageTimestamp}
         socket={socket}

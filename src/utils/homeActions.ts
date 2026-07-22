@@ -7,7 +7,7 @@ import {
   filterPubKeysForEncryption,
   decryptMessageForUser,
   loadKeys,
-  loadUserPublicKeys,
+  loadUserPublicKeyEntries,
 } from '../utils/gpg';
 
 type SetMessages = Dispatch<SetStateAction<Messages>>;
@@ -77,7 +77,7 @@ export async function doSendAction({
   }
 
   // Encrypt message with all user public keys (including sender's own key)
-  const userPubKeys = loadUserPublicKeys();
+  const userPubKeys = loadUserPublicKeyEntries();
   const keys = loadKeys();
   let encryptedFor: Record<string, string> | undefined;
 
@@ -657,7 +657,7 @@ export async function grantAccessAction({
 
   try {
     // Re-encrypt for ALL users (including sender and requesting user)
-    let userPubKeys = loadUserPublicKeys();
+    let userPubKeys = loadUserPublicKeyEntries();
     if (!userPubKeys) {
       console.error('[GrantAccess] ✗ User public keys not found');
       return;
@@ -665,16 +665,22 @@ export async function grantAccessAction({
 
     // CRITICAL: Ensure the sender's own public key is included
     // This ensures the sender can always decrypt their own messages
-    if (!userPubKeys[username]) {
+    if (!userPubKeys[username]?.publicKey) {
       console.log(
         "[GrantAccess] Adding sender's own public key to userPubKeys",
       );
-      userPubKeys = { ...userPubKeys, [username]: keys.publicKey };
+      userPubKeys = {
+        ...userPubKeys,
+        [username]: {
+          publicKey: keys.publicKey,
+          blocked: !!userPubKeys[username]?.blocked,
+        },
+      };
     }
 
     // CRITICAL: Ensure the requesting user's public key is included
     // The server should have sent it in the access request, but check anyway
-    if (!userPubKeys[requestingUser]) {
+    if (!userPubKeys[requestingUser]?.publicKey) {
       console.error(
         '[GrantAccess] ✗ Requesting user',
         requestingUser,

@@ -5,7 +5,10 @@ import {
   PrimaryButton,
 } from './LayoutPrimitives';
 import { renderMessageThread } from './MessageThread';
-import { useHomeComposer } from '../../contexts/home/useHomePageSelectors';
+import {
+  useHomeComposer,
+  useHomePresence,
+} from '../../contexts/home/useHomePageSelectors';
 
 export function HomeCenterPanel() {
   const {
@@ -30,6 +33,13 @@ export function HomeCenterPanel() {
     doSend,
   } = useHomeComposer();
 
+  const {
+    handleMessageUser,
+    handleSendPublicKeyToUser,
+    handleBlockUser,
+    handleUnblockUser,
+  } = useHomePresence();
+
   return (
     <MainPanel>
       <div className="app-message-thread-area">
@@ -46,6 +56,10 @@ export function HomeCenterPanel() {
           handleEdit,
           handleDeleteMessage,
           handleVote,
+          handleMessageUser,
+          handleSendPublicKeyToUser,
+          handleBlockUser,
+          handleUnblockUser,
           replyingTo,
           editingMessageTimestamp,
           socket,

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { styled } from 'styled-components';
 import { ScrollableDiv } from './styled/ScrollableDiv';
+import { ContextMenuItem, ContextMenuSurface } from './styled/ContextMenu';
 import { ConfirmPopover } from './ConfirmPopover';
 import {
   CONTEXT_MENU_CLOSE_EVENT,
@@ -31,11 +32,12 @@ const UserRow = styled.div<{
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border: 1px solid #556;
-  background-color: ${(p) => (p.$isSelf ? '#b8ccee' : '#e5edf9')};
+  border: 1px solid ${(p) => (p.$blocked ? '#c8cfd9' : '#556')};
+  background-color: ${(p) =>
+    p.$blocked ? '#f2f4f7' : p.$isSelf ? '#b8ccee' : '#e5edf9'};
   color: ${(p) =>
     p.$blocked
-      ? '#6b7790'
+      ? '#9ca8ba'
       : p.$isSelf
         ? '#0c1b33'
         : p.$loggedIn
@@ -46,6 +48,10 @@ const UserRow = styled.div<{
   padding: 2px 4px 2px 8px;
   font-size: 12px;
   position: relative;
+
+  &:hover {
+    color: ${(p) => (p.$blocked ? '#4e5d73' : 'inherit')};
+  }
 `;
 
 const UserName = styled.span`
@@ -53,40 +59,6 @@ const UserName = styled.span`
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-`;
-
-const ContextMenu = styled.div<{ $top: number; $left: number }>`
-  position: fixed;
-  left: ${(p) => `${p.$left}px`};
-  top: ${(p) => `${p.$top}px`};
-  z-index: 6000;
-  background: #12304f;
-  border: 1px solid #5d83ae;
-  border-radius: 4px;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
-  min-width: 140px;
-`;
-
-const MenuItem = styled.button`
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 4px 10px;
-  border: none;
-  background: #12304f;
-  color: #c9e7ff;
-  font-size: 12px;
-  line-height: 1.2;
-  cursor: pointer;
-
-  &:hover {
-    background: #e7f1fb;
-    color: #12304f;
-  }
-
-  &:not(:last-child) {
-    border-bottom: 1px solid #2c537b;
-  }
 `;
 
 const SectionLabel = styled.div`
@@ -110,6 +82,7 @@ type UserListPanelProps = {
   onMessageUser: (user: string) => void;
   onSendPublicKey: (user: string) => void;
   onBlockUser: (user: string) => void;
+  onUnblockUser: (user: string) => void;
 };
 
 function UserListEntry({
@@ -120,6 +93,7 @@ function UserListEntry({
   onMessageUser,
   onSendPublicKey,
   onBlockUser,
+  onUnblockUser,
 }: {
   user: string;
   loggedIn: boolean;
@@ -128,6 +102,7 @@ function UserListEntry({
   onMessageUser: (user: string) => void;
   onSendPublicKey: (user: string) => void;
   onBlockUser: (user: string) => void;
+  onUnblockUser: (user: string) => void;
 }) {
   const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
@@ -169,7 +144,7 @@ function UserListEntry({
   return (
     <UserRow $loggedIn={loggedIn} $blocked={blocked}>
       <UserName>
-        {user} {blocked ? '🚫' : loggedIn ? '🟢' : '⚫'}
+        {user} {blocked ? '⊘' : loggedIn ? '🟢' : '⚫'}
       </UserName>
       <MenuButton
         type="button"
@@ -193,12 +168,14 @@ function UserListEntry({
       </MenuButton>
       {menuAnchor &&
         createPortal(
-          <ContextMenu
+          <ContextMenuSurface
             $top={menuAnchor.bottom + 4}
             $left={Math.max(8, menuAnchor.right - 140)}
+            $zIndex={12010}
+            $minWidth={150}
             onMouseDown={(e) => e.stopPropagation()}
           >
-            <MenuItem
+            <ContextMenuItem
               type="button"
               onClick={() => {
                 setMenuAnchor(null);
@@ -206,14 +183,33 @@ function UserListEntry({
               }}
             >
               Message
-            </MenuItem>
-            <MenuItem type="button" onClick={(e) => openConfirm('sendKey', e)}>
+            </ContextMenuItem>
+            <ContextMenuItem
+              type="button"
+              onClick={(e) => openConfirm('sendKey', e)}
+            >
               Send private key
-            </MenuItem>
-            <MenuItem type="button" onClick={(e) => openConfirm('block', e)}>
-              Block
-            </MenuItem>
-          </ContextMenu>,
+            </ContextMenuItem>
+            {blocked ? (
+              <ContextMenuItem
+                type="button"
+                onClick={() => {
+                  setMenuAnchor(null);
+                  onUnblockUser(user);
+                }}
+              >
+                Unblock
+              </ContextMenuItem>
+            ) : (
+              <ContextMenuItem
+                type="button"
+                $danger
+                onClick={(e) => openConfirm('block', e)}
+              >
+                Block
+              </ContextMenuItem>
+            )}
+          </ContextMenuSurface>,
           document.body,
         )}
       {pending?.type === 'block' && pending.user === user && (
@@ -255,18 +251,37 @@ export function UserListPanel({
   onMessageUser,
   onSendPublicKey,
   onBlockUser,
+  onUnblockUser,
 }: UserListPanelProps) {
   const sortByLastSeen = useCallback(
     (a: string, b: string) => (userLastSeen[b] || 0) - (userLastSeen[a] || 0),
     [userLastSeen],
   );
 
-  const filteredLoggedIn = loggedInUsers
+  const blockedSet = new Set(blockedUsers.filter((u) => u !== 'undefined'));
+
+  const loggedInSorted = loggedInUsers
     .filter((u) => u !== 'undefined')
     .sort(sortByLastSeen);
-  const filteredActive = activeUsers
+  const activeSorted = activeUsers
     .filter((u) => u !== 'undefined' && !loggedInUsers.includes(u))
     .sort(sortByLastSeen);
+
+  const filteredLoggedIn = loggedInSorted.filter((u) => !blockedSet.has(u));
+  const filteredActive = activeSorted.filter((u) => !blockedSet.has(u));
+
+  const blockedFromLists = [...loggedInSorted, ...activeSorted].filter((u) =>
+    blockedSet.has(u),
+  );
+  const blockedDetached = blockedUsers.filter(
+    (u) =>
+      u !== 'undefined' &&
+      !loggedInSorted.includes(u) &&
+      !activeSorted.includes(u),
+  );
+  const blockedList = Array.from(
+    new Set([...blockedFromLists, ...blockedDetached]),
+  ).sort(sortByLastSeen);
 
   return (
     <>
@@ -285,6 +300,7 @@ export function UserListPanel({
                 onMessageUser={onMessageUser}
                 onSendPublicKey={onSendPublicKey}
                 onBlockUser={onBlockUser}
+                onUnblockUser={onUnblockUser}
               />
             ))}
           </>
@@ -308,15 +324,45 @@ export function UserListPanel({
                 onMessageUser={onMessageUser}
                 onSendPublicKey={onSendPublicKey}
                 onBlockUser={onBlockUser}
+                onUnblockUser={onUnblockUser}
               />
             ))}
           </>
         )}
-        {filteredLoggedIn.length === 0 && filteredActive.length === 0 && (
-          <div style={{ fontSize: '12px', color: '#999', padding: '4px' }}>
-            No users
-          </div>
+        {blockedList.length > 0 && (
+          <>
+            <SectionLabel
+              style={{
+                marginTop:
+                  filteredLoggedIn.length > 0 || filteredActive.length > 0
+                    ? '8px'
+                    : '4px',
+              }}
+            >
+              Blocked ({blockedList.length}):
+            </SectionLabel>
+            {blockedList.map((user) => (
+              <UserListEntry
+                key={user}
+                user={user}
+                loggedIn={false}
+                currentUsername={currentUsername}
+                blocked
+                onMessageUser={onMessageUser}
+                onSendPublicKey={onSendPublicKey}
+                onBlockUser={onBlockUser}
+                onUnblockUser={onUnblockUser}
+              />
+            ))}
+          </>
         )}
+        {filteredLoggedIn.length === 0 &&
+          filteredActive.length === 0 &&
+          blockedList.length === 0 && (
+            <div style={{ fontSize: '12px', color: '#999', padding: '4px' }}>
+              No users
+            </div>
+          )}
       </ScrollableDiv>
     </>
   );
