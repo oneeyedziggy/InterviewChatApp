@@ -105,6 +105,35 @@ function messageIdentity(message: Pick<Message, 'id' | 'timestamp'>): string {
   return `ts:${message.timestamp}:u:${username}:r:${replyTo}:c:${content}`;
 }
 
+function resolveEncryptedPayloadForUser(
+  msg: Message,
+  username: string | undefined,
+): string | null {
+  if (!username) {
+    return null;
+  }
+
+  if (msg.encryptedMessage) {
+    return msg.encryptedMessage;
+  }
+
+  if (msg.versions && msg.versions.length > 0) {
+    const newestVersion = msg.versions[0];
+    if (newestVersion.encryptedMessage) {
+      return newestVersion.encryptedMessage;
+    }
+    if (newestVersion.encryptedFor && newestVersion.encryptedFor[username]) {
+      return newestVersion.encryptedFor[username];
+    }
+  }
+
+  if (msg.encryptedFor && msg.encryptedFor[username]) {
+    return msg.encryptedFor[username];
+  }
+
+  return null;
+}
+
 type InitSocketArgs = {
   authToken: string;
   username: string;
@@ -284,21 +313,22 @@ export async function initializeHomeSocket({
         decryptedMessages[room] = await Promise.all(
           visibleRoomMessages.map(async (rawMsg: Message) => {
             const msg = ensureMessageId(rawMsg);
-            if (msg.encryptedFor && keys) {
-              const encrypted = msg.encryptedFor[keys.username];
-              if (encrypted) {
-                try {
-                  const decrypted = await decryptMessageForUser(
-                    encrypted,
-                    keys.privateKey,
-                  );
-                  return ensureMessageId(
-                    normalizeMessageState({ ...msg, content: decrypted }),
-                  );
-                } catch (error) {
-                  console.error('[Socket] ✗ Failed to decrypt message:', error);
-                  return ensureMessageId(normalizeMessageState(msg));
-                }
+            const encrypted = resolveEncryptedPayloadForUser(
+              msg,
+              keys?.username,
+            );
+            if (encrypted && keys) {
+              try {
+                const decrypted = await decryptMessageForUser(
+                  encrypted,
+                  keys.privateKey,
+                );
+                return ensureMessageId(
+                  normalizeMessageState({ ...msg, content: decrypted }),
+                );
+              } catch (error) {
+                console.error('[Socket] ✗ Failed to decrypt message:', error);
+                return ensureMessageId(normalizeMessageState(msg));
               }
             }
             return ensureMessageId(normalizeMessageState(msg));
@@ -364,13 +394,10 @@ export async function initializeHomeSocket({
 
     // Check if this is an access grant update - handle it specially
     if (data?.accessGrant) {
-      const { originalRoom, messageTimestamp, encryptedFor, encryptedMessage } =
+      const { originalRoom, messageTimestamp, encryptedMessage } =
         data.accessGrant;
 
-      // Handle new format (encryptedFor map) or old format (encryptedMessage)
-      const encryptedMap =
-        encryptedFor ||
-        (encryptedMessage && username ? { [username]: encryptedMessage } : {});
+      const encryptedPacket = encryptedMessage || '';
 
       console.log('[AccessGrant] ===== PROCESSING ACCESS GRANT =====');
       console.log(
@@ -380,8 +407,8 @@ export async function initializeHomeSocket({
         messageTimestamp,
       );
       console.log(
-        '[AccessGrant] encryptedFor users from accessGrant:',
-        Object.keys(encryptedMap),
+        '[AccessGrant] encrypted payload length:',
+        encryptedPacket.length,
       );
 
       // If server sent updated messages, use those (they include the new version)
@@ -435,39 +462,10 @@ export async function initializeHomeSocket({
             }
 
             // For all messages, try to decrypt if we have access
-            // Check both encryptedFor and versions array (prioritize newest version)
-            let encryptedData: string | null = null;
-            let sourceEncryptedFor: Record<string, string> | null = null;
-
-            // First check versions array (newest version takes precedence)
-            if (msg.versions && msg.versions.length > 0) {
-              const newestVersion = msg.versions[0];
-              if (
-                newestVersion.encryptedFor &&
-                newestVersion.encryptedFor[keys.username]
-              ) {
-                encryptedData = newestVersion.encryptedFor[keys.username];
-                sourceEncryptedFor = newestVersion.encryptedFor;
-                console.log(
-                  '[AccessGrant] Found encryption key in newest version for message',
-                  msg.timestamp,
-                );
-              }
-            }
-
-            // Fallback to current encryptedFor if not found in versions
-            if (
-              !encryptedData &&
-              msg.encryptedFor &&
-              msg.encryptedFor[keys.username]
-            ) {
-              encryptedData = msg.encryptedFor[keys.username];
-              sourceEncryptedFor = msg.encryptedFor;
-              console.log(
-                '[AccessGrant] Found encryption key in encryptedFor for message',
-                msg.timestamp,
-              );
-            }
+            const encryptedData = resolveEncryptedPayloadForUser(
+              msg,
+              keys.username,
+            );
 
             if (encryptedData) {
               try {
@@ -507,7 +505,6 @@ export async function initializeHomeSocket({
                 return {
                   ...msg,
                   content: decrypted,
-                  encryptedFor: sourceEncryptedFor || msg.encryptedFor, // Use the source that had the key
                 };
               } catch (error) {
                 console.error(
@@ -525,34 +522,11 @@ export async function initializeHomeSocket({
                 messageTimestamp,
                 ') could not be decrypted',
               );
-              console.log(
-                '[AccessGrant] Message encryptedFor keys:',
-                Object.keys(msg.encryptedFor || {}),
-              );
               console.log('[AccessGrant] Current user:', keys.username);
               console.log(
-                '[AccessGrant] Has access in encryptedFor:',
-                !!(msg.encryptedFor && msg.encryptedFor[keys.username]),
+                '[AccessGrant] Encrypted payload present:',
+                !!encryptedData,
               );
-              if (msg.versions && msg.versions.length > 0) {
-                console.log(
-                  '[AccessGrant] Versions count:',
-                  msg.versions.length,
-                );
-                console.log(
-                  '[AccessGrant] Newest version encryptedFor keys:',
-                  Object.keys(msg.versions[0].encryptedFor || {}),
-                );
-                console.log(
-                  '[AccessGrant] Has access in newest version:',
-                  !!(
-                    msg.versions[0].encryptedFor &&
-                    msg.versions[0].encryptedFor[keys.username]
-                  ),
-                );
-              } else {
-                console.log('[AccessGrant] No versions array in message');
-              }
             }
 
             return msg;
@@ -597,15 +571,10 @@ export async function initializeHomeSocket({
                 }
               }
 
-              // Merge encryptedFor maps (prefer decryptedMsg's version as it's newer)
-              const finalEncryptedFor =
-                decryptedMsg.encryptedFor || existing.encryptedFor;
-
               return {
                 ...existing,
                 ...decryptedMsg,
                 content: finalContent,
-                encryptedFor: finalEncryptedFor,
               };
             }
             return decryptedMsg;
@@ -707,25 +676,18 @@ export async function initializeHomeSocket({
           '- message should now be visible',
         );
       } else {
-        // Fallback: update the message's encryptedFor map and versions
+        // Fallback: update the message's encrypted payload and versions
         setChatValues((prev) => {
           const updated = { ...prev };
           if (updated[originalRoom]) {
             updated[originalRoom] = updated[originalRoom].map((msg) => {
               if (msg.timestamp === messageTimestamp) {
-                // Update encryptedFor with new map
-                const newEncryptedFor = {
-                  ...msg.encryptedFor,
-                  ...encryptedMap,
-                };
-
                 // Update or create versions array
                 let versions = msg.versions || [];
-                if (versions.length === 0 && msg.encryptedFor) {
-                  // Migrate existing to version 0
+                if (versions.length === 0 && msg.encryptedMessage) {
                   versions = [
                     {
-                      encryptedFor: msg.encryptedFor,
+                      encryptedMessage: msg.encryptedMessage,
                       version: 0,
                       changeSummary: 'original version',
                       timestamp: msg.timestamp,
@@ -735,16 +697,16 @@ export async function initializeHomeSocket({
 
                 // Add new version
                 const newVersion = {
-                  encryptedFor: newEncryptedFor,
+                  encryptedMessage: encryptedPacket,
                   version: versions.length,
-                  changeSummary: `added key for user ${Object.keys(encryptedMap).join(', ')}`,
+                  changeSummary: 'access grant re-encryption',
                   timestamp: Date.now(),
                 };
                 versions = [newVersion, ...versions];
 
                 return {
                   ...msg,
-                  encryptedFor: newEncryptedFor,
+                  encryptedMessage: encryptedPacket,
                   versions: versions,
                   currentVersion: 0, // Newest version
                 };
@@ -756,7 +718,7 @@ export async function initializeHomeSocket({
         });
 
         // Decrypt the newly granted message if we have access
-        if (username && encryptedMap[username]) {
+        if (username && encryptedPacket) {
           const keys = loadKeys();
           if (keys) {
             try {
@@ -767,14 +729,14 @@ export async function initializeHomeSocket({
               console.log('[AccessGrant] User:', username);
               console.log(
                 '[AccessGrant] Encrypted data length:',
-                encryptedMap[username].length,
+                encryptedPacket.length,
               );
               console.log(
                 '[AccessGrant] Encrypted data (first 200 chars):',
-                encryptedMap[username].substring(0, 200),
+                encryptedPacket.substring(0, 200),
               );
               const decrypted = await decryptMessageForUser(
-                encryptedMap[username],
+                encryptedPacket,
                 keys.privateKey,
               );
               console.log(
@@ -851,29 +813,10 @@ export async function initializeHomeSocket({
             // Preserve replyTo field
             const preservedReplyTo = msg.replyTo;
 
-            // Check if we have access - check both encryptedFor and versions array
-            let encryptedData: string | null = null;
-
-            if (
-              msg.encryptedFor &&
-              keys?.username &&
-              msg.encryptedFor[keys.username]
-            ) {
-              encryptedData = msg.encryptedFor[keys.username];
-            } else if (
-              msg.versions &&
-              msg.versions.length > 0 &&
-              keys?.username
-            ) {
-              // Check newest version (index 0)
-              const newestVersion = msg.versions[0];
-              if (
-                newestVersion.encryptedFor &&
-                newestVersion.encryptedFor[keys.username]
-              ) {
-                encryptedData = newestVersion.encryptedFor[keys.username];
-              }
-            }
+            const encryptedData = resolveEncryptedPayloadForUser(
+              msg,
+              keys?.username,
+            );
 
             if (encryptedData) {
               try {

@@ -691,69 +691,39 @@ export function filterPubKeysForEncryption(
 }
 
 /**
- * Encrypt a message with all user public keys (including sender's own key)
- * Returns a map of username -> encrypted message
+ * Encrypt a message once with all recipient public keys.
  */
 export async function encryptForAllUsers(
   plaintext: string,
   userPubKeys: Record<string, string>,
   senderPublicKey?: string,
   senderUsername?: string,
-): Promise<Record<string, string>> {
-  const encryptedMap: Record<string, string> = {};
+): Promise<string> {
   const message = await openpgp.createMessage({ text: plaintext });
 
-  // Always encrypt for sender so they can decrypt their own messages later
+  const recipients = new Map<string, string>(Object.entries(userPubKeys));
   if (senderPublicKey && senderUsername) {
-    try {
-      const senderKey = await openpgp.readKey({
-        armoredKey: senderPublicKey,
-      });
-      const encrypted = await openpgp.encrypt({
-        message,
-        encryptionKeys: senderKey,
-      });
-      encryptedMap[senderUsername] = encrypted;
-    } catch (error) {
-      console.error(
-        `[GPG] ✗ Failed to encrypt for sender ${senderUsername}:`,
-        error,
-      );
-    }
+    recipients.set(senderUsername, senderPublicKey);
   }
 
-  // Encrypt for each user
-  const encryptionPromises = Object.entries(userPubKeys).map(
-    async ([username, publicKeyArmored]) => {
-      // Skip if already encrypted for sender
-      if (username === senderUsername) return;
-
-      try {
-        const publicKey = await openpgp.readKey({
-          armoredKey: publicKeyArmored,
-        });
-
-        const encrypted = await openpgp.encrypt({
-          message,
-          encryptionKeys: publicKey,
-        });
-
-        // In openpgp v6, encrypt returns a string directly
-        encryptedMap[username] = encrypted;
-      } catch (error) {
-        console.error(`[GPG] ✗ Failed to encrypt for user ${username}:`, error);
-      }
-    },
+  const encryptionKeys = await Promise.all(
+    Array.from(recipients.values()).map((armoredKey) =>
+      openpgp.readKey({ armoredKey }),
+    ),
   );
 
-  await Promise.all(encryptionPromises);
-  console.log(
-    '[GPG] ✓ Encrypted message for',
-    Object.keys(encryptedMap).length,
-    'users',
-  );
+  if (encryptionKeys.length === 0) {
+    throw new Error('No encryption recipients available');
+  }
 
-  return encryptedMap;
+  const encrypted = await openpgp.encrypt({
+    message,
+    encryptionKeys,
+  });
+
+  console.log('[GPG] ✓ Encrypted message for', encryptionKeys.length, 'users');
+
+  return encrypted;
 }
 
 /**

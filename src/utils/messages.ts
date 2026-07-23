@@ -1,7 +1,10 @@
 import type { Message } from '../types/types';
 import { isUserBlocked } from './userSettings';
 
-export function canUserViewMessage(message: Message, viewerUsername?: string): boolean {
+export function canUserViewMessage(
+  message: Message,
+  viewerUsername?: string,
+): boolean {
   if (!viewerUsername) {
     return true;
   }
@@ -23,14 +26,25 @@ export function canUserViewMessage(message: Message, viewerUsername?: string): b
     return true;
   }
 
+  if (message.encryptedMessage) {
+    return true;
+  }
+
   if (message.versions?.length) {
     const newest = message.versions[0];
+    if (newest.encryptedMessage) {
+      return true;
+    }
     if (newest.encryptedFor?.[viewerUsername]) {
       return true;
     }
   }
 
-  if (message.encryptedFor || message.versions?.length) {
+  if (
+    message.encryptedMessage ||
+    message.encryptedFor ||
+    message.versions?.length
+  ) {
     return false;
   }
 

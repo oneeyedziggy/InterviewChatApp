@@ -244,10 +244,14 @@ const MessageWithReplies = ({
   let hasAccess = false;
   let encryptedData: string | null = null;
 
-  if (username && message.encryptedFor) {
-    hasAccess = !!message.encryptedFor[username];
-    if (hasAccess) {
-      encryptedData = message.encryptedFor[username];
+  if (message.encryptedMessage) {
+    hasAccess = true;
+    encryptedData = message.encryptedMessage;
+  } else if (message.versions && message.versions.length > 0) {
+    const newestVersion = message.versions[0];
+    if (newestVersion.encryptedMessage) {
+      hasAccess = true;
+      encryptedData = newestVersion.encryptedMessage;
     }
   }
 

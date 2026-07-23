@@ -40,22 +40,14 @@ export function useHomeAutoDecrypt({
         let hasAccess = false;
         let encryptedData: string | null = null;
 
-        if (
-          msg.encryptedFor &&
-          keys.username &&
-          msg.encryptedFor[keys.username]
-        ) {
+        if (msg.encryptedMessage) {
           hasAccess = true;
-          encryptedData = msg.encryptedFor[keys.username];
+          encryptedData = msg.encryptedMessage;
         } else if (msg.versions && msg.versions.length > 0) {
           const newestVersion = msg.versions[0];
-          if (
-            newestVersion.encryptedFor &&
-            keys.username &&
-            newestVersion.encryptedFor[keys.username]
-          ) {
+          if (newestVersion.encryptedMessage) {
             hasAccess = true;
-            encryptedData = newestVersion.encryptedFor[keys.username];
+            encryptedData = newestVersion.encryptedMessage;
           }
         }
 

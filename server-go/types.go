@@ -49,6 +49,7 @@ const (
 )
 
 type MessageVersion struct {
+	EncryptedMessage string            `json:"encryptedMessage,omitempty"`
 	EncryptedFor  map[string]string `json:"encryptedFor"`
 	Version       int               `json:"version"`
 	ChangeSummary string            `json:"changeSummary,omitempty"`
@@ -60,6 +61,7 @@ type Message struct {
 	Timestamp      int64             `json:"timestamp"`
 	Username       string            `json:"username"`
 	Content        string            `json:"content"`
+	EncryptedMessage string          `json:"encryptedMessage,omitempty"`
 	EncryptedFor   map[string]string `json:"encryptedFor"`
 	Versions       []MessageVersion  `json:"versions,omitempty"`
 	CurrentVersion *int              `json:"currentVersion,omitempty"`

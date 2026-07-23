@@ -1,5 +1,6 @@
 export type MessageVersion = {
-  encryptedFor: Record<string, string>; // Map of username -> encrypted message
+  encryptedMessage?: string; // Single ciphertext encrypted to multiple recipients
+  encryptedFor?: Record<string, string>; // Legacy field
   version: number;
   changeSummary?: string; // e.g., "added key for user X", "user edited message content"
   timestamp: number;
@@ -10,6 +11,7 @@ export type Message = {
   timestamp: number;
   username: string;
   content: string;
+  encryptedMessage?: string; // Single ciphertext encrypted to multiple recipients
   encryptedFor?: Record<string, string>; // Map of username -> encrypted message (for backward compatibility)
   versions?: MessageVersion[]; // Array of message versions, newest first
   currentVersion?: number; // Index of current version in versions array

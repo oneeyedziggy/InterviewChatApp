@@ -136,9 +136,10 @@ func buildDMIntroMessage(room, requestingUser string) (Message, bool) {
 	}
 
 	otherUser := ""
-	if requestingUser == userA {
+	switch requestingUser {
+	case userA:
 		otherUser = userB
-	} else if requestingUser == userB {
+	case userB:
 		otherUser = userA
 	}
 	if otherUser == "" {
@@ -225,18 +226,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		username, _ := msgMap["username"].(string)
 		content, _ := msgMap["content"].(string) // May be empty for encrypted-only messages
 		replyToRaw, hasReplyTo := msgMap["replyTo"]
-		encryptedForRaw, hasEncrypted := msgMap["encryptedFor"]
-		var encryptedFor map[string]string
-		if hasEncrypted {
-			if efMap, ok := encryptedForRaw.(map[string]interface{}); ok {
-				encryptedFor = make(map[string]string)
-				for k, v := range efMap {
-					if str, ok := v.(string); ok {
-						encryptedFor[k] = str
-					}
-				}
-			}
-		}
+		encryptedMessage, _ := msgMap["encryptedMessage"].(string)
 
 		// Parse replyTo if present
 		var replyTo *int64
@@ -260,8 +250,8 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		}
 
 		// For encrypted messages, content may be empty - that's expected
-		if hasEncrypted && len(encryptedFor) > 0 {
-			log.Printf("[%s] ✓ Parsed encrypted message - User: %s, Room: %s, EncryptedFor: %d users", socketIDStr, username, room, len(encryptedFor))
+		if encryptedMessage != "" {
+			log.Printf("[%s] ✓ Parsed encrypted message - User: %s, Room: %s, packetSize=%d", socketIDStr, username, room, len(encryptedMessage))
 		} else {
 			log.Printf("[%s] ✓ Parsed message - User: %s, Room: %s, Content: %s", socketIDStr, username, room, content)
 		}
@@ -334,7 +324,8 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			Timestamp:    time.Now().Unix(),
 			Username:     username,
 			Content:      content,
-			EncryptedFor: encryptedFor,
+			EncryptedMessage: encryptedMessage,
+			EncryptedFor: nil,
 			ReplyTo:      replyTo,
 			VoteTotal:    &one,
 			UserVotes:    userVotes,
@@ -417,7 +408,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 		// Prepare delta response: only send the newly created message.
 		response := map[string]interface{}{
-			"messages": map[string][]Message{room: []Message{newMessage}},
+			"messages": map[string][]Message{room: {newMessage}},
 		}
 
 		log.Printf("[%s] Broadcasting SERVER_MESSAGE - rooms: %d, users: %d", socketIDStr, len(messagesCopy), len(usersList))
@@ -671,7 +662,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		}
 
 		response := map[string]interface{}{
-			"messages": map[string][]Message{room: []Message{*targetMessage}},
+			"messages": map[string][]Message{room: {*targetMessage}},
 		}
 
 		// Broadcast to all clients
@@ -693,7 +684,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		room, _ := editMap["room"].(string)
 		username, _ := editMap["username"].(string)
 		sessionID, _ := editMap["sessionId"].(string)
-		encryptedForRaw, hasEncrypted := editMap["encryptedFor"]
+		encryptedMessage, _ := editMap["encryptedMessage"].(string)
 		messageID, messageTimestamp, hasMessageID, hasTimestamp := parseMessageReference(editMap)
 
 		if (!hasMessageID && !hasTimestamp) || username == "" || room == "" || sessionID == "" {
@@ -707,18 +698,6 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			log.Printf("[%s] ✗ Rejected edit attempt by %s (%s)", socketIDStr, username, code)
 			emitActionResult(socket, "edit", false, code, message)
 			return
-		}
-
-		var encryptedFor map[string]string
-		if hasEncrypted {
-			if efMap, ok := encryptedForRaw.(map[string]interface{}); ok {
-				encryptedFor = make(map[string]string)
-				for k, v := range efMap {
-					if str, ok := v.(string); ok {
-						encryptedFor[k] = str
-					}
-				}
-			}
 		}
 
 		cs.mu.Lock()
@@ -760,7 +739,8 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 		// Update the message
 		targetMessage.Content = "" // Clear plaintext (encrypted only)
-		targetMessage.EncryptedFor = encryptedFor
+		targetMessage.EncryptedMessage = encryptedMessage
+		targetMessage.EncryptedFor = nil
 		targetMessage.Edited = true
 		cs.userLastSeen[username] = time.Now().Unix()
 
@@ -809,7 +789,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		}
 
 		response := map[string]interface{}{
-			"messages": map[string][]Message{room: []Message{*targetMessage}},
+			"messages": map[string][]Message{room: {*targetMessage}},
 		}
 
 		// Broadcast to all clients
@@ -888,6 +868,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		}
 
 		targetMessage.Content = "Message deleted"
+		targetMessage.EncryptedMessage = ""
 		targetMessage.EncryptedFor = nil
 		targetMessage.Versions = nil
 		targetMessage.CurrentVersion = nil
@@ -939,7 +920,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		}
 
 		response := map[string]interface{}{
-			"messages": map[string][]Message{room: []Message{*targetMessage}},
+			"messages": map[string][]Message{room: {*targetMessage}},
 		}
 
 		defaultNsp.Emit(EventServerMessage, response)
@@ -1042,18 +1023,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			username, _ := msgMap["username"].(string)
 			content, _ := msgMap["content"].(string)
 			replyToRaw, hasReplyTo := msgMap["replyTo"]
-			encryptedForRaw, hasEncrypted := msgMap["encryptedFor"]
-			var encryptedFor map[string]string
-			if hasEncrypted {
-				if efMap, ok := encryptedForRaw.(map[string]interface{}); ok {
-					encryptedFor = make(map[string]string)
-					for k, v := range efMap {
-						if str, ok := v.(string); ok {
-							encryptedFor[k] = str
-						}
-					}
-				}
-			}
+			encryptedMessage, _ := msgMap["encryptedMessage"].(string)
 
 			// Parse replyTo if present
 			var replyTo *int64
@@ -1070,7 +1040,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] No replyTo field in message", socketIDStr)
 			}
 
-			log.Printf("[%s] ✓ Parsed message - User: %s, Room: %s, Content: %s, HasEncrypted: %v, ReplyTo: %v", socketIDStr, username, room, content, hasEncrypted, replyTo)
+			log.Printf("[%s] ✓ Parsed message - User: %s, Room: %s, Content: %s, HasEncryptedPacket: %v, ReplyTo: %v", socketIDStr, username, room, content, encryptedMessage != "", replyTo)
 
 			// Set user when they send a message
 			userJustRegistered := false
@@ -1127,7 +1097,8 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				Timestamp:    time.Now().Unix(),
 				Username:     username,
 				Content:      content,
-				EncryptedFor: encryptedFor,
+				EncryptedMessage: encryptedMessage,
+				EncryptedFor: nil,
 				ReplyTo:      replyTo,
 				VoteTotal:    &one,
 				UserVotes:    userVotes,
@@ -1208,7 +1179,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			// Prepare delta response with only the new message.
 			response := map[string]interface{}{
-				"messages": map[string][]Message{room: []Message{newMessage}},
+				"messages": map[string][]Message{room: {newMessage}},
 			}
 
 			log.Printf("[%s] Broadcasting SERVER_MESSAGE - rooms: %d, users: %d", socketIDStr, len(messagesCopy), len(usersList))
@@ -1766,30 +1737,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			requestingUser, _ := grantMap["requestingUser"].(string)
 			originalRoom, _ := grantMap["originalRoom"].(string)
-
-			// Handle encryptedFor map (all users)
-			encryptedForRaw, hasEncryptedFor := grantMap["encryptedFor"]
-			var encryptedFor map[string]string
-			if hasEncryptedFor {
-				if efMap, ok := encryptedForRaw.(map[string]interface{}); ok {
-					encryptedFor = make(map[string]string)
-					for k, v := range efMap {
-						if str, ok := v.(string); ok {
-							encryptedFor[k] = str
-						}
-					}
-				}
-			}
-
-			// Backward compatibility: single encryptedMessage
-			if encryptedFor == nil {
-				if encryptedMessage, ok := grantMap["encryptedMessage"].(string); ok && encryptedMessage != "" {
-					encryptedFor = make(map[string]string)
-					if requestingUser != "" {
-						encryptedFor[requestingUser] = encryptedMessage
-					}
-				}
-			}
+			encryptedMessage, _ := grantMap["encryptedMessage"].(string)
 
 			// Handle messageTimestamp - it might come as float64 from JSON
 			var messageTimestamp int64
@@ -1804,36 +1752,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				return
 			}
 
-			if requestingUser == "" || originalRoom == "" || len(encryptedFor) == 0 {
-				log.Printf("[%s] ✗ Missing required fields in grant access: requestingUser=%s, originalRoom=%s, encryptedFor=%d", socketIDStr, requestingUser, originalRoom, len(encryptedFor))
+			if requestingUser == "" || originalRoom == "" || encryptedMessage == "" {
+				log.Printf("[%s] ✗ Missing required fields in grant access: requestingUser=%s, originalRoom=%s, hasEncryptedMessage=%v", socketIDStr, requestingUser, originalRoom, encryptedMessage != "")
 				return
 			}
 
-			log.Printf("[%s] Granting access: user=%s, room=%s, timestamp=%d, encryptedFor=%d users", socketIDStr, requestingUser, originalRoom, messageTimestamp, len(encryptedFor))
-			log.Printf("[%s] EncryptedFor users: %v", socketIDStr, func() []string {
-				users := make([]string, 0, len(encryptedFor))
-				for u := range encryptedFor {
-					users = append(users, u)
-				}
-				return users
-			}())
-
-			// CRITICAL: Verify the requesting user is in the encryptedFor map
-			if _, hasRequestingUser := encryptedFor[requestingUser]; !hasRequestingUser {
-				log.Printf("[%s] ⚠ WARNING: Requesting user %s is NOT in encryptedFor map!", socketIDStr, requestingUser)
-				log.Printf("[%s] ⚠ Available users in encryptedFor: %v", socketIDStr, func() []string {
-					users := make([]string, 0, len(encryptedFor))
-					for u := range encryptedFor {
-						users = append(users, u)
-					}
-					return users
-				}())
-				log.Printf("[%s] ⚠ This means the requesting user cannot decrypt the message!", socketIDStr)
-				log.Printf("[%s] ⚠ The client should have included the requesting user's public key", socketIDStr)
-				// We'll still proceed, but the requesting user won't be able to decrypt
-			} else {
-				log.Printf("[%s] ✓ Requesting user %s is in encryptedFor map", socketIDStr, requestingUser)
-			}
+			log.Printf("[%s] Granting access: user=%s, room=%s, timestamp=%d, packetSize=%d", socketIDStr, requestingUser, originalRoom, messageTimestamp, len(encryptedMessage))
 
 			log.Printf("[%s] About to update message in room %s with timestamp %d", socketIDStr, originalRoom, messageTimestamp)
 			// Update the message with new version
@@ -1846,10 +1770,9 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 						// Initialize versions array if needed
 						if messages[i].Versions == nil {
 							messages[i].Versions = []MessageVersion{}
-							// Migrate existing EncryptedFor to version 0
-							if len(messages[i].EncryptedFor) > 0 {
+							if messages[i].EncryptedMessage != "" {
 								messages[i].Versions = append(messages[i].Versions, MessageVersion{
-									EncryptedFor:  messages[i].EncryptedFor,
+									EncryptedMessage: messages[i].EncryptedMessage,
 									Version:       0,
 									ChangeSummary: "original version",
 									Timestamp:     messages[i].Timestamp,
@@ -1857,34 +1780,11 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 							}
 						}
 
-						// Determine which users were added
-						// Check if there's a previous version to compare against
-						var prevEncryptedFor map[string]string
-						if len(messages[i].Versions) > 0 {
-							prevEncryptedFor = messages[i].Versions[0].EncryptedFor // Most recent version
-						} else if len(messages[i].EncryptedFor) > 0 {
-							// Fall back to current EncryptedFor if no versions yet
-							prevEncryptedFor = messages[i].EncryptedFor
-						} else {
-							prevEncryptedFor = make(map[string]string)
-						}
-
-						addedUsers := []string{}
-						for user := range encryptedFor {
-							if _, exists := prevEncryptedFor[user]; !exists {
-								addedUsers = append(addedUsers, user)
-							}
-						}
-
-						// Create change summary
-						changeSummary := fmt.Sprintf("added key for user %s", requestingUser)
-						if len(addedUsers) > 1 {
-							changeSummary = fmt.Sprintf("added keys for users: %s", strings.Join(addedUsers, ", "))
-						}
+						changeSummary := fmt.Sprintf("access grant re-encryption for %s", requestingUser)
 
 						// Add new version (newest first)
 						newVersion := MessageVersion{
-							EncryptedFor:  encryptedFor,
+							EncryptedMessage: encryptedMessage,
 							Version:       len(messages[i].Versions),
 							ChangeSummary: changeSummary,
 							Timestamp:     time.Now().Unix(),
@@ -1893,10 +1793,10 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 						messages[i].CurrentVersion = new(int)
 						*messages[i].CurrentVersion = 0 // Index of newest version
 
-						// Update EncryptedFor for backward compatibility (use newest version)
-						messages[i].EncryptedFor = encryptedFor
+						messages[i].EncryptedMessage = encryptedMessage
+						messages[i].EncryptedFor = nil
 
-						log.Printf("[%s] ✓ Added new message version %d with %d encrypted keys", socketIDStr, newVersion.Version, len(encryptedFor))
+						log.Printf("[%s] ✓ Added new message version %d (packetSize=%d)", socketIDStr, newVersion.Version, len(encryptedMessage))
 						break
 					}
 				}
@@ -2039,7 +1939,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 					"accessGrant": map[string]interface{}{
 						"originalRoom":     originalRoom,
 						"messageTimestamp": messageTimestamp,
-						"encryptedFor":     encryptedFor,
+						"encryptedMessage": encryptedMessage,
 					},
 					"messages": map[string][]Message{
 						originalRoom:            messagesCopy,
@@ -2055,7 +1955,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 					"accessGrant": map[string]interface{}{
 						"originalRoom":     originalRoom,
 						"messageTimestamp": messageTimestamp,
-						"encryptedFor":     encryptedFor,
+						"encryptedMessage": encryptedMessage,
 					},
 					"messages": map[string][]Message{
 						originalRoom:            messagesCopy,
@@ -2412,7 +2312,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			room, _ := editMap["room"].(string)
 			messageTimestampRaw, hasTimestamp := editMap["messageTimestamp"]
 			username, _ := editMap["username"].(string)
-			encryptedForRaw, hasEncrypted := editMap["encryptedFor"]
+			encryptedMessage, _ := editMap["encryptedMessage"].(string)
 
 			if !hasTimestamp || username == "" || room == "" {
 				log.Printf("[%s] ✗ Missing required edit fields", socketIDStr)
@@ -2425,18 +2325,6 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			} else {
 				log.Printf("[%s] ✗ Invalid messageTimestamp format", socketIDStr)
 				return
-			}
-
-			var encryptedFor map[string]string
-			if hasEncrypted {
-				if efMap, ok := encryptedForRaw.(map[string]interface{}); ok {
-					encryptedFor = make(map[string]string)
-					for k, v := range efMap {
-						if str, ok := v.(string); ok {
-							encryptedFor[k] = str
-						}
-					}
-				}
 			}
 
 			cs.mu.Lock()
@@ -2479,7 +2367,8 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			// Update the message
 			targetMessage.Content = "" // Clear plaintext (encrypted only)
-			targetMessage.EncryptedFor = encryptedFor
+			targetMessage.EncryptedMessage = encryptedMessage
+			targetMessage.EncryptedFor = nil
 			targetMessage.Edited = true
 			cs.userLastSeen[username] = time.Now().Unix()
 
@@ -2608,6 +2497,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			}
 
 			targetMessage.Content = "Message deleted"
+			targetMessage.EncryptedMessage = ""
 			targetMessage.EncryptedFor = nil
 			targetMessage.Versions = nil
 			targetMessage.CurrentVersion = nil
@@ -2642,7 +2532,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			}
 
 			response := map[string]interface{}{
-				"messages": map[string][]Message{room: []Message{updatedMessage}},
+				"messages": map[string][]Message{room: {updatedMessage}},
 			}
 			defaultNsp.Emit(EventServerMessage, response)
 			cs.broadcastUserListUpdate()

@@ -83,7 +83,7 @@ export async function doSendAction({
   // Encrypt message with all user public keys (including sender's own key)
   const userPubKeys = loadUserPublicKeyEntries();
   const keys = loadKeys();
-  let encryptedFor: Record<string, string> | undefined;
+  let encryptedMessage: string | undefined;
 
   if (!userPubKeys || Object.keys(userPubKeys).length === 0) {
     console.error(
@@ -115,7 +115,7 @@ export async function doSendAction({
         room: currentRoom,
         blockedUsers,
       });
-      encryptedFor = await encryptForAllUsers(
+      encryptedMessage = await encryptForAllUsers(
         userDraftMessage,
         filteredKeys,
         keys.publicKey,
@@ -134,7 +134,7 @@ export async function doSendAction({
       messageTimestamp: editingMessageTimestamp,
       username,
       sessionId: keys.sessionId,
-      encryptedFor,
+      encryptedMessage,
     };
     if (!keys.sessionId) {
       alert('Session expired. Please log in again.');
@@ -158,7 +158,7 @@ export async function doSendAction({
       room: currentRoom,
       blockedUsers,
     });
-    encryptedFor = await encryptForAllUsers(
+    encryptedMessage = await encryptForAllUsers(
       userDraftMessage,
       filteredKeys,
       keys.publicKey,
@@ -171,7 +171,7 @@ export async function doSendAction({
     return;
   }
 
-  // Only send encryptedFor - no plaintext for user messages
+  // Only send encryptedMessage - no plaintext for user messages
   // System messages are now sent by the server automatically
   // Include replyTo if replying to a message (check explicitly for undefined/null, not just truthiness)
   const shouldIncludeReplyTo = replyingTo !== undefined && replyingTo !== null;
@@ -180,7 +180,7 @@ export async function doSendAction({
   const messageData = {
     username,
     room: currentRoom,
-    encryptedFor, // Encrypted versions for all users
+    encryptedMessage,
     ...(shouldIncludeReplyTo ? { replyTo: replyingTo } : {}), // Include replyTo if replying to a message
   };
 
@@ -196,8 +196,8 @@ export async function doSendAction({
   console.log('[doSend] messageData keys:', Object.keys(messageData));
   console.log('[doSend] Emitting CLIENT_MESSAGE with data:', {
     ...messageData,
-    encryptedFor: encryptedFor
-      ? `${Object.keys(encryptedFor).length} encrypted versions`
+    encryptedMessage: encryptedMessage
+      ? `${encryptedMessage.length} bytes`
       : 'none',
     replyTo: currentReplyTo || 'none',
   });
@@ -742,7 +742,7 @@ export async function grantAccessAction({
       room: originalRoom,
       blockedUsers,
     });
-    const encryptedFor = await encryptForAllUsers(
+    const encryptedMessage = await encryptForAllUsers(
       plaintext,
       filteredKeys,
       keys.publicKey,
@@ -752,67 +752,15 @@ export async function grantAccessAction({
     console.log('[GrantAccess] ===== RE-ENCRYPTION COMPLETE =====');
     console.log(
       '[GrantAccess] Encrypted for',
-      Object.keys(encryptedFor).length,
-      'users',
-    );
-    console.log('[GrantAccess] Encrypted users:', Object.keys(encryptedFor));
-    // Log encrypted data for sender and requesting user
-    if (encryptedFor[username]) {
-      console.log(
-        '[GrantAccess] Sender encrypted data length:',
-        encryptedFor[username].length,
-      );
-      console.log(
-        '[GrantAccess] Sender encrypted data (first 200 chars):',
-        encryptedFor[username].substring(0, 200),
-      );
-    }
-    if (encryptedFor[requestingUser]) {
-      console.log(
-        '[GrantAccess] Requesting user encrypted data length:',
-        encryptedFor[requestingUser].length,
-      );
-      console.log(
-        '[GrantAccess] Requesting user encrypted data (first 200 chars):',
-        encryptedFor[requestingUser].substring(0, 200),
-      );
-    }
-
-    // Verify the requesting user is in the encrypted map
-    if (!encryptedFor[requestingUser]) {
-      console.error(
-        '[GrantAccess] ✗ CRITICAL: Requesting user',
-        requestingUser,
-        'not in encryptedFor map!',
-      );
-      console.error(
-        '[GrantAccess] ✗ Encrypted for users:',
-        Object.keys(encryptedFor),
-      );
-      console.error(
-        '[GrantAccess] ✗ This means the requesting user cannot decrypt the message!',
-      );
-
-      // If the requesting user's public key wasn't available, we can't encrypt for them
-      // The server should handle this case by using its own copy of the public key
-      // But we should still send what we have
-    } else {
-      console.log(
-        '[GrantAccess] ✓ Requesting user',
-        requestingUser,
-        'is in encryptedFor map',
-      );
-    }
-
-    console.log(
-      '[GrantAccess] ✓ Encrypted for',
-      Object.keys(encryptedFor).length,
-      'users',
+      filteredKeys ? Object.keys(filteredKeys).length + 1 : 1,
+      'users (multi-recipient packet)',
     );
     console.log(
-      '[GrantAccess] Encrypted for users:',
-      Object.keys(encryptedFor),
+      '[GrantAccess] Encrypted message length:',
+      encryptedMessage.length,
     );
+
+    console.log('[GrantAccess] ✓ Encrypted for', 'multiple recipients');
     console.log(
       '[GrantAccess] Socket state - connected:',
       activeSocket.connected,
@@ -820,20 +768,19 @@ export async function grantAccessAction({
       activeSocket.id,
     );
 
-    // Send grant access message with encryptedFor map
+    // Send grant access message with a single multi-recipient ciphertext
     const emitData = {
       requestingUser,
       originalRoom,
       messageTimestamp,
-      encryptedFor, // Send all encrypted versions
+      encryptedMessage,
     };
 
     console.log('[GrantAccess] Emit data:', {
       requestingUser,
       originalRoom,
       messageTimestamp,
-      encryptedForKeys: Object.keys(encryptedFor),
-      encryptedForCount: Object.keys(encryptedFor).length,
+      encryptedMessageLength: encryptedMessage.length,
     });
 
     // Helper function to proceed with emit (using arrow function to avoid ES5 strict mode issues)
@@ -909,8 +856,7 @@ export async function grantAccessAction({
           '[GrantAccess] ✓ Access granted to',
           requestingUser,
           '- re-encrypted for',
-          Object.keys(encryptedFor).length,
-          'users',
+          'multiple recipients',
         );
         console.log('[GrantAccess] ===== GRANT ACCESS COMPLETE =====');
       } catch (error) {
@@ -1051,6 +997,9 @@ export async function selectVersionAction({
     return;
 
   const selectedVersion = message.versions[versionIndex];
+  const selectedVersionEncrypted =
+    selectedVersion.encryptedMessage ||
+    selectedVersion.encryptedFor?.[username];
 
   // Update local state to show the selected version
   setChatValues((prev) => {
@@ -1060,10 +1009,11 @@ export async function selectVersionAction({
         if (msg.timestamp === messageTimestamp) {
           return {
             ...msg,
+            encryptedMessage: selectedVersion.encryptedMessage,
             encryptedFor: selectedVersion.encryptedFor,
             currentVersion: versionIndex,
             // Try to decrypt if we have access
-            content: selectedVersion.encryptedFor[username]
+            content: selectedVersionEncrypted
               ? msg.content // Keep existing content, will be decrypted below
               : msg.content,
           };
@@ -1075,12 +1025,12 @@ export async function selectVersionAction({
   });
 
   // If we have access to this version, decrypt it
-  if (selectedVersion.encryptedFor[username]) {
+  if (selectedVersionEncrypted) {
     const keys = loadKeys();
     if (keys) {
       try {
         const decrypted = await decryptMessageForUser(
-          selectedVersion.encryptedFor[username],
+          selectedVersionEncrypted,
           keys.privateKey,
         );
         setChatValues((prev) => {
