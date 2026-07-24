@@ -994,6 +994,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			// Remove user from active users list (unreserve username) and send leave message
 			cs.mu.Lock()
 			var disconnectedUsername string
+			var leaveMsg *Message
 			for username, sessionID := range cs.users {
 				if sessionID == socketIDStr {
 					disconnectedUsername = username
@@ -1007,13 +1008,14 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 					if cs.messages[DefaultRoom] == nil {
 						cs.messages[DefaultRoom] = []Message{}
 					}
-					leaveMsg := Message{
+					msg := Message{
 						Timestamp: time.Now().Unix(),
 						Username:  "system",
 						Content:   fmt.Sprintf("%s %s", username, UserLeft),
 						Edited:    false, // System messages can't be edited
 					}
-					cs.messages[DefaultRoom] = append([]Message{leaveMsg}, cs.messages[DefaultRoom]...)
+					cs.messages[DefaultRoom] = append([]Message{msg}, cs.messages[DefaultRoom]...)
+					leaveMsg = &msg
 					log.Printf("[%s] ✓ Auto-sent leave message for %s from %s", socketIDStr, username, DefaultRoom)
 
 					// Remove user from room members
@@ -1025,18 +1027,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				}
 			}
 
-			// Prepare response with updated messages
-			messagesCopy := make(Messages)
-			for k, v := range cs.messages {
-				messagesCopy[k] = make([]Message, len(v))
-				copy(messagesCopy[k], v)
-			}
 			cs.mu.Unlock()
 
-			// Broadcast updated messages (including leave message)
-			if defaultNsp != nil && disconnectedUsername != "" {
+			// Broadcast only the leave-message delta for default room.
+			if defaultNsp != nil && disconnectedUsername != "" && leaveMsg != nil {
 				response := map[string]interface{}{
-					"messages": messagesCopy,
+					"messages": map[string][]Message{DefaultRoom: {*leaveMsg}},
 				}
 				defaultNsp.Emit(EventServerMessage, response)
 				log.Printf("[%s] ✓ Broadcasted leave message for %s", socketIDStr, disconnectedUsername)

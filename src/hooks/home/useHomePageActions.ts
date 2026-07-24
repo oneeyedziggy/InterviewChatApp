@@ -23,9 +23,10 @@ import {
 } from '../../utils/userSettings';
 
 function focusDraftInput() {
-  const input = document.getElementById(
-    'userDraftMessageInput',
-  ) as HTMLInputElement | null;
+  const input = document.getElementById('userDraftMessageInput') as
+    | HTMLInputElement
+    | HTMLTextAreaElement
+    | null;
   if (input) {
     input.focus();
   }
@@ -52,6 +53,46 @@ export function useHomePageActions(state: HomePageState) {
   const onDraftKeyDownHandler = (
     e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
   ) => {
+    if (
+      e.key === 'ArrowUp' &&
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.shiftKey
+    ) {
+      const target = e.currentTarget;
+      const caretAtStart =
+        target.selectionStart === 0 && target.selectionEnd === 0;
+      const draftIsEmpty = state.userDraftMessage.trim() === '';
+
+      if (
+        caretAtStart &&
+        draftIsEmpty &&
+        state.editingMessageTimestamp === undefined
+      ) {
+        const roomMessages = state.chatValues[state.currentRoom] || [];
+        const latestOwnMessage = [...roomMessages]
+          .reverse()
+          .find(
+            (message) =>
+              message.username === state.username &&
+              message.username !== 'system' &&
+              !message.deleted &&
+              message.content !== 'Message deleted',
+          );
+
+        if (latestOwnMessage) {
+          e.preventDefault();
+          state.setEditingMessageTimestampState(latestOwnMessage.timestamp);
+          state.setEditingMessageIdState(latestOwnMessage.id);
+          state.setReplyingToState(undefined);
+          state.setUserDraftMessageState(latestOwnMessage.content);
+          focusDraftInput();
+        }
+      }
+      return;
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void doSend();

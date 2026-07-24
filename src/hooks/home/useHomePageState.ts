@@ -386,7 +386,7 @@ export function useHomePageState(): HomePageState {
     setCurrentRoom: (room: string) => {
       setCurrentRoomState(room);
 
-      if (!room || chatValues[room]) {
+      if (!room) {
         return;
       }
 

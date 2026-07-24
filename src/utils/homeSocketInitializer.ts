@@ -1158,13 +1158,41 @@ export async function initializeHomeSocket({
   socket.on(SOCKET_EVENTS.SERVER_NEW_ROOM, (data) => {
     console.log('[Socket] SERVER_NEW_ROOM received');
     if (data?.messages) {
-      // Merge with existing chat values instead of replacing
+      // Merge payload into existing room history to avoid truncating previously loaded messages.
       setChatValues((prev) => {
         const merged = { ...prev };
         const blockedUsers = new Set(getBlockedUsers());
-        for (const [room, messages] of Object.entries(data.messages)) {
+        for (const [room, rawMessages] of Object.entries(data.messages)) {
+          const incomingMessages = scrubMessagesForLocalState(
+            (rawMessages as Message[]).map((msg) => ensureMessageId(msg)),
+            blockedUsers,
+          );
+
+          if (!merged[room]) {
+            merged[room] = incomingMessages;
+            continue;
+          }
+
+          const existingMap = new Map(
+            merged[room].map((message) => [messageIdentity(message), message]),
+          );
+          for (const message of incomingMessages) {
+            const key = messageIdentity(message);
+            const existing = existingMap.get(key);
+            if (existing) {
+              Object.assign(existing, message, {
+                replyTo:
+                  message.replyTo !== undefined
+                    ? message.replyTo
+                    : existing.replyTo,
+              });
+            } else {
+              existingMap.set(key, message);
+            }
+          }
+
           merged[room] = scrubMessagesForLocalState(
-            messages as Message[],
+            Array.from(existingMap.values()),
             blockedUsers,
           );
         }
