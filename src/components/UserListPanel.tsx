@@ -17,11 +17,19 @@ const MenuButton = styled.button`
   padding: 0 4px;
   font-size: 14px;
   line-height: 1;
-  color: #555;
+  color: var(--app-muted);
 
   &:hover {
-    color: #000;
+    color: var(--brand-cyan);
   }
+`;
+
+const UserName = styled.span`
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 120ms ease;
 `;
 
 const UserRow = styled.div<{
@@ -44,21 +52,21 @@ const UserRow = styled.div<{
           ? '#27486c'
           : '#516b8d'};
   font-weight: ${(p) => (p.$isSelf ? 700 : p.$loggedIn ? 500 : 400)};
-  margin: 0 0 2px;
-  padding: 2px 4px 2px 8px;
+  margin: 0 2px 2px 0;
+  padding: 2px 3px 2px 7px;
   font-size: 12px;
   position: relative;
 
   &:hover {
     color: ${(p) => (p.$blocked ? '#4e5d73' : 'inherit')};
-  }
-`;
 
-const UserName = styled.span`
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+    ${UserName} {
+      color: ${(p) =>
+        p.$blocked
+          ? 'color-mix(in srgb, var(--app-muted) 72%, var(--app-fg) 28%)'
+          : 'var(--brand-cyan)'};
+    }
+  }
 `;
 
 const SectionLabel = styled.div`
@@ -131,20 +139,14 @@ function UserListEntry({
     setPending({ type, user, anchor });
   };
 
-  if (isSelf) {
-    return (
-      <UserRow $isSelf $loggedIn={loggedIn}>
-        <UserName>
-          {user} {loggedIn ? '🟢' : '⚫'}
-        </UserName>
-      </UserRow>
-    );
-  }
-
   return (
-    <UserRow $loggedIn={loggedIn} $blocked={blocked}>
+    <UserRow
+      $isSelf={isSelf}
+      $loggedIn={loggedIn}
+      $blocked={!isSelf && blocked}
+    >
       <UserName>
-        {user} {blocked ? '⊘' : loggedIn ? '🟢' : '⚫'}
+        {user} {!isSelf && blocked ? '⊘' : loggedIn ? '🟢' : '⚫'}
       </UserName>
       <MenuButton
         type="button"
@@ -186,11 +188,12 @@ function UserListEntry({
             </ContextMenuItem>
             <ContextMenuItem
               type="button"
+              title="Send a copy of your account keys/settings so this user can import and log into it on any device they use."
               onClick={(e) => openConfirm('sendKey', e)}
             >
               Send private key
             </ContextMenuItem>
-            {blocked ? (
+            {!isSelf && blocked ? (
               <ContextMenuItem
                 type="button"
                 onClick={() => {
@@ -200,7 +203,7 @@ function UserListEntry({
               >
                 Unblock
               </ContextMenuItem>
-            ) : (
+            ) : !isSelf ? (
               <ContextMenuItem
                 type="button"
                 $danger
@@ -208,7 +211,7 @@ function UserListEntry({
               >
                 Block
               </ContextMenuItem>
-            )}
+            ) : null}
           </ContextMenuSurface>,
           document.body,
         )}
@@ -227,7 +230,7 @@ function UserListEntry({
       )}
       {pending?.type === 'sendKey' && pending.user === user && (
         <ConfirmPopover
-          message={`Send your public key to ${user}?`}
+          message={`Send your private key bundle to ${user}?`}
           confirmLabel="Send"
           variant="primary"
           anchorRect={pending.anchor}
@@ -285,8 +288,7 @@ export function UserListPanel({
 
   return (
     <>
-      <div style={{ marginBottom: '5px' }}>Users:</div>
-      <ScrollableDiv $padding="0px" $border="none" $marginLeft="8px">
+      <ScrollableDiv $padding="0 2px 0 0" $border="none">
         {filteredLoggedIn.length > 0 && (
           <>
             <SectionLabel>Logged In ({filteredLoggedIn.length}):</SectionLabel>

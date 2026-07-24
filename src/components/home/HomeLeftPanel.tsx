@@ -8,6 +8,19 @@ import {
 } from './LayoutPrimitives';
 import { useHomeRooms } from '../../contexts/home/useHomePageSelectors';
 
+type RoomTreeNode = {
+  id: string;
+  label: string;
+  roomId?: string;
+  children?: RoomTreeNode[];
+};
+
+type RoomTreeSection = {
+  id: string;
+  label: string;
+  nodes: RoomTreeNode[];
+};
+
 export function HomeLeftPanel() {
   const {
     currentRoom,
@@ -25,16 +38,126 @@ export function HomeLeftPanel() {
   } = useHomeRooms();
 
   const [showAutocomplete, setShowAutocomplete] = useState(false);
+  const [collapsedSections, setCollapsedSections] = useState<
+    Record<string, boolean>
+  >({
+    channels: false,
+    dms: false,
+  });
 
   const visibleRooms = useMemo(
     () => roomList.filter((room) => !leftRooms.has(room)),
     [roomList, leftRooms],
   );
 
+  const visibleNonDmRooms = useMemo(
+    () => visibleRooms.filter((room) => !isDmRoom(room)),
+    [visibleRooms],
+  );
+
+  const visibleDmRooms = useMemo(
+    () => visibleRooms.filter((room) => isDmRoom(room)),
+    [visibleRooms],
+  );
+
   const rejoinableRooms = useMemo(
     () => roomList.filter((room) => leftRooms.has(room) && !isDmRoom(room)),
     [roomList, leftRooms],
   );
+
+  const treeSections = useMemo<RoomTreeSection[]>(() => {
+    const toNode = (room: string): RoomTreeNode => ({
+      id: room,
+      label: getRoomDisplayLabel(room, username),
+      roomId: room,
+      children: [],
+    });
+
+    return [
+      {
+        id: 'channels',
+        label: 'Rooms',
+        nodes: visibleNonDmRooms.map(toNode),
+      },
+      {
+        id: 'dms',
+        label: 'Direct Messages',
+        nodes: visibleDmRooms.map(toNode),
+      },
+    ];
+  }, [visibleNonDmRooms, visibleDmRooms, username]);
+
+  const toggleSection = (sectionId: string) => {
+    setCollapsedSections((prev) => ({
+      ...prev,
+      [sectionId]: !prev[sectionId],
+    }));
+  };
+
+  const renderTreeNode = (node: RoomTreeNode, depth = 0) => {
+    const room = node.roomId;
+    if (!room) {
+      return null;
+    }
+
+    const isActive = room === currentRoom;
+    const unreadCount = !isActive ? roomNotifications[room] || 0 : 0;
+
+    return (
+      <div key={node.id}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            borderBottom: '1px solid var(--app-border)',
+            background: isActive
+              ? 'color-mix(in srgb, var(--brand-blue) 26%, var(--app-surface) 74%)'
+              : 'var(--app-surface)',
+            color: 'var(--app-fg)',
+            fontWeight: isActive ? 700 : 500,
+            padding: '3px 6px 3px 10px',
+            paddingLeft: `${10 + depth * 16}px`,
+            gap: '6px',
+          }}
+        >
+          <button
+            type="button"
+            style={{
+              all: 'unset',
+              flex: 1,
+              cursor: 'pointer',
+              minWidth: 0,
+              fontSize: '12px',
+            }}
+            onClick={() => setCurrentRoom(room)}
+            title={room}
+          >
+            {node.label}
+            {unreadCount > 0 ? ` (${unreadCount})` : ''}
+          </button>
+          <button
+            type="button"
+            onClick={() => hideRoom(room)}
+            title="Hide room"
+            aria-label={`Hide ${node.label}`}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              color: 'var(--app-muted)',
+              cursor: 'pointer',
+              fontWeight: 700,
+              lineHeight: 1,
+              padding: '0 2px',
+            }}
+          >
+            X
+          </button>
+        </div>
+        {(node.children || []).map((child) => renderTreeNode(child, depth + 1))}
+      </div>
+    );
+  };
 
   return (
     <SidePanel>
@@ -44,64 +167,52 @@ export function HomeLeftPanel() {
         top={
           <div className="flex h-full min-h-0 flex-col">
             <div id="roomSelection" className="flex-1">
-              <div>Rooms:</div>
               <div
                 style={{
-                  marginTop: '2px',
                   overflowY: 'auto',
                   border: '1px solid var(--app-border)',
                 }}
               >
-                {visibleRooms.map((room) => {
-                  const isActive = room === currentRoom;
+                {treeSections.map((section) => {
+                  if (section.nodes.length === 0) {
+                    return null;
+                  }
+
+                  const isCollapsed = !!collapsedSections[section.id];
                   return (
-                    <div
-                      key={room}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        borderBottom: '1px solid var(--app-border)',
-                        background: isActive ? '#b8ccee' : '#e5edf9',
-                        color: '#0c1b33',
-                        fontWeight: isActive ? 700 : 500,
-                        padding: '3px 6px 3px 10px',
-                        gap: '6px',
-                      }}
-                    >
+                    <div key={section.id}>
                       <button
                         type="button"
+                        onClick={() => toggleSection(section.id)}
+                        aria-expanded={!isCollapsed}
                         style={{
-                          all: 'unset',
-                          flex: 1,
-                          cursor: 'pointer',
-                          minWidth: 0,
-                        }}
-                        onClick={() => setCurrentRoom(room)}
-                        title={room}
-                      >
-                        {getRoomDisplayLabel(room, username)}
-                        {!isActive && roomNotifications[room] > 0
-                          ? ` (${roomNotifications[room]})`
-                          : ''}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => hideRoom(room)}
-                        title="Hide room"
-                        aria-label={`Hide ${getRoomDisplayLabel(room, username)}`}
-                        style={{
+                          width: '100%',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
                           border: 'none',
-                          background: 'transparent',
-                          color: '#355170',
+                          borderTop: '1px solid var(--app-border)',
+                          borderBottom: '1px solid var(--app-border)',
+                          background: 'var(--app-panel)',
+                          color: 'var(--app-muted)',
+                          fontSize: '13px',
+                          fontWeight: 800,
+                          letterSpacing: '0.01em',
+                          padding: '6px 10px',
                           cursor: 'pointer',
-                          fontWeight: 700,
-                          lineHeight: 1,
-                          padding: '0 2px',
                         }}
                       >
-                        X
+                        <span>{section.label}</span>
+                        <span style={{ fontSize: '10px' }}>
+                          {isCollapsed ? '▸' : '▾'} {section.nodes.length}
+                        </span>
                       </button>
+
+                      {!isCollapsed && (
+                        <div>
+                          {section.nodes.map((node) => renderTreeNode(node, 0))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}

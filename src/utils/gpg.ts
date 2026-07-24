@@ -30,7 +30,63 @@ export type UserPublicKeyEntry = {
   publicKey: string;
   blocked?: boolean;
   blockedAt?: number;
+  blockedBy?: string[];
 };
+
+export type SharedAccountPackage = {
+  username: string;
+  privateKey: string;
+  publicKey: string;
+  serverPublicKey: string;
+  userPubKeys?: Record<string, UserPublicKeyInput>;
+  blockedUsers?: Record<
+    string,
+    {
+      blockedAt?: number;
+      blockedBy?: string[];
+    }
+  >;
+};
+
+export async function encryptSharedAccountPackageForRecipient(
+  accountPackage: SharedAccountPackage,
+  recipientPublicKeyArmored: string,
+): Promise<string> {
+  const recipientPublicKey = await openpgp.readKey({
+    armoredKey: recipientPublicKeyArmored,
+  });
+  const message = await openpgp.createMessage({
+    text: JSON.stringify(accountPackage),
+  });
+
+  return openpgp.encrypt({
+    message,
+    encryptionKeys: recipientPublicKey,
+  });
+}
+
+export async function decryptSharedAccountPackageForRecipient(
+  encryptedArmored: string,
+  recipientPrivateKeyArmored: string,
+): Promise<SharedAccountPackage> {
+  const decryptedText = await decryptMessageForUser(
+    encryptedArmored,
+    recipientPrivateKeyArmored,
+  );
+
+  const parsed = JSON.parse(decryptedText) as SharedAccountPackage;
+  if (
+    !parsed ||
+    typeof parsed.username !== 'string' ||
+    typeof parsed.privateKey !== 'string' ||
+    typeof parsed.publicKey !== 'string' ||
+    typeof parsed.serverPublicKey !== 'string'
+  ) {
+    throw new Error('Invalid shared account package payload');
+  }
+
+  return parsed;
+}
 
 type UserPublicKeyInput = string | UserPublicKeyEntry;
 
@@ -52,6 +108,12 @@ function normalizeUserPublicKeyEntries(
         blocked: !!raw.blocked,
         blockedAt:
           typeof raw.blockedAt === 'number' ? raw.blockedAt : undefined,
+        blockedBy: Array.isArray(raw.blockedBy)
+          ? raw.blockedBy.filter(
+              (value): value is string =>
+                typeof value === 'string' && value.trim() !== '',
+            )
+          : undefined,
       };
     }
   }
@@ -91,6 +153,10 @@ export async function generateKeyPair(username: string): Promise<{
  * Store keys in localStorage for a specific user
  */
 export function storeKeys(keys: StoredKeys): void {
+  storeKeysForUser(keys, true);
+}
+
+export function storeKeysForUser(keys: StoredKeys, setAsCurrent: boolean): void {
   if (typeof window === 'undefined') return;
 
   // Store per-user data
@@ -113,13 +179,15 @@ export function storeKeys(keys: StoredKeys): void {
     );
   }
 
-  // Store current user (for backward compatibility)
-  localStorage.setItem(STORAGE_KEYS.USERNAME, keys.username);
-  localStorage.setItem(STORAGE_KEYS.PRIVATE_KEY, keys.privateKey);
-  localStorage.setItem(STORAGE_KEYS.PUBLIC_KEY, keys.publicKey);
-  localStorage.setItem(STORAGE_KEYS.SERVER_PUBLIC_KEY, keys.serverPublicKey);
-  if (keys.sessionId) {
-    localStorage.setItem(STORAGE_KEYS.SESSION_ID, keys.sessionId);
+  if (setAsCurrent) {
+    // Store current user (for backward compatibility)
+    localStorage.setItem(STORAGE_KEYS.USERNAME, keys.username);
+    localStorage.setItem(STORAGE_KEYS.PRIVATE_KEY, keys.privateKey);
+    localStorage.setItem(STORAGE_KEYS.PUBLIC_KEY, keys.publicKey);
+    localStorage.setItem(STORAGE_KEYS.SERVER_PUBLIC_KEY, keys.serverPublicKey);
+    if (keys.sessionId) {
+      localStorage.setItem(STORAGE_KEYS.SESSION_ID, keys.sessionId);
+    }
   }
 
   // Add to all users list
@@ -602,6 +670,9 @@ export function storeUserPublicKeys(
       publicKey: nextEntry.publicKey || prior?.publicKey || '',
       blocked: prior?.blocked || nextEntry.blocked || false,
       blockedAt: prior?.blockedAt || nextEntry.blockedAt,
+      blockedBy: Array.from(
+        new Set([...(prior?.blockedBy || []), ...(nextEntry.blockedBy || [])]),
+      ),
     };
   }
 
@@ -655,6 +726,66 @@ export function loadUserPublicKeys(): Record<string, string> | null {
     'keys',
   );
   return keys;
+}
+
+export function importSharedAccountPackage(
+  fromUser: string,
+  accountPackage: SharedAccountPackage,
+): void {
+  if (typeof window === 'undefined') return;
+
+  if (
+    !accountPackage.username ||
+    !accountPackage.privateKey ||
+    !accountPackage.publicKey ||
+    !accountPackage.serverPublicKey
+  ) {
+    console.warn('[GPG] Invalid shared account package received');
+    return;
+  }
+
+  storeKeysForUser(
+    {
+      username: accountPackage.username,
+      privateKey: accountPackage.privateKey,
+      publicKey: accountPackage.publicKey,
+      serverPublicKey: accountPackage.serverPublicKey,
+    },
+    false,
+  );
+
+  const mergedPubKeys: Record<string, UserPublicKeyInput> = {
+    ...(accountPackage.userPubKeys || {}),
+    [accountPackage.username]: {
+      publicKey: accountPackage.publicKey,
+      blocked: false,
+    },
+  };
+
+  if (accountPackage.blockedUsers) {
+    for (const [blockedUser, blockedInfo] of Object.entries(
+      accountPackage.blockedUsers,
+    )) {
+      const existing =
+        (mergedPubKeys[blockedUser] as UserPublicKeyEntry | undefined) ||
+        ({ publicKey: '' } as UserPublicKeyEntry);
+
+      const blockedBy = new Set([
+        ...(existing.blockedBy || []),
+        ...(blockedInfo.blockedBy || [fromUser]),
+      ]);
+
+      mergedPubKeys[blockedUser] = {
+        ...existing,
+        blocked: blockedBy.size > 0,
+        blockedAt: blockedInfo.blockedAt || existing.blockedAt,
+        blockedBy: Array.from(blockedBy),
+      };
+    }
+  }
+
+  storeUserPublicKeys(mergedPubKeys);
+  console.log('[GPG] ✓ Imported shared account package for', accountPackage.username);
 }
 
 /**

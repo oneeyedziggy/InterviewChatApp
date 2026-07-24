@@ -11,6 +11,8 @@ export type Message = {
   timestamp: number;
   username: string;
   content: string;
+  keyTransferEncryptedPackage?: string;
+  keyTransferFromUser?: string;
   encryptedMessage?: string; // Single ciphertext encrypted to multiple recipients
   encryptedFor?: Record<string, string>; // Map of username -> encrypted message (for backward compatibility)
   versions?: MessageVersion[]; // Array of message versions, newest first

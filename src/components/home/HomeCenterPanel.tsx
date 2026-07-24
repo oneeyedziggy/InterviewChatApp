@@ -1,9 +1,5 @@
-import {
-  MainPanel,
-  Row,
-  AppTextInput,
-  PrimaryButton,
-} from './LayoutPrimitives';
+import { useEffect, useRef } from 'react';
+import { MainPanel, Row, AppTextArea, PrimaryButton } from './LayoutPrimitives';
 import { renderMessageThread } from './MessageThread';
 import {
   useHomeComposer,
@@ -11,6 +7,8 @@ import {
 } from '../../contexts/home/useHomePageSelectors';
 
 export function HomeCenterPanel() {
+  const composerTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
+
   const {
     chatValues,
     currentRoom,
@@ -36,9 +34,29 @@ export function HomeCenterPanel() {
   const {
     handleMessageUser,
     handleSendPublicKeyToUser,
+    handleImportTransferredAccount,
     handleBlockUser,
     handleUnblockUser,
   } = useHomePresence();
+
+  useEffect(() => {
+    const el = composerTextAreaRef.current;
+    if (!el) {
+      return;
+    }
+
+    el.style.height = 'auto';
+
+    const computed = window.getComputedStyle(el);
+    const lineHeight = Number.parseFloat(computed.lineHeight) || 20;
+    const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
+    const paddingBottom = Number.parseFloat(computed.paddingBottom) || 0;
+    const maxHeight = lineHeight * 10 + paddingTop + paddingBottom;
+    const nextHeight = Math.min(el.scrollHeight, maxHeight);
+
+    el.style.height = `${nextHeight}px`;
+    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, [userDraftMessage]);
 
   return (
     <MainPanel>
@@ -58,6 +76,7 @@ export function HomeCenterPanel() {
           handleVote,
           handleMessageUser,
           handleSendPublicKeyToUser,
+          handleImportTransferredAccount,
           handleBlockUser,
           handleUnblockUser,
           replyingTo,
@@ -66,8 +85,11 @@ export function HomeCenterPanel() {
         )}
       </div>
       <Row className="app-message-composer">
-        <AppTextInput
+        <AppTextArea
+          ref={composerTextAreaRef}
           id="userDraftMessageInput"
+          className="app-composer-textarea"
+          rows={1}
           placeholder={
             editingMessageTimestamp
               ? `Editing message... (click X to cancel)`

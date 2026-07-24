@@ -2,6 +2,7 @@ import { createPortal } from 'react-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { type Socket } from 'socket.io-client';
 import { styled } from 'styled-components';
+import { ConfirmPopover } from '../ConfirmPopover';
 import { ScrollableDiv } from '../styled/ScrollableDiv';
 import { ContextMenuItem, ContextMenuSurface } from '../styled/ContextMenu';
 import { SOCKET_EVENTS, FEATURES } from '../../constants';
@@ -12,6 +13,68 @@ import {
   closeOtherContextMenus,
 } from '../../utils/contextMenuEvents';
 import { mdStringToReact } from '../../utils/markdown';
+
+const IMPORTED_TRANSFER_MARKERS_KEY = 'imported_transfer_markers_v1';
+
+function readImportedTransferMarkers(): Record<string, boolean> {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  const raw = localStorage.getItem(IMPORTED_TRANSFER_MARKERS_KEY);
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const markers: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (value === true) {
+        markers[key] = true;
+      }
+    }
+    return markers;
+  } catch {
+    return {};
+  }
+}
+
+function markTransferAsImported(marker: string): void {
+  if (typeof window === 'undefined' || !marker) {
+    return;
+  }
+
+  const existing = readImportedTransferMarkers();
+  existing[marker] = true;
+  localStorage.setItem(IMPORTED_TRANSFER_MARKERS_KEY, JSON.stringify(existing));
+}
+
+function transferImportMarker(message: Message): string {
+  if (message.id && message.id.trim() !== '') {
+    return `id:${message.id}`;
+  }
+  const fromUser = message.keyTransferFromUser || 'unknown';
+  return `legacy:${message.timestamp}:${fromUser}`;
+}
+
+function transferImportMarkerFromParts(
+  messageID: string | undefined,
+  messageTimestamp: number,
+  fromUser: string | undefined,
+): string {
+  if (messageID && messageID.trim() !== '') {
+    return `id:${messageID}`;
+  }
+  return `legacy:${messageTimestamp}:${fromUser || 'unknown'}`;
+}
+
+function getDefaultImportedTransferNote(fromUser: string | undefined): string {
+  if (fromUser) {
+    return `Imported account from ${fromUser}. It is now available in your local login list.`;
+  }
+  return 'Imported account is available in your local login list.';
+}
 
 function messageKey(message: Message, index: number): string {
   if (message.id && message.id.trim() !== '') {
@@ -50,6 +113,7 @@ const MessageWithReplies = ({
   onVote,
   onMessageUser,
   onSendPublicKeyToUser,
+  onImportTransferredAccount,
   onBlockUser,
   onUnblockUser,
   blockedUsers,
@@ -100,6 +164,10 @@ const MessageWithReplies = ({
   ) => void;
   onMessageUser?: (targetUser: string) => void;
   onSendPublicKeyToUser?: (targetUser: string) => void;
+  onImportTransferredAccount?: (
+    fromUser: string,
+    encryptedPackage: string,
+  ) => Promise<{ success: boolean; message: string }>;
   onBlockUser?: (targetUser: string) => void;
   onUnblockUser?: (targetUser: string) => void;
   blockedUsers?: string[];
@@ -117,6 +185,37 @@ const MessageWithReplies = ({
   );
   const [userContextMenuAnchor, setUserContextMenuAnchor] =
     useState<DOMRect | null>(null);
+  const [pendingSendKeyConfirm, setPendingSendKeyConfirm] = useState<{
+    user: string;
+    anchor: DOMRect;
+  } | null>(null);
+  const [isImportingTransfer, setIsImportingTransfer] = useState(false);
+  const [isImportedOnThisDevice, setIsImportedOnThisDevice] = useState(() => {
+    if (!message.keyTransferEncryptedPackage) {
+      return false;
+    }
+    const marker = transferImportMarker(message);
+    return !!readImportedTransferMarkers()[marker];
+  });
+  const [importTransferStatus, setImportTransferStatus] = useState<
+    'success' | 'error' | null
+  >(() => {
+    if (!message.keyTransferEncryptedPackage) {
+      return null;
+    }
+    const marker = transferImportMarker(message);
+    return readImportedTransferMarkers()[marker] ? 'success' : null;
+  });
+  const [importTransferNote, setImportTransferNote] = useState(() => {
+    if (!message.keyTransferEncryptedPackage) {
+      return '';
+    }
+    const marker = transferImportMarker(message);
+    if (!readImportedTransferMarkers()[marker]) {
+      return '';
+    }
+    return getDefaultImportedTransferNote(message.keyTransferFromUser);
+  });
   const replies = childrenByParent.get(message.timestamp) ?? [];
   const hasReplies = replies.length > 0;
   const isOwnNonSystemMessage =
@@ -134,6 +233,34 @@ const MessageWithReplies = ({
   const unreadDirectRepliesCount = getUnreadDirectRepliesCount
     ? getUnreadDirectRepliesCount(message.timestamp)
     : 0;
+
+  useEffect(() => {
+    if (!message.keyTransferEncryptedPackage) {
+      setIsImportedOnThisDevice(false);
+      setImportTransferStatus(null);
+      setImportTransferNote('');
+      return;
+    }
+    const marker = transferImportMarkerFromParts(
+      message.id,
+      message.timestamp,
+      message.keyTransferFromUser,
+    );
+    const imported = !!readImportedTransferMarkers()[marker];
+    setIsImportedOnThisDevice(imported);
+    setImportTransferStatus(imported ? 'success' : null);
+    if (imported && !importTransferNote) {
+      setImportTransferNote(
+        getDefaultImportedTransferNote(message.keyTransferFromUser),
+      );
+    }
+  }, [
+    message.id,
+    message.timestamp,
+    message.keyTransferEncryptedPackage,
+    message.keyTransferFromUser,
+    importTransferNote,
+  ]);
 
   useEffect(() => {
     if (isExpanded && hasReplies && markDirectRepliesRead) {
@@ -206,7 +333,6 @@ const MessageWithReplies = ({
           !onBlockUser ||
           !onUnblockUser ||
           !username ||
-          message.username === username ||
           message.username === 'system'
         ) {
           return;
@@ -267,6 +393,99 @@ const MessageWithReplies = ({
         >
           {!isCompactMessage && <>{renderAuthorLine()}: </>}
           Message deleted
+        </div>
+      );
+    }
+
+    if (
+      message.username === 'system' &&
+      message.keyTransferEncryptedPackage &&
+      message.keyTransferFromUser
+    ) {
+      return (
+        <div
+          style={{
+            border: '1px solid var(--app-border)',
+            padding: '8px',
+            margin: '4px 0',
+            borderRadius: '6px',
+            background:
+              'color-mix(in srgb, var(--app-panel) 88%, var(--app-surface) 12%)',
+            color: 'var(--app-fg)',
+          }}
+        >
+          {mdStringToReact(message.content)}
+          <div style={{ marginTop: '8px' }}>
+            <button
+              type="button"
+              onClick={() => {
+                if (!onImportTransferredAccount || isImportingTransfer) {
+                  return;
+                }
+
+                setIsImportingTransfer(true);
+                void onImportTransferredAccount(
+                  message.keyTransferFromUser!,
+                  message.keyTransferEncryptedPackage!,
+                )
+                  .then((result) => {
+                    if (result.success) {
+                      const marker = transferImportMarker(message);
+                      markTransferAsImported(marker);
+                      setIsImportedOnThisDevice(true);
+                    }
+                    setImportTransferStatus(
+                      result.success ? 'success' : 'error',
+                    );
+                    setImportTransferNote(result.message);
+                  })
+                  .finally(() => {
+                    setIsImportingTransfer(false);
+                  });
+              }}
+              disabled={!onImportTransferredAccount || isImportingTransfer}
+              style={{
+                padding: '4px 10px',
+                fontSize: '12px',
+                cursor: !onImportTransferredAccount ? 'not-allowed' : 'pointer',
+                backgroundColor: '#2a5f92',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '4px',
+                opacity: !onImportTransferredAccount ? 0.75 : 1,
+              }}
+              title={
+                isImportedOnThisDevice
+                  ? 'This account bundle was already imported on this device. You can import again if needed.'
+                  : 'Import this shared account into your local login list on this device'
+              }
+            >
+              {isImportingTransfer ? 'Importing...' : 'Add key locally'}
+            </button>
+            {importTransferNote && importTransferStatus && (
+              <span
+                style={{
+                  marginLeft: '10px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  padding: '2px 6px',
+                  borderRadius: '4px',
+                  color:
+                    importTransferStatus === 'error'
+                      ? '#a32222'
+                      : 'var(--brand-blue)',
+                  background:
+                    importTransferStatus === 'error'
+                      ? 'transparent'
+                      : 'color-mix(in srgb, var(--brand-blue) 16%, var(--app-surface) 84%)',
+                }}
+              >
+                {importTransferStatus === 'success' && isImportedOnThisDevice
+                  ? `Imported on this device. ${importTransferNote}`
+                  : importTransferNote}
+              </span>
+            )}
+          </div>
         </div>
       );
     }
@@ -674,7 +893,7 @@ const MessageWithReplies = ({
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
-                gap: '2px',
+                gap: '0px',
                 flexShrink: 0,
                 marginRight: '4px',
                 alignSelf: 'center',
@@ -684,7 +903,7 @@ const MessageWithReplies = ({
                 onClick={() => onVote(room, message.timestamp, 'up')}
                 style={{
                   padding: '0',
-                  fontSize: '16px',
+                  fontSize: '14px',
                   cursor: 'pointer',
                   backgroundColor: 'transparent',
                   border: 'none',
@@ -693,8 +912,8 @@ const MessageWithReplies = ({
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  width: '20px',
-                  height: '20px',
+                  width: '16px',
+                  height: '16px',
                   lineHeight: '1',
                 }}
                 title="Upvote"
@@ -703,10 +922,10 @@ const MessageWithReplies = ({
               </button>
               <span
                 style={{
-                  fontSize: '12px',
+                  fontSize: '11px',
                   fontWeight: 'bold',
                   color: '#666',
-                  minWidth: '20px',
+                  minWidth: '16px',
                   textAlign: 'center',
                 }}
               >
@@ -716,7 +935,7 @@ const MessageWithReplies = ({
                 onClick={() => onVote(room, message.timestamp, 'down')}
                 style={{
                   padding: '0',
-                  fontSize: '16px',
+                  fontSize: '14px',
                   cursor: 'pointer',
                   backgroundColor: 'transparent',
                   border: 'none',
@@ -727,8 +946,8 @@ const MessageWithReplies = ({
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  width: '20px',
-                  height: '20px',
+                  width: '16px',
+                  height: '16px',
                   lineHeight: '1',
                 }}
                 title="Downvote"
@@ -765,7 +984,6 @@ const MessageWithReplies = ({
           onBlockUser &&
           onUnblockUser &&
           username &&
-          message.username !== username &&
           message.username !== 'system' &&
           createPortal(
             <ContextMenuSurface
@@ -786,14 +1004,20 @@ const MessageWithReplies = ({
               </ContextMenuItem>
               <ContextMenuItem
                 type="button"
+                title="Send a copy of your account keys/settings so this user can import and log into it on any device they use."
                 onClick={() => {
-                  onSendPublicKeyToUser(message.username);
+                  if (userContextMenuAnchor) {
+                    setPendingSendKeyConfirm({
+                      user: message.username,
+                      anchor: userContextMenuAnchor,
+                    });
+                  }
                   closeUserContextMenu();
                 }}
               >
                 Send private key
               </ContextMenuItem>
-              {isBlockedAuthor ? (
+              {message.username !== username && isBlockedAuthor ? (
                 <ContextMenuItem
                   type="button"
                   onClick={() => {
@@ -803,7 +1027,7 @@ const MessageWithReplies = ({
                 >
                   Unblock
                 </ContextMenuItem>
-              ) : (
+              ) : message.username !== username ? (
                 <ContextMenuItem
                   type="button"
                   $danger
@@ -814,9 +1038,25 @@ const MessageWithReplies = ({
                 >
                   Block
                 </ContextMenuItem>
-              )}
+              ) : null}
             </ContextMenuSurface>,
             document.body,
+          )}
+
+        {pendingSendKeyConfirm &&
+          pendingSendKeyConfirm.user === message.username &&
+          onSendPublicKeyToUser && (
+            <ConfirmPopover
+              message={`Send your private key bundle to ${message.username}?`}
+              confirmLabel="Send"
+              variant="primary"
+              anchorRect={pendingSendKeyConfirm.anchor}
+              onConfirm={() => {
+                onSendPublicKeyToUser(message.username);
+                setPendingSendKeyConfirm(null);
+              }}
+              onCancel={() => setPendingSendKeyConfirm(null)}
+            />
           )}
 
         {!isDeletedMessage &&
@@ -990,6 +1230,7 @@ const MessageWithReplies = ({
                     onVote={onVote}
                     onMessageUser={onMessageUser}
                     onSendPublicKeyToUser={onSendPublicKeyToUser}
+                    onImportTransferredAccount={onImportTransferredAccount}
                     onBlockUser={onBlockUser}
                     onUnblockUser={onUnblockUser}
                     blockedUsers={blockedUsers}
@@ -1024,6 +1265,7 @@ function MessageThreadCard({
   onVote,
   onMessageUser,
   onSendPublicKeyToUser,
+  onImportTransferredAccount,
   onBlockUser,
   onUnblockUser,
   blockedUsers,
@@ -1065,6 +1307,10 @@ function MessageThreadCard({
   ) => void;
   onMessageUser?: (targetUser: string) => void;
   onSendPublicKeyToUser?: (targetUser: string) => void;
+  onImportTransferredAccount?: (
+    fromUser: string,
+    encryptedPackage: string,
+  ) => Promise<{ success: boolean; message: string }>;
   onBlockUser?: (targetUser: string) => void;
   onUnblockUser?: (targetUser: string) => void;
   blockedUsers?: string[];
@@ -1232,6 +1478,7 @@ function MessageThreadCard({
             onVote={onVote}
             onMessageUser={onMessageUser}
             onSendPublicKeyToUser={onSendPublicKeyToUser}
+            onImportTransferredAccount={onImportTransferredAccount}
             onBlockUser={onBlockUser}
             onUnblockUser={onUnblockUser}
             blockedUsers={blockedUsers}
@@ -1284,6 +1531,10 @@ export const renderMessageThread = (
   ) => void,
   onMessageUser?: (targetUser: string) => void,
   onSendPublicKeyToUser?: (targetUser: string) => void,
+  onImportTransferredAccount?: (
+    fromUser: string,
+    encryptedPackage: string,
+  ) => Promise<{ success: boolean; message: string }>,
   onBlockUser?: (targetUser: string) => void,
   onUnblockUser?: (targetUser: string) => void,
   replyingTo?: number,
@@ -1320,6 +1571,7 @@ export const renderMessageThread = (
         onVote={onVote}
         onMessageUser={onMessageUser}
         onSendPublicKeyToUser={onSendPublicKeyToUser}
+        onImportTransferredAccount={onImportTransferredAccount}
         onBlockUser={onBlockUser}
         onUnblockUser={onUnblockUser}
         blockedUsers={blockedUsers}

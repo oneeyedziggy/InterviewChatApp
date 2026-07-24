@@ -38,7 +38,9 @@ export type HomeComposerContextValue = {
   editingMessageTimestamp: number | undefined;
   editingMessageId: string | undefined;
   setUserDraftMessage: (message: string) => void;
-  onDraftKeyDownHandler: (e: KeyboardEvent<HTMLInputElement>) => void;
+  onDraftKeyDownHandler: (
+    e: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
+  ) => void;
   doSend: () => Promise<void>;
   handleRequestAccess: (
     messageUsername: string,
@@ -81,6 +83,10 @@ export type HomePresenceContextValue = {
   currentRoom: string;
   handleMessageUser: (targetUser: string) => void;
   handleSendPublicKeyToUser: (targetUser: string) => void;
+  handleImportTransferredAccount: (
+    fromUser: string,
+    encryptedPackage: string,
+  ) => Promise<{ success: boolean; message: string }>;
   handleBlockUser: (targetUser: string) => void;
   handleUnblockUser: (targetUser: string) => void;
   handleVoteJoin: (requestingUser: string, room: string, vote: boolean) => void;
@@ -93,6 +99,7 @@ export type HomePageState = {
   roomList: string[];
   leftRooms: Set<string>;
   roomNotifications: Record<string, number>;
+  hiddenDmUnreadBaseline: Record<string, number>;
   currentRoom: string;
   chatValues: Messages;
   blockedUsers: string[];
@@ -112,6 +119,9 @@ export type HomePageState = {
   setNewRoomName: (roomName: string) => void;
   setUserDraftMessage: (message: string) => void;
   setLeftRoomsState: Dispatch<SetStateAction<Set<string>>>;
+  setHiddenDmUnreadBaselineState: Dispatch<
+    SetStateAction<Record<string, number>>
+  >;
   setChatValuesState: Dispatch<SetStateAction<Messages>>;
   setBlockedUsersState: Dispatch<SetStateAction<string[]>>;
   setAuthTokenState: Dispatch<SetStateAction<string>>;

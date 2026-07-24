@@ -14,7 +14,6 @@ type JoinRequest = {
 type UseHomeSessionLifecycleArgs = {
   authToken: string;
   username: string;
-  leftRooms: Set<string>;
   setAuthToken: Dispatch<SetStateAction<string>>;
   setUsername: Dispatch<SetStateAction<string>>;
   setBlockedUsers: Dispatch<SetStateAction<string[]>>;
@@ -30,6 +29,12 @@ type UseHomeSessionLifecycleArgs = {
   setActiveJoinRequests: Dispatch<SetStateAction<JoinRequest[]>>;
   onForceReauth: () => void;
   getSocket: () => Socket | undefined;
+  getLeftRooms: () => Set<string>;
+  getChatValues: () => Messages;
+  getRoomNotifications: () => Record<string, number>;
+  getHiddenDmUnreadBaseline: () => Record<string, number>;
+  setLeftRooms: Dispatch<SetStateAction<Set<string>>>;
+  setHiddenDmUnreadBaseline: Dispatch<SetStateAction<Record<string, number>>>;
   getCurrentRoom: () => string;
   getRoomList: () => string[];
   setSocket: (next: Socket | undefined) => void;
@@ -38,7 +43,6 @@ type UseHomeSessionLifecycleArgs = {
 export function useHomeSessionLifecycle({
   authToken,
   username,
-  leftRooms,
   setAuthToken,
   setUsername,
   setBlockedUsers,
@@ -54,6 +58,12 @@ export function useHomeSessionLifecycle({
   setActiveJoinRequests,
   onForceReauth,
   getSocket,
+  getLeftRooms,
+  getChatValues,
+  getRoomNotifications,
+  getHiddenDmUnreadBaseline,
+  setLeftRooms,
+  setHiddenDmUnreadBaseline,
   getCurrentRoom,
   getRoomList,
   setSocket,
@@ -114,22 +124,27 @@ export function useHomeSessionLifecycle({
       initializeHomeSocket({
         authToken,
         username,
-        leftRooms,
         setAuthToken,
         setChatValues,
         setUserList,
         setLoggedInUsers,
         setActiveUsers,
         setRoomList,
+        setLeftRooms,
         setCurrentRoom,
         setRoomNotifications,
         setUserLastSeen,
         setRoomMembers,
         setActiveJoinRequests,
         getSocket,
+        getLeftRooms,
+        getChatValues,
+        getRoomNotifications,
+        getHiddenDmUnreadBaseline,
         getCurrentRoom,
         getRoomList,
         setSocket,
+        setHiddenDmUnreadBaseline,
       });
     } else {
       console.log('[Home] No authToken, skipping socket initialization');

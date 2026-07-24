@@ -6,10 +6,18 @@ import {
   selectVersionAction,
 } from '../../utils/homeActions';
 import { type HomePageState } from '../../contexts/home/homePageTypes';
-import { getDmRoomId } from '../../utils/dmRooms';
-import { loadKeys, redirectToLogout } from '../../utils/gpg';
+import { getDmRoomId, isDmRoom } from '../../utils/dmRooms';
+import {
+  decryptSharedAccountPackageForRecipient,
+  encryptSharedAccountPackageForRecipient,
+  importSharedAccountPackage,
+  loadKeys,
+  loadUserPublicKeyEntries,
+  redirectToLogout,
+} from '../../utils/gpg';
 import {
   blockUser,
+  getBlockedUserExportsForCurrentUser,
   getBlockedUsers,
   unblockUser,
 } from '../../utils/userSettings';
@@ -41,16 +49,27 @@ export function useHomePageActions(state: HomePageState) {
     });
   };
 
-  const onDraftKeyDownHandler = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
+  const onDraftKeyDownHandler = (
+    e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
+  ) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
       void doSend();
     }
   };
 
   const makeNewRoom = () => {
     const socket = state.getSocket();
-    if (!socket) return;
-    socket.emit(SOCKET_EVENTS.CLIENT_NEW_ROOM, state.newRoomName);
+    const roomName = state.newRoomName.trim();
+    if (!socket || roomName === '') return;
+
+    state.setLeftRoomsState((prev) => {
+      const next = new Set(prev);
+      next.delete(roomName);
+      return next;
+    });
+    state.setCurrentRoom(roomName);
+    socket.emit(SOCKET_EVENTS.CLIENT_NEW_ROOM, roomName);
   };
 
   const onNewRoomKeyDownHandler = (
@@ -63,6 +82,14 @@ export function useHomePageActions(state: HomePageState) {
 
   const hideRoom = (room: string) => {
     if (!room) return;
+
+    if (isDmRoom(room)) {
+      const unreadAtHide = Math.max(0, state.roomNotifications[room] || 0);
+      state.setHiddenDmUnreadBaselineState((prev) => ({
+        ...prev,
+        [room]: unreadAtHide,
+      }));
+    }
 
     state.setLeftRoomsState((prev) => {
       const next = new Set(prev);
@@ -88,11 +115,23 @@ export function useHomePageActions(state: HomePageState) {
       next.delete(room);
       return next;
     });
+
+    if (isDmRoom(room)) {
+      state.setHiddenDmUnreadBaselineState((prev) => {
+        if (!(room in prev)) {
+          return prev;
+        }
+        const next = { ...prev };
+        delete next[room];
+        return next;
+      });
+    }
+
     state.setCurrentRoom(room);
   };
 
   const handleMessageUser = (targetUser: string) => {
-    if (!state.username || targetUser === state.username) return;
+    if (!state.username) return;
     const dmRoomId = getDmRoomId(state.username, targetUser);
     if (!state.roomList.includes(dmRoomId)) {
       const activeSocket = (window as any).__socket || state.getSocket();
@@ -105,19 +144,100 @@ export function useHomePageActions(state: HomePageState) {
       next.delete(dmRoomId);
       return next;
     });
+    state.setHiddenDmUnreadBaselineState((prev) => {
+      if (!(dmRoomId in prev)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[dmRoomId];
+      return next;
+    });
     state.setCurrentRoom(dmRoomId);
   };
 
-  const handleSendPublicKeyToUser = (targetUser: string) => {
+  const handleImportTransferredAccount = async (
+    fromUser: string,
+    encryptedPackage: string,
+  ): Promise<{ success: boolean; message: string }> => {
     const keys = loadKeys();
-    const activeSocket = (window as any).__socket || state.getSocket();
-    if (!keys?.publicKey || !activeSocket || !state.username) return;
-    activeSocket.emit(SOCKET_EVENTS.CLIENT_SEND_PUBLIC_KEY, {
-      targetUser,
-      fromUser: state.username,
-      publicKey: keys.publicKey,
+    if (!keys?.privateKey) {
+      return {
+        success: false,
+        message: 'Unable to import account: missing local private key.',
+      };
+    }
+
+    try {
+      const accountPackage = await decryptSharedAccountPackageForRecipient(
+        encryptedPackage,
+        keys.privateKey,
+      );
+      importSharedAccountPackage(fromUser, accountPackage);
+      console.log(
+        '[KeyTransfer] ✓ Imported shared account package from',
+        fromUser,
+      );
+      return {
+        success: true,
+        message: `Imported account from ${fromUser}. It is now available in your local login list.`,
+      };
+    } catch (error) {
+      console.error(
+        '[KeyTransfer] ✗ Failed to import shared account package:',
+        error,
+      );
+      return {
+        success: false,
+        message: 'Failed to import account bundle from this message.',
+      };
+    }
+  };
+
+  const handleSendPublicKeyToUser = (targetUser: string) => {
+    void (async () => {
+      const keys = loadKeys();
+      const activeSocket = (window as any).__socket || state.getSocket();
+      if (!keys?.publicKey || !activeSocket || !state.username) return;
+
+      const userPubKeys = loadUserPublicKeyEntries() || {};
+      const targetPublicKey = userPubKeys[targetUser]?.publicKey;
+      if (!targetPublicKey) {
+        alert(
+          `Missing public key for ${targetUser}. Ask them to reconnect first.`,
+        );
+        return;
+      }
+
+      const blockedUsers = getBlockedUserExportsForCurrentUser();
+      const accountPackage = {
+        username: state.username,
+        privateKey: keys.privateKey,
+        publicKey: keys.publicKey,
+        serverPublicKey: keys.serverPublicKey,
+        userPubKeys,
+        blockedUsers,
+      };
+
+      const encryptedAccountPackage =
+        await encryptSharedAccountPackageForRecipient(
+          accountPackage,
+          targetPublicKey,
+        );
+
+      activeSocket.emit(SOCKET_EVENTS.CLIENT_SEND_PUBLIC_KEY, {
+        targetUser,
+        fromUser: state.username,
+        publicKey: keys.publicKey,
+        encryptedAccountPackage,
+      });
+      console.log('[UserList] Sent encrypted account package to', targetUser);
+    })().catch((error) => {
+      console.error(
+        '[UserList] Failed to send encrypted account package:',
+        error,
+      );
+      alert('Failed to encrypt account bundle for recipient.');
     });
-    console.log('[UserList] Sent public key to', targetUser);
   };
 
   const handleBlockUser = (targetUser: string) => {
@@ -340,6 +460,7 @@ export function useHomePageActions(state: HomePageState) {
     onNewRoomKeyDownHandler,
     handleMessageUser,
     handleSendPublicKeyToUser,
+    handleImportTransferredAccount,
     handleBlockUser,
     handleUnblockUser,
     handleRequestAccess,

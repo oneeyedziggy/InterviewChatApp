@@ -9,6 +9,7 @@ import {
   loadKeys,
 } from '../utils/gpg';
 import { getBlockedUsers } from '../utils/userSettings';
+import { filterRoomsForUser, isDmRoom, isUserInDmRoom } from '../utils/dmRooms';
 import type { Dispatch, SetStateAction } from 'react';
 
 type JoinRequest = {
@@ -94,6 +95,42 @@ function isBlockedAuthor(message: Message, blockedUsers: Set<string>): boolean {
   return message.username !== 'system' && blockedUsers.has(message.username);
 }
 
+function isEncryptedMessageWithoutReadableContent(message: Message): boolean {
+  const hasEncryptedPayload =
+    !!message.encryptedMessage ||
+    !!message.encryptedFor ||
+    (message.versions?.length || 0) > 0;
+  if (!hasEncryptedPayload) {
+    return false;
+  }
+
+  const content = (message.content || '').trim();
+  if (!content) {
+    return true;
+  }
+
+  return content.includes('🔒') || content.includes('[Encrypted message]');
+}
+
+function scrubMessagesForLocalState(
+  messages: Message[],
+  blockedUsers: Set<string>,
+): Message[] {
+  return messages.filter((message) => {
+    if (isBlockedAuthor(message, blockedUsers)) {
+      return false;
+    }
+
+    // If encrypted content is still unreadable after client processing,
+    // drop it entirely so blocked/inaccessible messages do not appear as placeholders.
+    if (isEncryptedMessageWithoutReadableContent(message)) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
 function messageIdentity(message: Pick<Message, 'id' | 'timestamp'>): string {
   if (message.id && message.id.trim() !== '') {
     return `id:${message.id}`;
@@ -137,44 +174,55 @@ function resolveEncryptedPayloadForUser(
 type InitSocketArgs = {
   authToken: string;
   username: string;
-  leftRooms: Set<string>;
   setAuthToken: Dispatch<SetStateAction<string>>;
   setChatValues: Dispatch<SetStateAction<Messages>>;
   setUserList: Dispatch<SetStateAction<string[]>>;
   setLoggedInUsers: Dispatch<SetStateAction<string[]>>;
   setActiveUsers: Dispatch<SetStateAction<string[]>>;
   setRoomList: Dispatch<SetStateAction<string[]>>;
+  setLeftRooms: Dispatch<SetStateAction<Set<string>>>;
   setCurrentRoom: Dispatch<SetStateAction<string>>;
   setRoomNotifications: Dispatch<SetStateAction<Record<string, number>>>;
   setUserLastSeen: Dispatch<SetStateAction<Record<string, number>>>;
   setRoomMembers: Dispatch<SetStateAction<Record<string, Set<string>>>>;
   setActiveJoinRequests: Dispatch<SetStateAction<JoinRequest[]>>;
   getSocket: () => Socket | undefined;
+  getLeftRooms: () => Set<string>;
+  getChatValues: () => Messages;
+  getRoomNotifications: () => Record<string, number>;
+  getHiddenDmUnreadBaseline: () => Record<string, number>;
   getCurrentRoom: () => string;
   getRoomList: () => string[];
+  setHiddenDmUnreadBaseline: Dispatch<SetStateAction<Record<string, number>>>;
   setSocket: (next: Socket | undefined) => void;
 };
 
 export async function initializeHomeSocket({
   authToken,
   username,
-  leftRooms,
   setAuthToken,
   setChatValues,
   setUserList,
   setLoggedInUsers,
   setActiveUsers,
   setRoomList,
+  setLeftRooms,
   setCurrentRoom,
   setRoomNotifications,
   setUserLastSeen,
   setRoomMembers,
   setActiveJoinRequests,
   getSocket,
+  getLeftRooms,
+  getChatValues,
+  getRoomNotifications,
+  getHiddenDmUnreadBaseline,
   getCurrentRoom,
   getRoomList,
+  setHiddenDmUnreadBaseline,
   setSocket,
 }: InitSocketArgs) {
+  const forcedRoomPayloads = new Set<string>();
   let socket = getSocket();
   console.log('[Socket] ===== INITIALIZING SOCKET =====');
   console.log('[Socket] Token:', authToken);
@@ -303,10 +351,10 @@ export async function initializeHomeSocket({
     if (data?.messages) {
       const keys = loadKeys();
       const decryptedMessages: Messages = {};
+      const blockedUsers = new Set(getBlockedUsers());
 
       for (const [room, messages] of Object.entries(data.messages)) {
         const roomMessages = messages as Message[];
-        const blockedUsers = new Set(getBlockedUsers());
         const visibleRoomMessages = roomMessages.filter(
           (msg) => !isBlockedAuthor(msg, blockedUsers),
         );
@@ -334,6 +382,11 @@ export async function initializeHomeSocket({
             return ensureMessageId(normalizeMessageState(msg));
           }),
         );
+
+        decryptedMessages[room] = scrubMessagesForLocalState(
+          decryptedMessages[room],
+          blockedUsers,
+        );
       }
 
       console.log(
@@ -346,8 +399,9 @@ export async function initializeHomeSocket({
     }
 
     if (data?.rooms) {
-      console.log('[Socket] ✓ Setting room list:', data.rooms);
-      setRoomList(data.rooms);
+      const scopedRooms = filterRoomsForUser(data.rooms, username);
+      console.log('[Socket] ✓ Setting room list:', scopedRooms);
+      setRoomList(scopedRooms);
     } else {
       console.warn('[Socket] ✗ No rooms in INITIAL_DATA');
     }
@@ -592,7 +646,10 @@ export async function initializeHomeSocket({
           // Sort by timestamp
           mergedMessages.sort((a, b) => a.timestamp - b.timestamp);
 
-          updated[originalRoom] = mergedMessages;
+          updated[originalRoom] = scrubMessagesForLocalState(
+            mergedMessages,
+            new Set(getBlockedUsers()),
+          );
           console.log(
             '[AccessGrant] Updated chatValues for room:',
             originalRoom,
@@ -664,7 +721,10 @@ export async function initializeHomeSocket({
 
         // Ensure the room is in the room list
         setRoomList((prev) => {
-          if (!prev.includes(originalRoom)) {
+          if (
+            !prev.includes(originalRoom) &&
+            (!isDmRoom(originalRoom) || isUserInDmRoom(originalRoom, username))
+          ) {
             return [...prev, originalRoom];
           }
           return prev;
@@ -751,15 +811,18 @@ export async function initializeHomeSocket({
               setChatValues((prev) => {
                 const updated = { ...prev };
                 if (updated[originalRoom]) {
-                  updated[originalRoom] = updated[originalRoom].map((msg) => {
-                    if (msg.timestamp === messageTimestamp) {
-                      return normalizeMessageState({
-                        ...msg,
-                        content: decrypted,
-                      });
-                    }
-                    return normalizeMessageState(msg);
-                  });
+                  updated[originalRoom] = scrubMessagesForLocalState(
+                    updated[originalRoom].map((msg) => {
+                      if (msg.timestamp === messageTimestamp) {
+                        return normalizeMessageState({
+                          ...msg,
+                          content: decrypted,
+                        });
+                      }
+                      return normalizeMessageState(msg);
+                    }),
+                    new Set(getBlockedUsers()),
+                  );
                 }
                 return updated;
               });
@@ -780,8 +843,11 @@ export async function initializeHomeSocket({
       const decryptedMessages: Messages = {};
 
       for (const [room, messages] of Object.entries(data.messages)) {
-        // Skip messages for left rooms
-        if (leftRooms.has(room)) continue;
+        const hiddenRooms = getLeftRooms();
+        const isHiddenRoom =
+          hiddenRooms.has(room) && !forcedRoomPayloads.has(room);
+        // Preserve hide behavior for normal channels; DMs can force resurfacing.
+        if (isHiddenRoom && !isDmRoom(room)) continue;
 
         // Type assertion: messages from SERVER_MESSAGE should be Message[]
         const roomMessages = messages as Message[];
@@ -789,6 +855,13 @@ export async function initializeHomeSocket({
         const visibleRoomMessages = roomMessages.filter(
           (msg) => !isBlockedAuthor(msg, blockedUsers),
         );
+
+        // Ignore room updates with no visible messages (important for blocked-user DMs).
+        if (visibleRoomMessages.length === 0) {
+          forcedRoomPayloads.delete(room);
+          continue;
+        }
+
         console.log(
           `[Socket] SERVER_MESSAGE: Received ${visibleRoomMessages.length} visible messages for room ${room}`,
         );
@@ -852,18 +925,55 @@ export async function initializeHomeSocket({
             );
           }),
         );
+
+        forcedRoomPayloads.delete(room);
+      }
+
+      // Compute unread deltas from current chat snapshot before scheduling state updates.
+      // This avoids races where unread logic sees an empty increment map.
+      const unreadIncrements: Record<string, number> = {};
+      const previousChatValues = getChatValues();
+      const blockedUsersForUnread = new Set(getBlockedUsers());
+      const hiddenRoomsForUnread = getLeftRooms();
+
+      for (const [room, messages] of Object.entries(decryptedMessages)) {
+        const scrubbed = scrubMessagesForLocalState(
+          messages,
+          blockedUsersForUnread,
+        );
+        const existingRoomMessages = previousChatValues[room];
+
+        if (!existingRoomMessages) {
+          const shouldCountAsNewUnread =
+            hiddenRoomsForUnread.has(room) &&
+            isDmRoom(room) &&
+            isUserInDmRoom(room, username);
+          unreadIncrements[room] = shouldCountAsNewUnread ? scrubbed.length : 0;
+          continue;
+        }
+
+        const existingIdentities = new Set(
+          existingRoomMessages.map((message) => messageIdentity(message)),
+        );
+        let newMessageCount = 0;
+        for (const message of scrubbed) {
+          if (!existingIdentities.has(messageIdentity(message))) {
+            newMessageCount += 1;
+          }
+        }
+        unreadIncrements[room] = newMessageCount;
       }
 
       // Merge with existing chat values instead of replacing
       // Important: preserve replyTo fields when merging
-      const unreadIncrements: Record<string, number> = {};
       setChatValues((prev) => {
         const merged = { ...prev };
+        const blockedUsers = new Set(getBlockedUsers());
         for (const [room, messages] of Object.entries(decryptedMessages)) {
           // Merge messages by timestamp to preserve replyTo and other fields
           if (!merged[room]) {
-            merged[room] = messages;
-            unreadIncrements[room] = messages.length;
+            const scrubbed = scrubMessagesForLocalState(messages, blockedUsers);
+            merged[room] = scrubbed;
           } else {
             // Create a map of existing messages by timestamp
             const existingMap = new Map(
@@ -885,11 +995,10 @@ export async function initializeHomeSocket({
                 newMessageCount += 1;
               }
             });
-            if (newMessageCount > 0) {
-              unreadIncrements[room] =
-                (unreadIncrements[room] || 0) + newMessageCount;
-            }
-            merged[room] = Array.from(existingMap.values());
+            merged[room] = scrubMessagesForLocalState(
+              Array.from(existingMap.values()),
+              blockedUsers,
+            );
           }
         }
         console.log(
@@ -906,13 +1015,20 @@ export async function initializeHomeSocket({
       });
 
       const currentRoom = getCurrentRoom();
-      const roomsInList = new Set(getRoomList());
+      const roomNotificationsSnapshot = getRoomNotifications();
+      const nextRoomNotifications = { ...roomNotificationsSnapshot };
+      for (const [room, increment] of Object.entries(unreadIncrements)) {
+        if (room === currentRoom) {
+          nextRoomNotifications[room] = 0;
+          continue;
+        }
+        nextRoomNotifications[room] =
+          (nextRoomNotifications[room] || 0) + increment;
+      }
+
       setRoomNotifications((prev) => {
         const updated = { ...prev };
         for (const [room, increment] of Object.entries(unreadIncrements)) {
-          if (!roomsInList.has(room)) {
-            continue;
-          }
           if (room === currentRoom) {
             updated[room] = 0;
             continue;
@@ -922,11 +1038,53 @@ export async function initializeHomeSocket({
         return updated;
       });
 
+      // Only force hidden DMs back into view when there are truly new unread messages.
+      const hiddenRooms = getLeftRooms();
+      const hiddenDmUnreadBaseline = getHiddenDmUnreadBaseline();
+      const dmRoomsToUnhide = Object.entries(unreadIncrements)
+        .filter(
+          ([room, increment]) =>
+            increment > 0 &&
+            isDmRoom(room) &&
+            isUserInDmRoom(room, username) &&
+            hiddenRooms.has(room) &&
+            (nextRoomNotifications[room] || 0) >
+              (hiddenDmUnreadBaseline[room] ?? 0),
+        )
+        .map(([room]) => room);
+
+      if (dmRoomsToUnhide.length > 0) {
+        setLeftRooms((prev) => {
+          const next = new Set(prev);
+          let changed = false;
+          for (const room of dmRoomsToUnhide) {
+            if (next.delete(room)) {
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+        setHiddenDmUnreadBaseline((prev) => {
+          let changed = false;
+          const next = { ...prev };
+          for (const room of dmRoomsToUnhide) {
+            if (room in next) {
+              delete next[room];
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }
+
       // Ensure all rooms from messages are in the room list
       setRoomList((prev) => {
         const updated = [...prev];
         let changed = false;
         for (const room of Object.keys(decryptedMessages)) {
+          if (isDmRoom(room) && !isUserInDmRoom(room, username)) {
+            continue;
+          }
           if (!updated.includes(room)) {
             updated.push(room);
             changed = true;
@@ -1003,14 +1161,18 @@ export async function initializeHomeSocket({
       // Merge with existing chat values instead of replacing
       setChatValues((prev) => {
         const merged = { ...prev };
+        const blockedUsers = new Set(getBlockedUsers());
         for (const [room, messages] of Object.entries(data.messages)) {
-          merged[room] = messages as Message[];
+          merged[room] = scrubMessagesForLocalState(
+            messages as Message[],
+            blockedUsers,
+          );
         }
         return merged;
       });
     }
     if (data?.rooms) {
-      setRoomList(data.rooms);
+      setRoomList(filterRoomsForUser(data.rooms, username));
     }
   });
 
@@ -1224,9 +1386,10 @@ export async function initializeHomeSocket({
 
       setChatValues((prev) => {
         const merged = { ...prev };
+        const blockedUsers = new Set(getBlockedUsers());
         for (const [room, messages] of Object.entries(decryptedMessages)) {
           if (!merged[room]) {
-            merged[room] = messages;
+            merged[room] = scrubMessagesForLocalState(messages, blockedUsers);
             continue;
           }
 
@@ -1239,7 +1402,10 @@ export async function initializeHomeSocket({
               ...msg,
             });
           });
-          merged[room] = Array.from(existingMap.values());
+          merged[room] = scrubMessagesForLocalState(
+            Array.from(existingMap.values()),
+            blockedUsers,
+          );
         }
         return merged;
       });
@@ -1262,10 +1428,56 @@ export async function initializeHomeSocket({
 
   socket.on(SOCKET_EVENTS.SERVER_PUBLIC_KEY_RECEIVED, (data) => {
     if (data?.fromUser && data?.publicKey) {
+      if (typeof data.transferDmRoom === 'string' && data.transferDmRoom) {
+        forcedRoomPayloads.add(data.transferDmRoom);
+
+        setLeftRooms((prev) => {
+          if (!prev.has(data.transferDmRoom)) {
+            return prev;
+          }
+          const next = new Set(prev);
+          next.delete(data.transferDmRoom);
+          return next;
+        });
+        setHiddenDmUnreadBaseline((prev) => {
+          if (!(data.transferDmRoom in prev)) {
+            return prev;
+          }
+          const next = { ...prev };
+          delete next[data.transferDmRoom];
+          return next;
+        });
+
+        const hadTransferRoom = getRoomList().includes(data.transferDmRoom);
+        setRoomList((prev) =>
+          prev.includes(data.transferDmRoom)
+            ? prev
+            : [...prev, data.transferDmRoom],
+        );
+
+        if (!hadTransferRoom && getCurrentRoom() !== data.transferDmRoom) {
+          setRoomNotifications((prev) => ({
+            ...prev,
+            [data.transferDmRoom]: Math.max(prev[data.transferDmRoom] || 0, 1),
+          }));
+        }
+
+        const keys = loadKeys();
+        if (keys?.sessionId) {
+          activeSocket.emit(SOCKET_EVENTS.CLIENT_REQUEST_ROOM_DATA, {
+            username,
+            sessionId: keys.sessionId,
+            room: data.transferDmRoom,
+          });
+        }
+      }
+
       const userPubKeys = loadUserPublicKeyEntries() || {};
       userPubKeys[data.fromUser] = {
         publicKey: data.publicKey,
         blocked: !!userPubKeys[data.fromUser]?.blocked,
+        blockedAt: userPubKeys[data.fromUser]?.blockedAt,
+        blockedBy: userPubKeys[data.fromUser]?.blockedBy,
       };
       storeUserPublicKeys(userPubKeys);
       console.log('[Socket] ✓ Stored public key from', data.fromUser);

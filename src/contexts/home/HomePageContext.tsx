@@ -73,6 +73,7 @@ export function HomePageProvider({ children }: { children: ReactNode }) {
     currentRoom: state.currentRoom,
     handleMessageUser: actions.handleMessageUser,
     handleSendPublicKeyToUser: actions.handleSendPublicKeyToUser,
+    handleImportTransferredAccount: actions.handleImportTransferredAccount,
     handleBlockUser: actions.handleBlockUser,
     handleUnblockUser: actions.handleUnblockUser,
     handleVoteJoin: actions.handleVoteJoin,

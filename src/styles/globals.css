@@ -313,6 +313,7 @@ a {
 .app-message-composer {
   margin-top: 8px;
   flex-shrink: 0;
+  align-items: flex-end;
 }
 
 .app-message-thread-area {
@@ -414,6 +415,15 @@ a {
   cursor: not-allowed;
 }
 
+.app-composer-textarea {
+  resize: none;
+  line-height: 1.35;
+  min-height: 40px;
+  max-height: calc(1.35em * 10 + 16px);
+  overflow-y: hidden;
+  white-space: pre-wrap;
+}
+
 @media (min-width: 768px) {
   .app-layout-row {
     flex-direction: row;
@@ -479,6 +489,16 @@ a {
   backdrop-filter: blur(6px);
 }
 
+.app-theme-toggle-group--stretch {
+  display: flex;
+  width: 100%;
+}
+
+.app-theme-toggle-group--stretch .app-theme-toggle-option {
+  flex: 1 1 0;
+  text-align: center;
+}
+
 .app-theme-toggle-option {
   border: none;
   border-radius: 999px;
@@ -513,8 +533,8 @@ a {
 
 @media (max-width: 640px) {
   .app-message-thread-area {
-    height: clamp(280px, 52vh, 460px);
-    min-height: clamp(280px, 52vh, 460px);
-    flex: 0 0 auto;
+    height: auto;
+    min-height: 0;
+    flex: 1 1 auto;
   }
 }

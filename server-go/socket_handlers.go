@@ -102,6 +102,9 @@ func buildScopedMessagesForUser(all Messages, username, defaultRoom, currentRoom
 
 	result := make(Messages)
 	for room := range targetRooms {
+		if !isRoomVisibleToUser(room, username) {
+			continue
+		}
 		messages, exists := all[room]
 		if !exists {
 			continue
@@ -113,6 +116,24 @@ func buildScopedMessagesForUser(all Messages, username, defaultRoom, currentRoom
 	}
 
 	return result
+}
+
+func isRoomVisibleToUser(room, username string) bool {
+	userA, userB, ok := parseDMParticipants(room)
+	if !ok {
+		return true
+	}
+	return username == userA || username == userB
+}
+
+func filterRoomsForUser(rooms []string, username string) []string {
+	filtered := make([]string, 0, len(rooms))
+	for _, room := range rooms {
+		if isRoomVisibleToUser(room, username) {
+			filtered = append(filtered, room)
+		}
+	}
+	return filtered
 }
 
 func parseDMParticipants(room string) (string, string, bool) {
@@ -153,6 +174,15 @@ func buildDMIntroMessage(room, requestingUser string) (Message, bool) {
 		Content:   fmt.Sprintf("You are at the beginning of an awesome conversation with %s", otherUser),
 		Edited:    false,
 	}, true
+}
+
+func buildCanonicalDMRoom(userA, userB string) string {
+	first := strings.TrimSpace(userA)
+	second := strings.TrimSpace(userB)
+	if strings.ToLower(first) > strings.ToLower(second) {
+		first, second = second, first
+	}
+	return formatRoomName(fmt.Sprintf("@dm:%s:%s", first, second))
 }
 
 func (cs *ChatServer) isSessionAuthorizedForUser(sessionID, username string) bool {
@@ -254,6 +284,11 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			log.Printf("[%s] ✓ Parsed encrypted message - User: %s, Room: %s, packetSize=%d", socketIDStr, username, room, len(encryptedMessage))
 		} else {
 			log.Printf("[%s] ✓ Parsed message - User: %s, Room: %s, Content: %s", socketIDStr, username, room, content)
+		}
+
+		if !isRoomVisibleToUser(room, username) {
+			log.Printf("[%s] ✗ Rejected DM send by non-participant user=%s room=%s", socketIDStr, username, room)
+			return
 		}
 
 		// Set user when they send a message (similar to original server behavior)
@@ -388,6 +423,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		// If this is the user's first message (just registered), send initial data
 		// This ensures they get rooms, users, and messages even if they missed the initial emit
 		if userJustRegistered {
+			roomsCopy = filterRoomsForUser(roomsCopy, username)
 			// Get logged-in and active user lists
 			loggedInUsers, activeUsers := cs.getUserLists()
 
@@ -413,9 +449,14 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 		log.Printf("[%s] Broadcasting SERVER_MESSAGE - rooms: %d, users: %d", socketIDStr, len(messagesCopy), len(usersList))
 
-		// Broadcast to all clients.
-		defaultNsp.Emit(EventServerMessage, response)
-		log.Printf("[%s] ✓ Broadcasted to all other clients", socketIDStr)
+		if userA, userB, ok := parseDMParticipants(room); ok {
+			cs.sendToUsers(defaultNsp, []string{userA, userB}, EventServerMessage, response)
+			log.Printf("[%s] ✓ Sent DM message only to participants: %s, %s", socketIDStr, userA, userB)
+		} else {
+			// Broadcast to all clients for non-DM rooms.
+			defaultNsp.Emit(EventServerMessage, response)
+			log.Printf("[%s] ✓ Broadcasted to all other clients", socketIDStr)
+		}
 		log.Printf("[%s] ✓ CLIENT_MESSAGE handler complete", socketIDStr)
 	})
 
@@ -940,6 +981,11 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		log.Printf("===== CLIENT CONNECTING ======")
 		log.Printf("Socket ID: %s", socketIDStr)
 
+		// Targeted sends use namespace room addressing by socket ID.
+		// Explicitly join this room so sendToUsers can reliably route DM events.
+		socket.Join(socketio.Room(socketIDStr))
+		log.Printf("[%s] ✓ Joined personal delivery room", socketIDStr)
+
 		// Register disconnect handler for this socket
 		socket.OnDisconnect(func(reason socketio.Reason) {
 			log.Printf("[%s] ===== CLIENT DISCONNECTED ======", socketIDStr)
@@ -1041,6 +1087,11 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			}
 
 			log.Printf("[%s] ✓ Parsed message - User: %s, Room: %s, Content: %s, HasEncryptedPacket: %v, ReplyTo: %v", socketIDStr, username, room, content, encryptedMessage != "", replyTo)
+
+			if !isRoomVisibleToUser(room, username) {
+				log.Printf("[%s] ✗ Rejected DM send by non-participant user=%s room=%s", socketIDStr, username, room)
+				return
+			}
 
 			// Set user when they send a message
 			userJustRegistered := false
@@ -1161,6 +1212,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			// If this is the user's first message (just registered), send initial data
 			if userJustRegistered {
+				roomsCopy = filterRoomsForUser(roomsCopy, username)
 				// Get logged-in and active user lists
 				loggedInUsers, activeUsers := cs.getUserLists()
 
@@ -1184,13 +1236,18 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			log.Printf("[%s] Broadcasting SERVER_MESSAGE - rooms: %d, users: %d", socketIDStr, len(messagesCopy), len(usersList))
 
-			// Broadcast to all clients (excluding sender)
-			defaultNsp.Emit(EventServerMessage, response)
-			log.Printf("[%s] ✓ Broadcasted to all other clients", socketIDStr)
+			if userA, userB, ok := parseDMParticipants(room); ok {
+				cs.sendToUsers(defaultNsp, []string{userA, userB}, EventServerMessage, response)
+				log.Printf("[%s] ✓ Sent DM message only to participants: %s, %s", socketIDStr, userA, userB)
+			} else {
+				// Broadcast to all clients (excluding sender)
+				defaultNsp.Emit(EventServerMessage, response)
+				log.Printf("[%s] ✓ Broadcasted to all other clients", socketIDStr)
 
-			// Also emit directly to sender so they see their own messages
-			socket.Emit(EventServerMessage, response)
-			log.Printf("[%s] ✓ Emitted to sender, CLIENT_MESSAGE handler complete", socketIDStr)
+				// Also emit directly to sender so they see their own messages
+				socket.Emit(EventServerMessage, response)
+			}
+			log.Printf("[%s] ✓ Emitted message update, CLIENT_MESSAGE handler complete", socketIDStr)
 		})
 
 		// Register CLIENT_NEW_ROOM handler
@@ -1207,6 +1264,20 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			formattedRoom := formatRoomName(roomNameStr)
 			log.Printf("[%s] Formatted room name: %s", socketIDStr, formattedRoom)
 			cs.mu.Lock()
+			requestingUser := ""
+			for user, sid := range cs.users {
+				if sid == socketIDStr {
+					requestingUser = user
+					break
+				}
+			}
+
+			if !isRoomVisibleToUser(formattedRoom, requestingUser) {
+				cs.mu.Unlock()
+				log.Printf("[%s] ✗ Rejected DM room creation by non-participant user=%s room=%s", socketIDStr, requestingUser, formattedRoom)
+				return
+			}
+
 			roomExists := false
 			for _, r := range cs.rooms {
 				if r == formattedRoom {
@@ -1215,14 +1286,6 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				}
 			}
 			if !roomExists {
-				requestingUser := ""
-				for user, sid := range cs.users {
-					if sid == socketIDStr {
-						requestingUser = user
-						break
-					}
-				}
-
 				cs.rooms = append(cs.rooms, formattedRoom)
 				cs.messages[formattedRoom] = []Message{}
 				if introMessage, ok := buildDMIntroMessage(formattedRoom, requestingUser); ok {
@@ -1234,20 +1297,26 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✓ Created new room: %s", socketIDStr, formattedRoom)
 			}
 			sortedRooms := cs.alphabeticalSort(cs.rooms)
+			roomMessages := make([]Message, len(cs.messages[formattedRoom]))
+			copy(roomMessages, cs.messages[formattedRoom])
 			cs.mu.Unlock()
 
-			// Prepare response (need to copy messages while holding lock)
-			cs.mu.RLock()
-			messagesCopyForResponse := make(Messages)
-			for k, v := range cs.messages {
-				messagesCopyForResponse[k] = make([]Message, len(v))
-				copy(messagesCopyForResponse[k], v)
+			if userA, userB, ok := parseDMParticipants(formattedRoom); ok {
+				for _, participant := range []string{userA, userB} {
+					payload := map[string]interface{}{
+						"messages": map[string][]Message{
+							formattedRoom: filterMessagesByVisibility(roomMessages, participant),
+						},
+						"rooms": filterRoomsForUser(sortedRooms, participant),
+					}
+					cs.sendToUsers(defaultNsp, []string{participant}, EventServerNewRoom, payload)
+				}
+				log.Printf("[%s] ✓ Sent DM room update only to participants", socketIDStr)
+				return
 			}
-			cs.mu.RUnlock()
 
 			response := map[string]interface{}{
-				"messages": messagesCopyForResponse,
-				"rooms":    sortedRooms,
+				"rooms": sortedRooms,
 			}
 
 			log.Printf("[%s] Broadcasting SERVER_NEW_ROOM with %d rooms", socketIDStr, len(sortedRooms))
@@ -1266,13 +1335,81 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			targetUser, _ := dataMap["targetUser"].(string)
 			fromUser, _ := dataMap["fromUser"].(string)
 			publicKey, _ := dataMap["publicKey"].(string)
+			encryptedAccountPackage, _ := dataMap["encryptedAccountPackage"].(string)
 			if fromUser == "" || publicKey == "" {
 				log.Printf("[%s] ✗ Missing fields in send public key payload", socketIDStr)
 				return
 			}
 
+			var dmRoomForTransfer string
+			var dmMessagesForTarget []Message
+			var dmMessagesForSender []Message
+			var dmIntroTimestamp int64
+			dmRoomCreatedForTransfer := false
+
 			cs.mu.Lock()
 			cs.userPubKeys[fromUser] = publicKey
+
+			if targetUser != "" {
+				dmRoomForTransfer = buildCanonicalDMRoom(fromUser, targetUser)
+				if _, exists := cs.messages[dmRoomForTransfer]; !exists {
+					dmRoomCreatedForTransfer = true
+					cs.messages[dmRoomForTransfer] = []Message{}
+					if introMessage, ok := buildDMIntroMessage(dmRoomForTransfer, targetUser); ok {
+						dmIntroTimestamp = introMessage.Timestamp
+						cs.messages[dmRoomForTransfer] = append(
+							[]Message{introMessage},
+							cs.messages[dmRoomForTransfer]...,
+						)
+					}
+				}
+
+				if !contains(cs.rooms, dmRoomForTransfer) {
+					cs.rooms = append(cs.rooms, dmRoomForTransfer)
+				}
+
+				transferTimestamp := time.Now().Unix()
+				senderTransferTimestamp := transferTimestamp
+				if dmRoomCreatedForTransfer && dmIntroTimestamp > 0 {
+					if transferTimestamp <= dmIntroTimestamp {
+						transferTimestamp = dmIntroTimestamp + 1
+					}
+					senderTransferTimestamp = transferTimestamp + 1
+				}
+
+				transferNotice := Message{
+					ID:        uuid.NewString(),
+					Timestamp: transferTimestamp,
+					Username:  "system",
+					Content:   fmt.Sprintf("%s sent you a private key bundle. You can switch to this imported account from login.", fromUser),
+					KeyTransferEncryptedPackage: encryptedAccountPackage,
+					KeyTransferFromUser: fromUser,
+					Edited:    false,
+					VisibleTo: []string{targetUser},
+				}
+				senderTransferNotice := Message{
+					ID:        uuid.NewString(),
+					Timestamp: senderTransferTimestamp,
+					Username:  "system",
+					Content:   fmt.Sprintf("you sent key to user %s", targetUser),
+					Edited:    false,
+					VisibleTo: []string{fromUser},
+				}
+				cs.messages[dmRoomForTransfer] = append(
+					[]Message{senderTransferNotice, transferNotice},
+					cs.messages[dmRoomForTransfer]...,
+				)
+
+				dmMessagesForTarget = filterMessagesByVisibility(
+					cs.messages[dmRoomForTransfer],
+					targetUser,
+				)
+				dmMessagesForSender = filterMessagesByVisibility(
+					cs.messages[dmRoomForTransfer],
+					fromUser,
+				)
+			}
+
 			messagesCopyForSave := make(Messages)
 			for k, v := range cs.messages {
 				messagesCopyForSave[k] = make([]Message, len(v))
@@ -1304,6 +1441,9 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				"fromUser":  fromUser,
 				"publicKey": publicKey,
 			}
+			if targetUser != "" && encryptedAccountPackage != "" {
+				payload["transferDmRoom"] = dmRoomForTransfer
+			}
 
 			if targetUser == "" {
 				if len(activeUsers) > 0 {
@@ -1314,7 +1454,21 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			}
 
 			cs.sendToUsers(defaultNsp, []string{targetUser}, EventServerPublicKeyReceived, payload)
-			log.Printf("[%s] ✓ Relayed public key from %s to %s", socketIDStr, fromUser, targetUser)
+			if dmRoomForTransfer != "" && len(dmMessagesForTarget) > 0 {
+				cs.sendToUsers(defaultNsp, []string{targetUser}, EventServerMessage, map[string]interface{}{
+					"messages": map[string][]Message{
+						dmRoomForTransfer: dmMessagesForTarget,
+					},
+				})
+			}
+			if dmRoomForTransfer != "" && len(dmMessagesForSender) > 0 {
+				cs.sendToUsers(defaultNsp, []string{fromUser}, EventServerMessage, map[string]interface{}{
+					"messages": map[string][]Message{
+						dmRoomForTransfer: dmMessagesForSender,
+					},
+				})
+			}
+			log.Printf("[%s] ✓ Relayed key transfer from %s to %s", socketIDStr, fromUser, targetUser)
 		})
 
 		socket.OnEvent(EventClientUnblockUserDelta, func(data interface{}) {
@@ -1426,10 +1580,14 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				return
 			}
 
+			// Keep presence mapping accurate for online users even if they haven't sent chat messages yet.
+			cs.registerUserFromAuth(username, socketIDStr)
+
 			cs.mu.RLock()
 			messagesCopy := buildScopedMessagesForUser(cs.messages, username, defaultRoom, currentRoom, openRooms)
 			roomsCopy := make([]string, len(cs.rooms))
 			copy(roomsCopy, cs.rooms)
+			roomsCopy = filterRoomsForUser(roomsCopy, username)
 
 			var usersCopy []string
 			for user := range cs.users {
@@ -1498,6 +1656,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				code, message := cs.getSessionAuthFailure(sessionID, username)
 				log.Printf("[%s] ✗ Rejected room data request by %s (%s)", socketIDStr, username, code)
 				emitActionResult(socket, "roomData", false, code, message)
+				return
+			}
+
+			if !isRoomVisibleToUser(room, username) {
+				log.Printf("[%s] ✗ Rejected room data request by non-participant user=%s room=%s", socketIDStr, username, room)
+				emitActionResult(socket, "roomData", false, "unauthorized", "Unauthorized room access")
 				return
 			}
 

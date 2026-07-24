@@ -57,6 +57,11 @@ func NewChatServer() *ChatServer {
 		messages["#cats"] = []Message{}
 	}
 
+	// Active socket sessions are runtime-only and must never survive restart.
+	// Keep the loaded value only to satisfy assignment before resetting.
+	_ = users
+	users = make(map[string]string)
+
 	// Purge messages on startup only if explicitly requested via
 	// the CLEAR_ON_START environment variable. Preserving messages by
 	// default avoids losing chat history on server restarts.

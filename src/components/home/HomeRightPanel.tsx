@@ -1,5 +1,5 @@
 import { UserListPanel } from '../UserListPanel';
-import { ThemeToggle } from '../ThemeToggle';
+import { ThemeToggleStretch } from '../ThemeToggle';
 import {
   SidePanel,
   PrimaryButton,
@@ -8,6 +8,14 @@ import {
 import { useHomePresence } from '../../contexts/home/useHomePageSelectors';
 
 const BUILD_STAMP = process.env.NEXT_PUBLIC_BUILD_STAMP ?? 'unknown-build';
+const rightSidebarSectionTitleStyle = {
+  color: 'var(--app-muted)',
+  fontSize: '12px',
+  fontWeight: 700,
+  letterSpacing: '0.02em',
+  textTransform: 'uppercase' as const,
+  whiteSpace: 'nowrap' as const,
+};
 
 export function HomeRightPanel() {
   const {
@@ -33,8 +41,14 @@ export function HomeRightPanel() {
         defaultTopSize={82}
         top={
           <div className="flex h-full min-h-0 flex-col">
-            <div className="mb-2 flex justify-start">
-              <ThemeToggle compact />
+            <div className="mb-2 flex items-center gap-2 pr-1">
+              <span style={rightSidebarSectionTitleStyle}>Theme</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <ThemeToggleStretch compact />
+              </div>
+            </div>
+            <div style={{ marginBottom: '5px' }}>
+              <span style={rightSidebarSectionTitleStyle}>Users</span>
             </div>
             <UserListPanel
               currentUsername={username}

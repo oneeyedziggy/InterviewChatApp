@@ -61,6 +61,8 @@ type Message struct {
 	Timestamp      int64             `json:"timestamp"`
 	Username       string            `json:"username"`
 	Content        string            `json:"content"`
+	KeyTransferEncryptedPackage string `json:"keyTransferEncryptedPackage,omitempty"`
+	KeyTransferFromUser string         `json:"keyTransferFromUser,omitempty"`
 	EncryptedMessage string          `json:"encryptedMessage,omitempty"`
 	EncryptedFor   map[string]string `json:"encryptedFor"`
 	Versions       []MessageVersion  `json:"versions,omitempty"`

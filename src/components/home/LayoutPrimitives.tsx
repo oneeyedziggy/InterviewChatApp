@@ -4,12 +4,13 @@ import type {
   ButtonHTMLAttributes,
   CSSProperties,
   InputHTMLAttributes,
+  TextareaHTMLAttributes,
   MouseEvent as ReactMouseEvent,
   PropsWithChildren,
   ReactNode,
   HTMLAttributes,
 } from 'react';
-import { Children, useEffect, useRef, useState } from 'react';
+import { Children, forwardRef, useEffect, useRef, useState } from 'react';
 import { cn } from '@/utils/cn';
 
 const HORIZONTAL_SPLIT_KEY_LEFT = 'home.layout.leftWidthPct';
@@ -306,6 +307,19 @@ export function AppTextInput(props: InputHTMLAttributes<HTMLInputElement>) {
 export function BlockTextInput(props: InputHTMLAttributes<HTMLInputElement>) {
   return <AppTextInput {...props} className={cn('block', props.className)} />;
 }
+
+export const AppTextArea = forwardRef<
+  HTMLTextAreaElement,
+  TextareaHTMLAttributes<HTMLTextAreaElement>
+>(function AppTextArea(props, ref) {
+  return (
+    <textarea
+      ref={ref}
+      {...props}
+      className={cn('app-text-input', props.className)}
+    />
+  );
+});
 
 export function PrimaryButton(props: ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
