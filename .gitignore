@@ -16,6 +16,8 @@ node_modules/
 
 # Misc
 .DS_Store
+todo.md
+publish_todos_as_issues.sh
 
 # Keys
 *.pem

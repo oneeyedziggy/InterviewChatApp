@@ -12,27 +12,41 @@ import (
 
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 	"github.com/ProtonMail/gopenpgp/v2/helper"
+	"github.com/google/uuid"
 	socketio "github.com/karagenc/socket.io-go"
 )
 
 type ChatServer struct {
-	sessionCache    *Cache
-	userCache       *Cache
-	messages        Messages
-	rooms           []string
-	users           map[string]string
-	userPubKeys     map[string]string
-	serverKeyRing   *crypto.KeyRing
-	serverPublicKey string
-	mu              sync.RWMutex
-	store           *FileStore
-	joinRequests    map[string]*JoinRequest
-	userLastSeen    map[string]int64
-	roomMembers     map[string]map[string]bool
-	roomCreators    map[string]string
-	hasSentJoinMsg  map[string]bool
-	joinScheduled   map[string]bool
-	defaultNsp      *socketio.Namespace
+	sessionCache           *Cache
+	userCache              *Cache
+	messages               Messages
+	rooms                  []string
+	users                  map[string]string
+	userSocketsByID        map[string]string
+	userPubKeys            map[string]string
+	userPubKeysUpdatedAt   map[string]int64
+	roomIDs                map[string]string
+	roomsByID              map[string]string
+	serverKeyRing          *crypto.KeyRing
+	serverPublicKey        string
+	mu                     sync.RWMutex
+	store                  *FileStore
+	joinRequests           map[string]*JoinRequest
+	userLastSeen           map[string]int64
+	roomMembers            map[string]map[string]bool
+	roomCreators           map[string]string
+	hasSentJoinMsg         map[string]bool
+	joinScheduled          map[string]bool
+	defaultNsp             *socketio.Namespace
+	authReplay             map[string]time.Time
+	authReplayOrder        []string
+	authReplayLimit        int
+	roomNameCiphertexts    map[string]string
+	roomNameHashes         map[string]string
+	usernameHashes         map[string]string
+	usernameCiphertexts    map[string]string
+	userDirectoryUpdatedAt map[string]int64
+	roomDirectoryUpdatedAt map[string]int64
 }
 
 func NewChatServer() *ChatServer {
@@ -46,15 +60,38 @@ func NewChatServer() *ChatServer {
 	log.Printf("[NewChatServer] Using state file: %s", absPath)
 	store := NewFileStore(absPath)
 
-	messages, rooms, users, userPubKeys, err := store.Load()
+	messages, rooms, users, userPubKeys, userPubKeysUpdatedAt, _, roomIDs, roomNameHashes, roomNameCiphertexts, usernameCiphertexts, userDirectoryUpdatedAt, roomDirectoryUpdatedAt, err := store.Load()
 	if err != nil {
 		log.Printf("[NewChatServer] ✗ Failed to load state: %v, starting with empty state", err)
 		messages = make(Messages)
-		rooms = []string{DefaultRoom, "#cats"}
+		rooms = []string{}
 		users = make(map[string]string)
 		userPubKeys = make(map[string]string)
-		messages[DefaultRoom] = []Message{}
-		messages["#cats"] = []Message{}
+		roomIDs = make(map[string]string)
+		roomNameHashes = make(map[string]string)
+		roomNameCiphertexts = make(map[string]string)
+		usernameCiphertexts = make(map[string]string)
+		userPubKeysUpdatedAt = make(map[string]int64)
+		userDirectoryUpdatedAt = make(map[string]int64)
+		roomDirectoryUpdatedAt = make(map[string]int64)
+	}
+	if userPubKeysUpdatedAt == nil {
+		userPubKeysUpdatedAt = make(map[string]int64)
+	}
+	if userDirectoryUpdatedAt == nil {
+		userDirectoryUpdatedAt = make(map[string]int64)
+	}
+	if roomDirectoryUpdatedAt == nil {
+		roomDirectoryUpdatedAt = make(map[string]int64)
+	}
+	if roomNameCiphertexts == nil {
+		roomNameCiphertexts = make(map[string]string)
+	}
+	if usernameCiphertexts == nil {
+		usernameCiphertexts = make(map[string]string)
+	}
+	if roomNameHashes == nil {
+		roomNameHashes = make(map[string]string)
 	}
 
 	// Active socket sessions are runtime-only and must never survive restart.
@@ -87,25 +124,54 @@ func NewChatServer() *ChatServer {
 	roomCreators := make(map[string]string)
 
 	for _, room := range rooms {
-		roomMembers[room] = make(map[string]bool)
+		roomID := roomIDs[room]
+		if roomID == "" {
+			roomID = uuid.NewString()
+			roomIDs[room] = roomID
+		}
+		roomMembers[roomID] = make(map[string]bool)
 	}
 
 	cs := &ChatServer{
-		sessionCache:    NewCache(SessionTTL),
-		userCache:       NewCache(0),
-		messages:        messages,
-		rooms:           rooms,
-		users:           users,
-		userPubKeys:     userPubKeys,
-		serverKeyRing:   serverKeyRing,
-		serverPublicKey: serverPublicKey,
-		store:           store,
-		joinRequests:    joinRequests,
-		userLastSeen:    userLastSeen,
-		roomMembers:     roomMembers,
-		roomCreators:    roomCreators,
-		hasSentJoinMsg:  make(map[string]bool),
-		joinScheduled:   make(map[string]bool),
+		sessionCache:           NewCache(SessionTTL),
+		userCache:              NewCache(0),
+		messages:               messages,
+		rooms:                  rooms,
+		users:                  users,
+		userSocketsByID:        make(map[string]string),
+		userPubKeys:            userPubKeys,
+		userPubKeysUpdatedAt:   userPubKeysUpdatedAt,
+		roomIDs:                roomIDs,
+		roomsByID:              make(map[string]string),
+		serverKeyRing:          serverKeyRing,
+		serverPublicKey:        serverPublicKey,
+		store:                  store,
+		joinRequests:           joinRequests,
+		userLastSeen:           userLastSeen,
+		roomMembers:            roomMembers,
+		roomCreators:           roomCreators,
+		hasSentJoinMsg:         make(map[string]bool),
+		joinScheduled:          make(map[string]bool),
+		authReplay:             make(map[string]time.Time),
+		authReplayOrder:        make([]string, 0, 4096),
+		authReplayLimit:        10000,
+		roomNameHashes:         roomNameHashes,
+		usernameHashes:         make(map[string]string),
+		usernameCiphertexts:    usernameCiphertexts,
+		roomNameCiphertexts:    roomNameCiphertexts,
+		userDirectoryUpdatedAt: userDirectoryUpdatedAt,
+		roomDirectoryUpdatedAt: roomDirectoryUpdatedAt,
+	}
+
+	for room, roomID := range cs.roomIDs {
+		if room == "" || roomID == "" {
+			continue
+		}
+		cs.roomsByID[roomID] = room
+	}
+
+	for _, room := range cs.rooms {
+		cs.ensureRoomIDLocked(room)
 	}
 
 	// Populate hasSentJoinMsg for users who already have a system "joined"
@@ -126,6 +192,86 @@ func NewChatServer() *ChatServer {
 		len(cs.rooms), len(cs.users), len(cs.messages), len(cs.userPubKeys))
 
 	return cs
+}
+
+func (cs *ChatServer) ensureUserIDLocked(userID string) string {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return ""
+	}
+	return userID
+}
+
+func (cs *ChatServer) ensureUserID(userID string) string {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return cs.ensureUserIDLocked(userID)
+}
+
+func (cs *ChatServer) ensureRoomIDLocked(room string) string {
+	room = strings.TrimSpace(room)
+	if room == "" {
+		return ""
+	}
+
+	if roomID, ok := cs.roomIDs[room]; ok && roomID != "" {
+		cs.roomsByID[roomID] = room
+		return roomID
+	}
+
+	roomID := uuid.NewString()
+	cs.roomIDs[room] = roomID
+	cs.roomsByID[roomID] = room
+	return roomID
+}
+
+func (cs *ChatServer) ensureRoomID(room string) string {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return cs.ensureRoomIDLocked(room)
+}
+
+func (cs *ChatServer) getIdentityMapsForSave() map[string]string {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+
+	roomIDsCopy := make(map[string]string, len(cs.roomIDs))
+	for roomName, roomID := range cs.roomIDs {
+		roomIDsCopy[roomName] = roomID
+	}
+
+	return roomIDsCopy
+}
+
+func (cs *ChatServer) saveState(messages Messages, rooms []string, users map[string]string, userPubKeys map[string]string) error {
+	roomIDsCopy := cs.getIdentityMapsForSave()
+	cs.mu.RLock()
+	userPubKeysUpdatedAt := make(map[string]int64, len(cs.userPubKeysUpdatedAt))
+	for userID, updatedAt := range cs.userPubKeysUpdatedAt {
+		userPubKeysUpdatedAt[userID] = updatedAt
+	}
+	userDirectoryUpdatedAt := make(map[string]int64, len(cs.userDirectoryUpdatedAt))
+	for userID, updatedAt := range cs.userDirectoryUpdatedAt {
+		userDirectoryUpdatedAt[userID] = updatedAt
+	}
+	roomDirectoryUpdatedAt := make(map[string]int64, len(cs.roomDirectoryUpdatedAt))
+	for roomID, updatedAt := range cs.roomDirectoryUpdatedAt {
+		roomDirectoryUpdatedAt[roomID] = updatedAt
+	}
+	roomNameHashes := make(map[string]string, len(cs.roomNameHashes))
+	for roomNameHash, roomID := range cs.roomNameHashes {
+		roomNameHashes[roomNameHash] = roomID
+	}
+	roomNameCiphertexts := make(map[string]string, len(cs.roomNameCiphertexts))
+	for roomID, ciphertext := range cs.roomNameCiphertexts {
+		roomNameCiphertexts[roomID] = ciphertext
+	}
+	usernameCiphertexts := make(map[string]string, len(cs.usernameCiphertexts))
+	for userID, ciphertext := range cs.usernameCiphertexts {
+		usernameCiphertexts[userID] = ciphertext
+	}
+	cs.mu.RUnlock()
+	return cs.store.SaveWithIdentity(messages, rooms, users, userPubKeys, userPubKeysUpdatedAt, nil, roomIDsCopy, roomNameHashes, roomNameCiphertexts, usernameCiphertexts, userDirectoryUpdatedAt, roomDirectoryUpdatedAt)
 }
 
 func generateOrLoadServerKeys() (*crypto.KeyRing, string, error) {
@@ -211,28 +357,28 @@ func generateOrLoadServerKeys() (*crypto.KeyRing, string, error) {
 	return keyRing, publicKeyArmored, nil
 }
 
-func (cs *ChatServer) setUser(name, sessionID string) {
+func (cs *ChatServer) setUser(userID, sessionID string) {
 	log.Printf("[setUser] ===== ENTERING setUser ======")
-	log.Printf("[setUser] Attempting to acquire lock for user: %s", name)
+	log.Printf("[setUser] Attempting to acquire lock for user: %s", userID)
 	cs.mu.Lock()
 	log.Printf("[setUser] ✓ Lock acquired")
-	oldSessionID, wasLoggedIn := cs.users[name]
-	cs.users[name] = sessionID
+	oldSessionID, wasLoggedIn := cs.users[userID]
+	cs.users[userID] = sessionID
 	if !wasLoggedIn || oldSessionID != sessionID {
-		needsJoinMsg := !cs.hasSentJoinMsg[name]
+		needsJoinMsg := !cs.hasSentJoinMsg[userID]
 		if needsJoinMsg {
 			// Schedule the join message and mark it as pending to avoid races
 			// where a concurrently-handled client message sees the flag as
 			// false and mis-orders that first message. The actual join
 			// message will be sent asynchronously; `sendJoinMessage` will set
 			// `hasSentJoinMsg` when it completes.
-			cs.joinScheduled[name] = true
-			log.Printf("[setUser] ✓ Scheduled join message for user %s (was logged in: %v)", name, wasLoggedIn)
+			cs.joinScheduled[userID] = true
+			log.Printf("[setUser] ✓ Scheduled join message for user %s (was logged in: %v)", userID, wasLoggedIn)
 			cs.mu.Unlock()
-			go cs.sendJoinMessage(name)
+			go cs.sendJoinMessage(userID)
 			cs.mu.Lock()
 		} else {
-			log.Printf("[setUser] ⚠ Join message already sent for %s (shouldn't happen on new login)", name)
+			log.Printf("[setUser] ⚠ Join message already sent for %s (shouldn't happen on new login)", userID)
 		}
 	}
 	log.Printf("[setUser] ✓ User set in map")
@@ -264,30 +410,31 @@ func (cs *ChatServer) broadcastUserListUpdate() {
 		"activeUsers":   activeUsers,
 		"userLastSeen":  userLastSeenCopy,
 	}
-	nsp.Emit(EventServerUserListUpdate, userListData)
+	cs.emitNamespaceSigned(nsp, EventServerUserListUpdate, userListData)
 	log.Printf("[broadcastUserListUpdate] ✓ Broadcasted user list (%d logged in, %d active)", len(loggedInUsers), len(activeUsers))
 }
 
-func (cs *ChatServer) registerUserFromAuth(username, socketID string) {
-	if username == "" || socketID == "" {
+func (cs *ChatServer) registerUserFromAuth(userID, socketID string) {
+	if userID == "" || socketID == "" {
 		return
 	}
 
 	cs.mu.Lock()
-	existingSessionID, userExists := cs.users[username]
+	existingSessionID, userExists := cs.users[userID]
 	cs.mu.Unlock()
 
 	if !userExists || existingSessionID != socketID {
-		log.Printf("[registerUserFromAuth] Registering %s on connect (socket %s)", username, socketID)
-		cs.setUser(username, socketID)
+		log.Printf("[registerUserFromAuth] Registering %s on connect (socket %s)", userID, socketID)
+		cs.setUser(userID, socketID)
 		cs.mu.Lock()
-		cs.userLastSeen[username] = time.Now().Unix()
+		cs.userLastSeen[userID] = time.Now().Unix()
+		cs.userSocketsByID[userID] = socketID
 		cs.mu.Unlock()
 	}
 }
 
-func (cs *ChatServer) sendJoinMessage(username string) {
-	if username == "" {
+func (cs *ChatServer) sendJoinMessage(userID string) {
+	if userID == "" {
 		return
 	}
 
@@ -295,37 +442,41 @@ func (cs *ChatServer) sendJoinMessage(username string) {
 	defer cs.mu.Unlock()
 
 	// If the join message has already been sent, nothing to do.
-	if cs.hasSentJoinMsg[username] {
+	if cs.hasSentJoinMsg[userID] {
 		// Clean up any scheduled marker if present.
-		delete(cs.joinScheduled, username)
+		delete(cs.joinScheduled, userID)
 		return
 	}
 
 	if cs.messages[DefaultRoom] == nil {
 		cs.messages[DefaultRoom] = []Message{}
 	}
-	if cs.roomMembers[DefaultRoom] == nil {
-		cs.roomMembers[DefaultRoom] = make(map[string]bool)
+	defaultRoomID := cs.ensureRoomIDLocked(DefaultRoom)
+	if cs.roomMembers[defaultRoomID] == nil {
+		cs.roomMembers[defaultRoomID] = make(map[string]bool)
 	}
-	if !cs.roomMembers[DefaultRoom][username] {
-		cs.roomMembers[DefaultRoom][username] = true
-		if len(cs.roomMembers[DefaultRoom]) == 1 {
-			cs.roomCreators[DefaultRoom] = username
-			log.Printf("[sendJoinMessage] Set %s as creator of %s", username, DefaultRoom)
+	if !cs.roomMembers[defaultRoomID][userID] {
+		cs.roomMembers[defaultRoomID][userID] = true
+		if len(cs.roomMembers[defaultRoomID]) == 1 {
+			cs.roomCreators[defaultRoomID] = userID
+			log.Printf("[sendJoinMessage] Set %s as creator of %s", userID, DefaultRoom)
 		}
 	}
 
 	joinMsg := Message{
+		ID:        uuid.NewString(),
 		Timestamp: time.Now().Unix(),
 		Username:  "system",
-		Content:   fmt.Sprintf("%s %s", username, UserJoined),
+		UserID:    SystemUserID,
+		RoomID:    cs.ensureRoomIDLocked(DefaultRoom),
+		Content:   fmt.Sprintf("%s %s", userID, UserJoined),
 		Edited:    false,
 	}
 	cs.messages[DefaultRoom] = append([]Message{joinMsg}, cs.messages[DefaultRoom]...)
-	cs.hasSentJoinMsg[username] = true
+	cs.hasSentJoinMsg[userID] = true
 	// Clear scheduled marker now that the join message has been sent.
-	delete(cs.joinScheduled, username)
-	log.Printf("[sendJoinMessage] ✓ Sent join message for %s to %s", username, DefaultRoom)
+	delete(cs.joinScheduled, userID)
+	log.Printf("[sendJoinMessage] ✓ Sent join message for %s to %s", userID, DefaultRoom)
 
 	if cs.defaultNsp != nil {
 		messagesCopy := make(Messages)
@@ -334,8 +485,8 @@ func (cs *ChatServer) sendJoinMessage(username string) {
 		response := map[string]interface{}{
 			"messages": messagesCopy,
 		}
-		cs.defaultNsp.Emit(EventServerMessage, response)
-		log.Printf("[sendJoinMessage] ✓ Broadcasted join message for %s", username)
+		cs.emitNamespaceSigned(cs.defaultNsp, EventServerMessage, response)
+		log.Printf("[sendJoinMessage] ✓ Broadcasted join message for %s", userID)
 	}
 }
 

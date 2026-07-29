@@ -8,12 +8,27 @@ import {
 } from '../../contexts/home/homePageTypes';
 import { useHomeAutoDecrypt } from './useHomeAutoDecrypt';
 import { useHomeSessionLifecycle } from './useHomeSessionLifecycle';
-import { forceReauthToLogin, loadKeys } from '../../utils/gpg';
+import {
+  decryptJsonForCurrentUser,
+  encryptJsonForCurrentUser,
+  forceReauthToLogin,
+  loadKeys,
+} from '../../utils/gpg';
+import {
+  getUsernameByUserId,
+  requireRoomIdByName,
+  requireUserIdByUsername,
+} from '../../utils/identityMap';
 
 type StoredRoomPrefs = {
   leftRooms?: string[];
   currentRoom?: string;
   openRooms?: string[];
+};
+
+type EncryptedStoredRoomPrefs = {
+  version: 'enc-v1';
+  ciphertext: string;
 };
 
 function roomPrefsStorageKey(username: string): string {
@@ -196,27 +211,61 @@ export function useHomePageState(): HomePageState {
   useEffect(() => {
     if (!username || typeof window === 'undefined') return;
 
-    const raw = localStorage.getItem(roomPrefsStorageKey(username));
-    if (!raw) {
-      setRoomPrefsHydrated(true);
-      return;
-    }
-
-    try {
-      const prefs = JSON.parse(raw) as StoredRoomPrefs;
-      const restoredLeftRooms = Array.isArray(prefs.leftRooms)
-        ? prefs.leftRooms.filter((room) => typeof room === 'string')
-        : [];
-      setLeftRoomsState(new Set(restoredLeftRooms));
-
-      if (prefs.currentRoom && typeof prefs.currentRoom === 'string') {
-        setCurrentRoomState(prefs.currentRoom);
+    let cancelled = false;
+    const hydratePrefs = async () => {
+      const raw = localStorage.getItem(roomPrefsStorageKey(username));
+      if (!raw) {
+        if (!cancelled) {
+          setRoomPrefsHydrated(true);
+        }
+        return;
       }
-    } catch (error) {
-      console.warn('[RoomPrefs] Failed to restore room preferences', error);
-    } finally {
-      setRoomPrefsHydrated(true);
-    }
+
+      try {
+        const parsed = JSON.parse(raw) as
+          | StoredRoomPrefs
+          | EncryptedStoredRoomPrefs;
+        let prefs: StoredRoomPrefs = {};
+
+        if (
+          parsed &&
+          typeof parsed === 'object' &&
+          (parsed as EncryptedStoredRoomPrefs).version === 'enc-v1' &&
+          typeof (parsed as EncryptedStoredRoomPrefs).ciphertext === 'string'
+        ) {
+          prefs = await decryptJsonForCurrentUser<StoredRoomPrefs>(
+            (parsed as EncryptedStoredRoomPrefs).ciphertext,
+          );
+        } else {
+          prefs = parsed as StoredRoomPrefs;
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        const restoredLeftRooms = Array.isArray(prefs.leftRooms)
+          ? prefs.leftRooms.filter((room) => typeof room === 'string')
+          : [];
+        setLeftRoomsState(new Set(restoredLeftRooms));
+
+        if (prefs.currentRoom && typeof prefs.currentRoom === 'string') {
+          setCurrentRoomState(prefs.currentRoom);
+        }
+      } catch (error) {
+        console.warn('[RoomPrefs] Failed to restore room preferences', error);
+      } finally {
+        if (!cancelled) {
+          setRoomPrefsHydrated(true);
+        }
+      }
+    };
+
+    void hydratePrefs();
+
+    return () => {
+      cancelled = true;
+    };
   }, [username]);
 
   useEffect(() => {
@@ -277,10 +326,24 @@ export function useHomePageState(): HomePageState {
       currentRoom: currentRoomState || undefined,
       openRooms,
     };
-    localStorage.setItem(
-      roomPrefsStorageKey(username),
-      JSON.stringify(payload),
-    );
+    void (async () => {
+      try {
+        const ciphertext = await encryptJsonForCurrentUser(payload);
+        const encryptedPayload: EncryptedStoredRoomPrefs = {
+          version: 'enc-v1',
+          ciphertext,
+        };
+        localStorage.setItem(
+          roomPrefsStorageKey(username),
+          JSON.stringify(encryptedPayload),
+        );
+      } catch (error) {
+        console.warn(
+          '[RoomPrefs] Failed to persist encrypted room preferences',
+          error,
+        );
+      }
+    })();
   }, [username, leftRooms, currentRoomState, roomList, roomPrefsHydrated]);
 
   useEffect(() => {
@@ -329,9 +392,14 @@ export function useHomePageState(): HomePageState {
 
       for (const [room, messages] of Object.entries(prev)) {
         const filtered = messages.filter((message) => {
+          const authorDisplayName =
+            message.userId && message.userId !== 'system'
+              ? getUsernameByUserId(message.userId)
+              : undefined;
           if (
-            message.username !== 'system' &&
-            blockedSet.has(message.username)
+            message.userId !== 'system' &&
+            !!authorDisplayName &&
+            blockedSet.has(authorDisplayName)
           ) {
             changed = true;
             return false;
@@ -398,8 +466,10 @@ export function useHomePageState(): HomePageState {
 
       socket.emit(SOCKET_EVENTS.CLIENT_REQUEST_ROOM_DATA, {
         username,
+        userId: requireUserIdByUsername(username),
         sessionId: keys.sessionId,
         room,
+        roomId: requireRoomIdByName(room),
       });
     },
     setNewRoomName: (roomName: string) => setNewRoomNameState(roomName),

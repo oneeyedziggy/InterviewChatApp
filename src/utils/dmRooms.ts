@@ -1,13 +1,21 @@
-/** Canonical DM room id: @dm:alice:bob (sorted usernames) */
+import {
+  getRoomNameByRoomId,
+  getUsernameByUserId,
+  requireUserIdByUsername,
+} from './identityMap';
+
+/** Canonical DM room id: @dmid:<userIdA>:<userIdB> (sorted user IDs). */
 export function getDmRoomId(userA: string, userB: string): string {
-  const [first, second] = [userA, userB].sort((a, b) =>
+  const userAId = requireUserIdByUsername(userA);
+  const userBId = requireUserIdByUsername(userB);
+  const [first, second] = [userAId, userBId].sort((a, b) =>
     a.localeCompare(b, undefined, { sensitivity: 'base' }),
   );
-  return `@dm:${first}:${second}`;
+  return `@dmid:${first}:${second}`;
 }
 
 export function isDmRoom(room: string): boolean {
-  return room.startsWith('@dm:');
+  return room.startsWith('@dmid:');
 }
 
 /** Other participant's username for display in the room list */
@@ -16,11 +24,15 @@ export function getDmDisplayName(
   currentUser: string,
 ): string | null {
   if (!isDmRoom(room)) return null;
+  if (!currentUser) return null;
+  const currentUserId = requireUserIdByUsername(currentUser);
   const parts = room.split(':');
   if (parts.length !== 3) return null;
-  const [, userA, userB] = parts;
-  if (userA === currentUser) return userB;
-  if (userB === currentUser) return userA;
+  const [, userAId, userBId] = parts;
+  if (userAId === currentUserId)
+    return getUsernameByUserId(userBId) ?? 'Direct Message';
+  if (userBId === currentUserId)
+    return getUsernameByUserId(userAId) ?? 'Direct Message';
   return null;
 }
 
@@ -34,7 +46,9 @@ export function getDmParticipants(room: string): string[] | null {
 export function isUserInDmRoom(room: string, username: string): boolean {
   const participants = getDmParticipants(room);
   if (!participants) return false;
-  return participants.includes(username);
+  if (!username) return false;
+  const userId = requireUserIdByUsername(username);
+  return participants.includes(userId);
 }
 
 export function filterRoomsForUser(
@@ -51,5 +65,8 @@ export function filterRoomsForUser(
 
 export function getRoomDisplayLabel(room: string, currentUser: string): string {
   const dmName = getDmDisplayName(room, currentUser);
-  return dmName ?? room;
+  if (dmName) {
+    return dmName;
+  }
+  return getRoomNameByRoomId(room) ?? room;
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import { type Messages } from '../../types/types';
 import { decryptMessageForUser, loadKeys } from '../../utils/gpg';
+import { getUsernameByUserId } from '../../utils/identityMap';
 import { isUserBlocked } from '../../utils/userSettings';
 
 type UseHomeAutoDecryptArgs = {
@@ -27,7 +28,15 @@ export function useHomeAutoDecrypt({
 
     for (const [room, messages] of Object.entries(chatValues)) {
       for (const msg of messages) {
-        if (msg.username !== 'system' && isUserBlocked(msg.username)) {
+        const authorDisplayName =
+          msg.userId && msg.userId !== 'system'
+            ? getUsernameByUserId(msg.userId)
+            : undefined;
+        if (
+          msg.userId !== 'system' &&
+          authorDisplayName &&
+          isUserBlocked(authorDisplayName)
+        ) {
           continue;
         }
 

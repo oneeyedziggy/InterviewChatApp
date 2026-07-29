@@ -1,4 +1,5 @@
 import { SOCKET_EVENTS } from '../../constants';
+import { MESSAGE_LIMITS } from '../../constants';
 import {
   doSendAction,
   grantAccessAction,
@@ -9,7 +10,9 @@ import { type HomePageState } from '../../contexts/home/homePageTypes';
 import { getDmRoomId, isDmRoom } from '../../utils/dmRooms';
 import {
   decryptSharedAccountPackageForRecipient,
+  encryptForAllUsers,
   encryptSharedAccountPackageForRecipient,
+  filterPubKeysForEncryption,
   importSharedAccountPackage,
   loadKeys,
   loadUserPublicKeyEntries,
@@ -21,6 +24,22 @@ import {
   getBlockedUsers,
   unblockUser,
 } from '../../utils/userSettings';
+import { getUtf8ByteLength } from '../../utils/messages';
+import {
+  getUserIdByUsername,
+  requireRoomIdByName,
+  requireUserIdByUsername,
+} from '../../utils/identityMap';
+import { emitSignedMutation } from '../../utils/socketAuth';
+
+async function roomNameHash(roomName: string): Promise<string> {
+  const normalized = roomName.trim().toLowerCase();
+  const bytes = new TextEncoder().encode(normalized);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
 
 function focusDraftInput() {
   const input = document.getElementById('userDraftMessageInput') as
@@ -33,7 +52,17 @@ function focusDraftInput() {
 }
 
 export function useHomePageActions(state: HomePageState) {
+  const currentUserId = state.username
+    ? getUserIdByUsername(state.username) || ''
+    : '';
+
   const doSend = async () => {
+    if (
+      getUtf8ByteLength(state.userDraftMessage) > MESSAGE_LIMITS.MAX_TEXT_BYTES
+    ) {
+      return;
+    }
+
     await doSendAction({
       socket: state.getSocket(),
       userDraftMessage: state.userDraftMessage,
@@ -53,6 +82,9 @@ export function useHomePageActions(state: HomePageState) {
   const onDraftKeyDownHandler = (
     e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
   ) => {
+    const isDraftOverLimit =
+      getUtf8ByteLength(state.userDraftMessage) > MESSAGE_LIMITS.MAX_TEXT_BYTES;
+
     if (
       e.key === 'ArrowUp' &&
       !e.altKey &&
@@ -75,8 +107,8 @@ export function useHomePageActions(state: HomePageState) {
           .reverse()
           .find(
             (message) =>
-              message.username === state.username &&
-              message.username !== 'system' &&
+              message.userId === currentUserId &&
+              message.userId !== 'system' &&
               !message.deleted &&
               message.content !== 'Message deleted',
           );
@@ -95,29 +127,67 @@ export function useHomePageActions(state: HomePageState) {
 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (isDraftOverLimit) {
+        return;
+      }
       void doSend();
     }
   };
 
-  const makeNewRoom = () => {
+  const makeNewRoom = async () => {
     const socket = state.getSocket();
     const roomName = state.newRoomName.trim();
-    if (!socket || roomName === '') return;
+    const keys = loadKeys();
+    if (!socket || roomName === '' || !state.username || !keys?.sessionId)
+      return;
 
-    state.setLeftRoomsState((prev) => {
-      const next = new Set(prev);
-      next.delete(roomName);
-      return next;
+    const userId = requireUserIdByUsername(state.username);
+
+    const userPubKeys = loadUserPublicKeyEntries() || {};
+    const filteredPubKeys = filterPubKeysForEncryption(userPubKeys, {
+      blockedUsers: state.blockedUsers,
     });
-    state.setCurrentRoom(roomName);
-    socket.emit(SOCKET_EVENTS.CLIENT_NEW_ROOM, roomName);
+
+    let roomNameCiphertext = '';
+    let normalizedRoomNameHash = '';
+    const roomDirectoryUpdatedAt = Date.now();
+    try {
+      roomNameCiphertext = await encryptForAllUsers(
+        roomName,
+        filteredPubKeys,
+        keys.publicKey,
+        state.username,
+      );
+      normalizedRoomNameHash = await roomNameHash(roomName);
+    } catch (error) {
+      console.error('[RoomCreate] Failed to encrypt room name', error);
+      return;
+    }
+
+    void emitSignedMutation(socket, {
+      event: SOCKET_EVENTS.CLIENT_NEW_ROOM,
+      payload: {
+        roomNameCiphertext,
+        roomNameHash: normalizedRoomNameHash,
+        roomDirectoryUpdatedAt,
+        userId,
+        sessionId: keys.sessionId,
+      },
+      userId,
+      sessionId: keys.sessionId,
+      claims: {
+        roomNameCiphertext,
+        roomNameHash: normalizedRoomNameHash,
+        roomDirectoryUpdatedAt: String(roomDirectoryUpdatedAt),
+      },
+    });
   };
 
   const onNewRoomKeyDownHandler = (
     e: React.KeyboardEvent<HTMLInputElement>,
   ) => {
     if (e.key === 'Enter') {
-      makeNewRoom();
+      void makeNewRoom();
     }
   };
 
@@ -174,12 +244,6 @@ export function useHomePageActions(state: HomePageState) {
   const handleMessageUser = (targetUser: string) => {
     if (!state.username) return;
     const dmRoomId = getDmRoomId(state.username, targetUser);
-    if (!state.roomList.includes(dmRoomId)) {
-      const activeSocket = (window as any).__socket || state.getSocket();
-      if (activeSocket) {
-        activeSocket.emit(SOCKET_EVENTS.CLIENT_NEW_ROOM, dmRoomId);
-      }
-    }
     state.setLeftRoomsState((prev) => {
       const next = new Set(prev);
       next.delete(dmRoomId);
@@ -265,11 +329,29 @@ export function useHomePageActions(state: HomePageState) {
           targetPublicKey,
         );
 
-      activeSocket.emit(SOCKET_EVENTS.CLIENT_SEND_PUBLIC_KEY, {
-        targetUser,
-        fromUser: state.username,
-        publicKey: keys.publicKey,
-        encryptedAccountPackage,
+      if (!keys.sessionId) {
+        alert('Session expired. Please log in again.');
+        return;
+      }
+
+      const targetUserId = requireUserIdByUsername(targetUser);
+      const fromUserId = requireUserIdByUsername(state.username);
+      void emitSignedMutation(activeSocket, {
+        event: SOCKET_EVENTS.CLIENT_SEND_PUBLIC_KEY,
+        payload: {
+          targetUserId,
+          fromUserId,
+          publicKey: keys.publicKey,
+          encryptedAccountPackage,
+          sessionId: keys.sessionId,
+        },
+        userId: fromUserId,
+        sessionId: keys.sessionId,
+        claims: {
+          fromUserId,
+          targetUserId,
+          publicKey: keys.publicKey,
+        },
       });
       console.log('[UserList] Sent encrypted account package to', targetUser);
     })().catch((error) => {
@@ -298,16 +380,28 @@ export function useHomePageActions(state: HomePageState) {
       return;
     }
 
-    activeSocket.emit(SOCKET_EVENTS.CLIENT_UNBLOCK_USER_DELTA, {
-      username: state.username,
+    const userId = requireUserIdByUsername(state.username);
+    const targetUserId = requireUserIdByUsername(targetUser);
+    void emitSignedMutation(activeSocket, {
+      event: SOCKET_EVENTS.CLIENT_UNBLOCK_USER_DELTA,
+      payload: {
+        userId,
+        sessionId: keys.sessionId,
+        targetUserId,
+        blockedSince: blockedAt ?? 0,
+      },
+      userId,
       sessionId: keys.sessionId,
-      targetUser,
-      blockedSince: blockedAt ?? 0,
+      claims: {
+        userId,
+        targetUserId,
+        blockedSince: blockedAt ?? 0,
+      },
     });
   };
 
   const handleRequestAccess = (
-    messageUsername: string,
+    messageUserId: string,
     room: string,
     messageTimestamp: number,
   ) => {
@@ -315,17 +409,16 @@ export function useHomePageActions(state: HomePageState) {
       socket: state.getSocket(),
       username: state.username,
       chatValues: state.chatValues,
-      messageUsername,
+      messageUserId,
       room,
       messageTimestamp,
     });
   };
 
   const handleGrantAccess = async (
-    requestingUser: string,
+    requestingUserId: string,
     originalRoom: string,
     messageTimestamp: number,
-    providedPlaintext?: string,
   ) => {
     await grantAccessAction({
       socket: state.getSocket(),
@@ -333,10 +426,9 @@ export function useHomePageActions(state: HomePageState) {
       chatValues: state.chatValues,
       blockedUsers: state.blockedUsers,
       setChatValues: state.setChatValuesState,
-      requestingUser,
+      requestingUserId,
       originalRoom,
       messageTimestamp,
-      providedPlaintext,
     });
   };
 
@@ -402,12 +494,25 @@ export function useHomePageActions(state: HomePageState) {
       return;
     }
 
-    socket.emit(SOCKET_EVENTS.CLIENT_DELETE_MESSAGE, {
-      room: state.currentRoom,
-      ...(messageId ? { messageId } : {}),
-      messageTimestamp,
-      username: state.username,
+    const userId = requireUserIdByUsername(state.username);
+    const roomId = requireRoomIdByName(state.currentRoom);
+    void emitSignedMutation(socket, {
+      event: SOCKET_EVENTS.CLIENT_DELETE_MESSAGE,
+      payload: {
+        room: state.currentRoom,
+        roomId,
+        ...(messageId ? { messageId } : {}),
+        messageTimestamp,
+        userId,
+        sessionId: keys.sessionId,
+      },
+      userId,
       sessionId: keys.sessionId,
+      claims: {
+        userId,
+        roomId,
+        messageTimestamp,
+      },
     });
 
     if (state.editingMessageTimestamp === messageTimestamp) {
@@ -426,7 +531,8 @@ export function useHomePageActions(state: HomePageState) {
     voteType: 'up' | 'down',
   ) => {
     const socket = state.getSocket();
-    if (socket && state.username) {
+    const keys = loadKeys();
+    if (socket && state.username && keys?.sessionId) {
       console.log(
         '[onVote] Voting',
         voteType,
@@ -435,11 +541,25 @@ export function useHomePageActions(state: HomePageState) {
         'in room',
         room,
       );
-      socket.emit(SOCKET_EVENTS.CLIENT_VOTE_MESSAGE, {
-        room,
-        messageTimestamp,
-        username: state.username,
-        voteType,
+      const userId = requireUserIdByUsername(state.username);
+      const roomId = requireRoomIdByName(room);
+      void emitSignedMutation(socket, {
+        event: SOCKET_EVENTS.CLIENT_VOTE_MESSAGE,
+        payload: {
+          room,
+          roomId,
+          messageTimestamp,
+          userId,
+          voteType,
+          sessionId: keys.sessionId,
+        },
+        userId,
+        sessionId: keys.sessionId,
+        claims: {
+          roomId,
+          messageTimestamp,
+          voteType,
+        },
       });
     }
   };
@@ -451,17 +571,34 @@ export function useHomePageActions(state: HomePageState) {
   };
 
   const handleVoteJoin = (
+    requestingUserId: string,
     requestingUser: string,
+    roomId: string,
     room: string,
     vote: boolean,
   ) => {
     const socket = state.getSocket();
-    if (socket) {
-      socket.emit(SOCKET_EVENTS.CLIENT_VOTE_JOIN, {
-        room,
-        requestingUser,
-        vote,
-        voter: state.username,
+    const keys = loadKeys();
+    if (socket && state.username && keys?.sessionId) {
+      const voterUserId = requireUserIdByUsername(state.username);
+      void emitSignedMutation(socket, {
+        event: SOCKET_EVENTS.CLIENT_VOTE_JOIN,
+        payload: {
+          room,
+          roomId,
+          requestingUserId,
+          vote,
+          voterUserId,
+          sessionId: keys.sessionId,
+        },
+        userId: voterUserId,
+        sessionId: keys.sessionId,
+        claims: {
+          roomId,
+          requestingUserId,
+          voterUserId,
+          vote,
+        },
       });
     }
   };

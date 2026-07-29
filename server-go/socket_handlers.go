@@ -1,16 +1,48 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ProtonMail/gopenpgp/v2/crypto"
 	"github.com/google/uuid"
 	socketio "github.com/karagenc/socket.io-go"
 )
+
+const (
+	maxMessageTextBytes             = 1000
+	messageCiphertextExpansionRatio = 3.3
+	maxMessageCiphertextBytes       = int(float64(maxMessageTextBytes) * messageCiphertextExpansionRatio)
+	maxIdentityCiphertextBytes      = 16384
+	signedRequestMaxSkew            = 5 * time.Minute
+)
+
+type socketMutationAuth struct {
+	Version   string            `json:"version"`
+	Event     string            `json:"event"`
+	UserID    string            `json:"userId"`
+	SessionID string            `json:"sessionId"`
+	Timestamp int64             `json:"timestamp"`
+	Nonce     string            `json:"nonce"`
+	Claims    map[string]string `json:"claims"`
+	Signature string            `json:"signature"`
+}
+
+func exceedsMessageTextLimit(value string) bool {
+	return len([]byte(value)) > maxMessageTextBytes
+}
+
+func exceedsMessageCiphertextLimit(value string) bool {
+	return len([]byte(value)) > maxMessageCiphertextBytes
+}
 
 func parseMessageReference(raw map[string]interface{}) (string, int64, bool, bool) {
 	messageID := ""
@@ -84,7 +116,459 @@ func parseStringList(raw interface{}) []string {
 	return result
 }
 
-func buildScopedMessagesForUser(all Messages, username, defaultRoom, currentRoom string, openRooms []string) Messages {
+func parseCiphertextMap(raw interface{}, maxValueBytes int) map[string]string {
+	source, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	result := make(map[string]string, len(source))
+	for key, value := range source {
+		normalizedKey := strings.TrimSpace(key)
+		if normalizedKey == "" {
+			continue
+		}
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		normalizedValue := strings.TrimSpace(text)
+		if normalizedValue == "" {
+			continue
+		}
+		if maxValueBytes > 0 && len([]byte(normalizedValue)) > maxValueBytes {
+			continue
+		}
+		result[normalizedKey] = normalizedValue
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+
+	return result
+}
+
+func parseTimestampMap(raw interface{}) map[string]int64 {
+	source, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	result := make(map[string]int64, len(source))
+	for key, value := range source {
+		normalizedKey := strings.TrimSpace(key)
+		if normalizedKey == "" {
+			continue
+		}
+
+		var ts int64
+		switch typed := value.(type) {
+		case float64:
+			ts = int64(typed)
+		case int64:
+			ts = typed
+		case int:
+			ts = int64(typed)
+		case string:
+			parsed, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+			if err != nil {
+				continue
+			}
+			ts = parsed
+		default:
+			continue
+		}
+
+		if ts > 0 {
+			result[normalizedKey] = ts
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+
+	return result
+}
+
+func parseStringField(raw map[string]interface{}, key string) string {
+	value, _ := raw[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func normalizeClaimValue(value interface{}) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return typed
+	case float64:
+		if typed == float64(int64(typed)) {
+			return fmt.Sprintf("%d", int64(typed))
+		}
+		return fmt.Sprintf("%v", typed)
+	case int:
+		return fmt.Sprintf("%d", typed)
+	case int64:
+		return fmt.Sprintf("%d", typed)
+	case bool:
+		if typed {
+			return "true"
+		}
+		return "false"
+	default:
+		bytes, _ := json.Marshal(typed)
+		return string(bytes)
+	}
+}
+
+func getNestedPayloadValue(raw map[string]interface{}, path string) interface{} {
+	if path == "" {
+		return nil
+	}
+	parts := strings.Split(path, ".")
+	var current interface{} = raw
+	for _, part := range parts {
+		asMap, ok := current.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		next, exists := asMap[part]
+		if !exists {
+			return nil
+		}
+		current = next
+	}
+	return current
+}
+
+func canonicalClaimsString(claims map[string]string) string {
+	if len(claims) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(claims))
+	for key := range claims {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		encoded := base64.RawURLEncoding.EncodeToString([]byte(claims[key]))
+		parts = append(parts, key+"="+encoded)
+	}
+	return strings.Join(parts, "&")
+}
+
+func buildSignedRequestInput(auth socketMutationAuth) string {
+	version := strings.TrimSpace(auth.Version)
+	if version == "" {
+		version = "v1"
+	}
+	return fmt.Sprintf(
+		"%s|%s|%s|%s|%d|%s|%s",
+		version,
+		auth.Event,
+		auth.UserID,
+		auth.SessionID,
+		auth.Timestamp,
+		auth.Nonce,
+		canonicalClaimsString(auth.Claims),
+	)
+}
+
+func claimDigest(claims map[string]string) string {
+	canonical := canonicalClaimsString(claims)
+	digest := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(digest[:])
+}
+
+func (cs *ChatServer) markReplayLocked(replayKey string, now time.Time) bool {
+	if replayKey == "" {
+		return false
+	}
+	if _, exists := cs.authReplay[replayKey]; exists {
+		return false
+	}
+	cs.authReplay[replayKey] = now
+	cs.authReplayOrder = append(cs.authReplayOrder, replayKey)
+
+	// Trim expired and enforce hard cap to avoid unbounded growth.
+	cutoff := now.Add(-signedRequestMaxSkew)
+	for len(cs.authReplayOrder) > 0 {
+		oldest := cs.authReplayOrder[0]
+		ts, exists := cs.authReplay[oldest]
+		if exists && ts.After(cutoff) && len(cs.authReplayOrder) <= cs.authReplayLimit {
+			break
+		}
+		delete(cs.authReplay, oldest)
+		cs.authReplayOrder = cs.authReplayOrder[1:]
+	}
+
+	for len(cs.authReplayOrder) > cs.authReplayLimit {
+		oldest := cs.authReplayOrder[0]
+		delete(cs.authReplay, oldest)
+		cs.authReplayOrder = cs.authReplayOrder[1:]
+	}
+
+	return true
+}
+
+func (cs *ChatServer) verifySignedMutation(
+	socket socketio.ServerSocket,
+	raw map[string]interface{},
+	expectedEvent string,
+	requiredClaims []string,
+) (socketMutationAuth, bool) {
+	socketIDStr := string(socket.ID())
+	authRaw, ok := raw["auth"].(map[string]interface{})
+	if !ok {
+		log.Printf("[%s] ✗ Missing signed auth envelope for %s", socketIDStr, expectedEvent)
+		emitActionResult(socket, expectedEvent, false, "invalid_request", "Missing signed auth envelope")
+		return socketMutationAuth{}, false
+	}
+
+	auth := socketMutationAuth{
+		Version:   parseStringField(authRaw, "version"),
+		Event:     parseStringField(authRaw, "event"),
+		UserID:    parseStringField(authRaw, "userId"),
+		SessionID: parseStringField(authRaw, "sessionId"),
+		Nonce:     parseStringField(authRaw, "nonce"),
+		Signature: parseStringField(authRaw, "signature"),
+		Claims:    make(map[string]string),
+	}
+
+	if rawTS, exists := authRaw["timestamp"]; exists {
+		switch typed := rawTS.(type) {
+		case float64:
+			auth.Timestamp = int64(typed)
+		case int64:
+			auth.Timestamp = typed
+		case int:
+			auth.Timestamp = int64(typed)
+		}
+	}
+
+	if claimsRaw, ok := authRaw["claims"].(map[string]interface{}); ok {
+		for key, value := range claimsRaw {
+			auth.Claims[key] = normalizeClaimValue(value)
+		}
+	}
+
+	if auth.Version == "" {
+		auth.Version = "v1"
+	}
+
+	if auth.Event != expectedEvent || auth.UserID == "" || auth.SessionID == "" || auth.Timestamp == 0 || auth.Nonce == "" || auth.Signature == "" {
+		log.Printf("[%s] ✗ Invalid signed auth fields for %s", socketIDStr, expectedEvent)
+		emitActionResult(socket, expectedEvent, false, "invalid_request", "Invalid signed auth fields")
+		return socketMutationAuth{}, false
+	}
+
+	now := time.Now()
+	if time.UnixMilli(auth.Timestamp).Before(now.Add(-signedRequestMaxSkew)) || time.UnixMilli(auth.Timestamp).After(now.Add(signedRequestMaxSkew)) {
+		log.Printf("[%s] ✗ Signed request timestamp skew exceeded for %s", socketIDStr, expectedEvent)
+		emitActionResult(socket, expectedEvent, false, "invalid_request", "Signed request expired")
+		return socketMutationAuth{}, false
+	}
+
+	if !cs.isSessionAuthorizedForUser(auth.SessionID, auth.UserID) {
+		code, message := cs.getSessionAuthFailure(auth.SessionID, auth.UserID)
+		log.Printf("[%s] ✗ Signed request session mismatch for %s (%s)", socketIDStr, expectedEvent, code)
+		emitActionResult(socket, expectedEvent, false, code, message)
+		return socketMutationAuth{}, false
+	}
+
+	for _, key := range requiredClaims {
+		expected := normalizeClaimValue(getNestedPayloadValue(raw, key))
+		actual := auth.Claims[key]
+		if strings.TrimSpace(actual) == "" {
+			log.Printf("[%s] ✗ Signed claim missing for %s key=%s", socketIDStr, expectedEvent, key)
+			emitActionResult(socket, expectedEvent, false, "unauthorized", "Signed claim mismatch")
+			return socketMutationAuth{}, false
+		}
+		if expected != actual && strings.TrimSpace(expected) != strings.TrimSpace(actual) {
+			log.Printf("[%s] ✗ Signed claim mismatch for %s key=%s", socketIDStr, expectedEvent, key)
+			emitActionResult(socket, expectedEvent, false, "unauthorized", "Signed claim mismatch")
+			return socketMutationAuth{}, false
+		}
+	}
+
+	cs.mu.RLock()
+	userPubKey := cs.userPubKeys[auth.UserID]
+	cs.mu.RUnlock()
+	if strings.TrimSpace(userPubKey) == "" {
+		log.Printf("[%s] ✗ Missing signer identity for %s", socketIDStr, expectedEvent)
+		emitActionResult(socket, expectedEvent, false, "unauthorized", "Signer identity unavailable")
+		return socketMutationAuth{}, false
+	}
+
+	signingInput := buildSignedRequestInput(auth)
+	message := crypto.NewPlainMessageFromString(signingInput)
+	publicKey, err := crypto.NewKeyFromArmored(userPubKey)
+	if err != nil {
+		log.Printf("[%s] ✗ Invalid signer public key for %s: %v", socketIDStr, expectedEvent, err)
+		emitActionResult(socket, expectedEvent, false, "unauthorized", "Invalid signer key")
+		return socketMutationAuth{}, false
+	}
+	verifyKeyRing, err := crypto.NewKeyRing(publicKey)
+	if err != nil {
+		log.Printf("[%s] ✗ Failed to build verify key ring for %s: %v", socketIDStr, expectedEvent, err)
+		emitActionResult(socket, expectedEvent, false, "unauthorized", "Invalid signer key")
+		return socketMutationAuth{}, false
+	}
+	signature, err := crypto.NewPGPSignatureFromArmored(auth.Signature)
+	if err != nil {
+		log.Printf("[%s] ✗ Invalid detached signature encoding for %s: %v", socketIDStr, expectedEvent, err)
+		emitActionResult(socket, expectedEvent, false, "unauthorized", "Invalid request signature")
+		return socketMutationAuth{}, false
+	}
+	if err := verifyKeyRing.VerifyDetached(message, signature, now.Unix()); err != nil {
+		log.Printf("[%s] ✗ Invalid request signature for %s: %v (claimsDigest=%s)", socketIDStr, expectedEvent, err, claimDigest(auth.Claims))
+		emitActionResult(socket, expectedEvent, false, "unauthorized", "Invalid request signature")
+		return socketMutationAuth{}, false
+	}
+
+	replayKey := fmt.Sprintf("%s:%s:%s", auth.UserID, auth.Event, auth.Nonce)
+	cs.mu.Lock()
+	allowed := cs.markReplayLocked(replayKey, now)
+	cs.mu.Unlock()
+	if !allowed {
+		log.Printf("[%s] ✗ Replay detected for %s", socketIDStr, expectedEvent)
+		emitActionResult(socket, expectedEvent, false, "unauthorized", "Replay detected")
+		return socketMutationAuth{}, false
+	}
+
+	return auth, true
+}
+
+func (cs *ChatServer) resolveUsernameFromPayload(raw map[string]interface{}, userIDKey string) string {
+	userID := parseStringField(raw, userIDKey)
+	return userID
+}
+
+func (cs *ChatServer) resolveRoomFromPayload(raw map[string]interface{}, roomIDKey string) string {
+	roomID := parseStringField(raw, roomIDKey)
+	if roomID == "" {
+		return ""
+	}
+	cs.mu.RLock()
+	roomName := cs.roomsByID[roomID]
+	cs.mu.RUnlock()
+	if roomName != "" {
+		return roomName
+	}
+	// In strict room-id mode, the room ID itself is the canonical room key.
+	return roomID
+}
+
+func (cs *ChatServer) attachIdentityDirectories(payload map[string]interface{}) {
+	cs.mu.RLock()
+	userCiphertexts := make(map[string]string, len(cs.usernameCiphertexts))
+	userDirectoryUpdatedAt := make(map[string]int64, len(cs.userDirectoryUpdatedAt))
+	for userID, ciphertext := range cs.usernameCiphertexts {
+		if userID != "" && ciphertext != "" {
+			userCiphertexts[userID] = ciphertext
+			if updatedAt := cs.userDirectoryUpdatedAt[userID]; updatedAt > 0 {
+				userDirectoryUpdatedAt[userID] = updatedAt
+			}
+		}
+	}
+	cs.mu.RUnlock()
+	payload["userDirectoryCiphertexts"] = userCiphertexts
+	payload["userDirectoryUpdatedAt"] = userDirectoryUpdatedAt
+}
+
+func (cs *ChatServer) roomNameCiphertextsForRooms(rooms []string) map[string]string {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+
+	result := make(map[string]string)
+	for _, room := range rooms {
+		roomID := cs.roomIDs[room]
+		if roomID == "" {
+			roomID = room
+		}
+		if cipher := cs.roomNameCiphertexts[roomID]; cipher != "" {
+			result[roomID] = cipher
+		}
+	}
+	return result
+}
+
+func (cs *ChatServer) roomDirectoryUpdatedAtForRooms(rooms []string) map[string]int64 {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+
+	result := make(map[string]int64)
+	for _, room := range rooms {
+		roomID := cs.roomIDs[room]
+		if roomID == "" {
+			roomID = room
+		}
+		if updatedAt := cs.roomDirectoryUpdatedAt[roomID]; updatedAt > 0 {
+			result[roomID] = updatedAt
+		}
+	}
+	return result
+}
+
+func cloneMessages(src Messages) Messages {
+	copyMessages := make(Messages)
+	for room, messages := range src {
+		copyMessages[room] = make([]Message, len(messages))
+		copy(copyMessages[room], messages)
+	}
+	return copyMessages
+}
+
+func cloneStringSlice(src []string) []string {
+	copySlice := make([]string, len(src))
+	copy(copySlice, src)
+	return copySlice
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	copyMap := make(map[string]string, len(src))
+	for k, v := range src {
+		copyMap[k] = v
+	}
+	return copyMap
+}
+
+func cloneInt64Map(src map[string]int64) map[string]int64 {
+	copyMap := make(map[string]int64, len(src))
+	for k, v := range src {
+		copyMap[k] = v
+	}
+	return copyMap
+}
+
+// sortedConnectedUsersLocked returns active usernames excluding blank/undefined.
+func (cs *ChatServer) sortedConnectedUsersLocked() []string {
+	users := make([]string, 0, len(cs.users))
+	for user := range cs.users {
+		if user != "" && user != "undefined" {
+			users = append(users, user)
+		}
+	}
+	sort.Slice(users, func(i, j int) bool {
+		return strings.ToLower(users[i]) < strings.ToLower(users[j])
+	})
+	return users
+}
+
+// snapshotMessageContextLocked captures common response data while cs.mu is held.
+func (cs *ChatServer) snapshotMessageContextLocked() (Messages, []string, []string, map[string]string) {
+	return cloneMessages(cs.messages), cloneStringSlice(cs.rooms), cs.sortedConnectedUsersLocked(), cloneStringMap(cs.userPubKeys)
+}
+
+// snapshotStateForSaveLocked captures maps/slices while cs.mu is already held.
+func (cs *ChatServer) snapshotStateForSaveLocked() (Messages, []string, map[string]string, map[string]string) {
+	return cloneMessages(cs.messages), cloneStringSlice(cs.rooms), cloneStringMap(cs.users), cloneStringMap(cs.userPubKeys)
+}
+
+func buildScopedMessagesForUser(all Messages, userID, defaultRoom, currentRoom string, openRooms []string) Messages {
 	targetRooms := make(map[string]struct{})
 	if defaultRoom != "" {
 		targetRooms[defaultRoom] = struct{}{}
@@ -102,14 +586,14 @@ func buildScopedMessagesForUser(all Messages, username, defaultRoom, currentRoom
 
 	result := make(Messages)
 	for room := range targetRooms {
-		if !isRoomVisibleToUser(room, username) {
+		if !isRoomVisibleToUser(all, room, userID) {
 			continue
 		}
 		messages, exists := all[room]
 		if !exists {
 			continue
 		}
-		visible := filterMessagesByVisibility(messages, username)
+		visible := filterMessagesByVisibility(messages, userID)
 		if len(visible) > 0 {
 			result[room] = visible
 		}
@@ -118,18 +602,31 @@ func buildScopedMessagesForUser(all Messages, username, defaultRoom, currentRoom
 	return result
 }
 
-func isRoomVisibleToUser(room, username string) bool {
-	userA, userB, ok := parseDMParticipants(room)
-	if !ok {
+func isRoomVisibleToUser(all Messages, room, userID string) bool {
+	if userID == "" {
+		return false
+	}
+	messages, exists := all[room]
+	if !exists || len(messages) == 0 {
 		return true
 	}
-	return username == userA || username == userB
+	for _, msg := range messages {
+		if len(msg.VisibleTo) == 0 {
+			continue
+		}
+		for _, visibleUserID := range msg.VisibleTo {
+			if visibleUserID == userID {
+				return true
+			}
+		}
+	}
+	return true
 }
 
-func filterRoomsForUser(rooms []string, username string) []string {
+func filterRoomsForUser(rooms []string, messages Messages, userID string) []string {
 	filtered := make([]string, 0, len(rooms))
 	for _, room := range rooms {
-		if isRoomVisibleToUser(room, username) {
+		if isRoomVisibleToUser(messages, room, userID) {
 			filtered = append(filtered, room)
 		}
 	}
@@ -137,7 +634,7 @@ func filterRoomsForUser(rooms []string, username string) []string {
 }
 
 func parseDMParticipants(room string) (string, string, bool) {
-	if !strings.HasPrefix(room, "@dm:") {
+	if !strings.HasPrefix(room, "@dmid:") {
 		return "", "", false
 	}
 	parts := strings.Split(room, ":")
@@ -151,64 +648,71 @@ func parseDMParticipants(room string) (string, string, bool) {
 }
 
 func buildDMIntroMessage(room, requestingUser string) (Message, bool) {
-	userA, userB, ok := parseDMParticipants(room)
+	userAID, userBID, ok := parseDMParticipants(room)
 	if !ok {
 		return Message{}, false
 	}
 
-	otherUser := ""
-	switch requestingUser {
-	case userA:
-		otherUser = userB
-	case userB:
-		otherUser = userA
+	requestingUserID := requestingUser
+	if !strings.Contains(requestingUserID, "-") {
+		requestingUserID = ""
 	}
-	if otherUser == "" {
-		otherUser = userA
+	if requestingUserID == "" {
+		if userID := strings.TrimSpace(requestingUser); userID != "" {
+			requestingUserID = userID
+		}
 	}
+
+	otherUserID := userAID
+	if requestingUserID == userAID {
+		otherUserID = userBID
+	} else if requestingUserID == userBID {
+		otherUserID = userAID
+	}
+	otherUserDisplay := otherUserID
 
 	return Message{
 		ID:        uuid.NewString(),
 		Timestamp: time.Now().Unix(),
 		Username:  "system",
-		Content:   fmt.Sprintf("You are at the beginning of an awesome conversation with %s", otherUser),
+		Content:   fmt.Sprintf("You are at the beginning of an awesome conversation with %s", otherUserDisplay),
 		Edited:    false,
 	}, true
 }
 
-func buildCanonicalDMRoom(userA, userB string) string {
-	first := strings.TrimSpace(userA)
-	second := strings.TrimSpace(userB)
+func buildCanonicalDMRoom(userAID, userBID string) string {
+	first := strings.TrimSpace(userAID)
+	second := strings.TrimSpace(userBID)
 	if strings.ToLower(first) > strings.ToLower(second) {
 		first, second = second, first
 	}
-	return formatRoomName(fmt.Sprintf("@dm:%s:%s", first, second))
+	return formatRoomName(fmt.Sprintf("@dmid:%s:%s", first, second))
 }
 
-func (cs *ChatServer) isSessionAuthorizedForUser(sessionID, username string) bool {
-	if sessionID == "" || username == "" {
+func (cs *ChatServer) isSessionAuthorizedForUser(sessionID, userID string) bool {
+	if sessionID == "" || userID == "" {
 		return false
 	}
 
-	storedUsername, exists := cs.sessionCache.Get(sessionID)
-	if !exists || storedUsername == "" {
+	storedUserID, exists := cs.sessionCache.Get(sessionID)
+	if !exists || storedUserID == "" {
 		return false
 	}
 
-	return storedUsername == username
+	return storedUserID == userID
 }
 
-func (cs *ChatServer) getSessionAuthFailure(sessionID, username string) (string, string) {
-	if sessionID == "" || username == "" {
+func (cs *ChatServer) getSessionAuthFailure(sessionID, userID string) (string, string) {
+	if sessionID == "" || userID == "" {
 		return "invalid_request", "Missing authentication fields"
 	}
 
-	storedUsername, exists := cs.sessionCache.Get(sessionID)
-	if !exists || storedUsername == "" {
+	storedUserID, exists := cs.sessionCache.Get(sessionID)
+	if !exists || storedUserID == "" {
 		return "session_expired", "Session expired"
 	}
 
-	if storedUsername != username {
+	if storedUserID != userID {
 		return "unauthorized", "Unauthorized"
 	}
 
@@ -240,735 +744,9 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 	cs.defaultNsp = defaultNsp
 	cs.mu.Unlock()
 
-	// Register event handlers - these are called when events are received
-	defaultNsp.OnEvent(EventClientMessage, func(socket socketio.ServerSocket, msg interface{}) {
-		socketIDStr := string(socket.ID())
-		log.Printf("[%s] ===== CLIENT_MESSAGE EVENT ======", socketIDStr)
-		log.Printf("[%s] Received message data: %+v", socketIDStr, msg)
-
-		msgMap, ok := msg.(map[string]interface{})
-		if !ok {
-			log.Printf("[%s] ✗ Invalid message format received, type: %T", socketIDStr, msg)
-			return
-		}
-
-		room, _ := msgMap["room"].(string)
-		username, _ := msgMap["username"].(string)
-		content, _ := msgMap["content"].(string) // May be empty for encrypted-only messages
-		replyToRaw, hasReplyTo := msgMap["replyTo"]
-		encryptedMessage, _ := msgMap["encryptedMessage"].(string)
-
-		// Parse replyTo if present
-		var replyTo *int64
-		if hasReplyTo {
-			log.Printf("[%s] replyTo field present, raw value: %v, type: %T", socketIDStr, replyToRaw, replyToRaw)
-			if replyToFloat, ok := replyToRaw.(float64); ok {
-				replyToInt := int64(replyToFloat)
-				replyTo = &replyToInt
-				log.Printf("[%s] ✓ Message is a reply to timestamp: %d", socketIDStr, replyToInt)
-			} else {
-				log.Printf("[%s] ✗ Failed to parse replyTo: expected float64, got %T with value %v", socketIDStr, replyToRaw, replyToRaw)
-			}
-		} else {
-			log.Printf("[%s] No replyTo field in message", socketIDStr)
-		}
-
-		// Reject join messages from clients - server sends these automatically
-		if content == UserJoined {
-			log.Printf("[%s] ✗ Rejecting client-sent join message from %s - server sends these automatically", socketIDStr, username)
-			return
-		}
-
-		// For encrypted messages, content may be empty - that's expected
-		if encryptedMessage != "" {
-			log.Printf("[%s] ✓ Parsed encrypted message - User: %s, Room: %s, packetSize=%d", socketIDStr, username, room, len(encryptedMessage))
-		} else {
-			log.Printf("[%s] ✓ Parsed message - User: %s, Room: %s, Content: %s", socketIDStr, username, room, content)
-		}
-
-		if !isRoomVisibleToUser(room, username) {
-			log.Printf("[%s] ✗ Rejected DM send by non-participant user=%s room=%s", socketIDStr, username, room)
-			return
-		}
-
-		// Set user when they send a message (similar to original server behavior)
-		userJustRegistered := false
-		if username != "" {
-			cs.mu.Lock()
-			existingSessionID, userExists := cs.users[username]
-			cs.mu.Unlock()
-			log.Printf("[%s] Checking user registration - exists: %v, existing ID: %s, current ID: %s", socketIDStr, userExists, existingSessionID, socketIDStr)
-			if !userExists || existingSessionID != socketIDStr {
-				cs.setUser(username, socketIDStr)
-				userJustRegistered = true
-				log.Printf("[%s] ✓ User %s registered with connection ID %s", socketIDStr, username, socketIDStr)
-			} else {
-				log.Printf("[%s] User %s already registered", socketIDStr, username)
-			}
-		} else {
-			log.Printf("[%s] ✗ No username in message", socketIDStr)
-		}
-
-		// If user was just registered, wait for the join message to be sent
-		// to prevent the first client message from being processed before the join
-		if userJustRegistered {
-			log.Printf("[%s] User just registered - waiting for join message to be sent", socketIDStr)
-			for i := 0; i < 50; i++ { // Wait up to 5 seconds (50 * 100ms)
-				cs.mu.RLock()
-				joinSent := cs.hasSentJoinMsg[username]
-				joinScheduled := cs.joinScheduled[username]
-				cs.mu.RUnlock()
-
-				if joinSent {
-					log.Printf("[%s] ✓ Join message sent, proceeding with user message", socketIDStr)
-					break
-				}
-
-				if !joinScheduled {
-					// Join wasn't scheduled; this shouldn't happen but avoid infinite loop
-					log.Printf("[%s] ⚠ Join message not scheduled; proceeding anyway", socketIDStr)
-					break
-				}
-
-				time.Sleep(100 * time.Millisecond)
-			}
-		}
-
-		cs.mu.Lock()
-		if cs.messages[room] == nil {
-			log.Printf("[%s] Creating new room: %s", socketIDStr, room)
-			cs.messages[room] = []Message{}
-		}
-
-		// Join message should already be sent on login via setUser
-		// DO NOT add join message here - it should already exist from login
-		// If it doesn't exist, that's a bug that should be fixed, not worked around
-		if username != "" && !cs.hasSentJoinMsg[username] {
-			log.Printf("[%s] ⚠ WARNING: Join message not sent for %s during login! This should not happen.", socketIDStr, username)
-			// Don't add join message here - it will cause issues
-			// Instead, just log the warning and continue with the user's message
-		}
-
-		beforeCount := len(cs.messages[room])
-		// Auto-upvote own message
-		one := 1
-		userVotes := make(map[string]string)
-		userVotes[username] = "up"
-		newMessage := Message{
-			ID:           uuid.NewString(),
-			Timestamp:    time.Now().Unix(),
-			Username:     username,
-			Content:      content,
-			EncryptedMessage: encryptedMessage,
-			EncryptedFor: nil,
-			ReplyTo:      replyTo,
-			VoteTotal:    &one,
-			UserVotes:    userVotes,
-		}
-		cs.messages[room] = append([]Message{newMessage}, cs.messages[room]...)
-		log.Printf("[%s] Added message to room %s (was %d, now has %d messages)", socketIDStr, room, beforeCount, len(cs.messages[room]))
-
-		// Save state to disk
-		messagesCopyForSave := make(Messages)
-		for k, v := range cs.messages {
-			messagesCopyForSave[k] = make([]Message, len(v))
-			copy(messagesCopyForSave[k], v)
-		}
-		roomsCopyForSave := make([]string, len(cs.rooms))
-		copy(roomsCopyForSave, cs.rooms)
-		usersCopyForSave := make(map[string]string)
-		for k, v := range cs.users {
-			usersCopyForSave[k] = v
-		}
-		cs.mu.Unlock()
-
-		// Save to disk
-		if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
-			log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-		}
-
-		cs.mu.Lock() // Re-acquire lock for response preparation
-
-		// Get current state for response - do this while holding the lock to avoid deadlock
-		messagesCopy := make(Messages)
-		for k, v := range cs.messages {
-			messagesCopy[k] = make([]Message, len(v))
-			copy(messagesCopy[k], v)
-		}
-		roomsCopy := make([]string, len(cs.rooms))
-		copy(roomsCopy, cs.rooms)
-
-		// Get user list inline to avoid deadlock (getUserList() tries to acquire RLock)
-		var usersList []string
-		for user := range cs.users {
-			if user != "" && user != "undefined" {
-				usersList = append(usersList, user)
-			}
-		}
-		sort.Slice(usersList, func(i, j int) bool {
-			return strings.ToLower(usersList[i]) < strings.ToLower(usersList[j])
-		})
-		cs.mu.Unlock()
-
-		log.Printf("[%s] Prepared response - rooms: %d, users: %d, message rooms: %d", socketIDStr, len(roomsCopy), len(usersList), len(messagesCopy))
-
-		// Get user public keys for INITIAL_DATA
-		cs.mu.RLock()
-		userPubKeysCopy := make(map[string]string)
-		for k, v := range cs.userPubKeys {
-			userPubKeysCopy[k] = v
-		}
-		cs.mu.RUnlock()
-
-		// If this is the user's first message (just registered), send initial data
-		// This ensures they get rooms, users, and messages even if they missed the initial emit
-		if userJustRegistered {
-			roomsCopy = filterRoomsForUser(roomsCopy, username)
-			// Get logged-in and active user lists
-			loggedInUsers, activeUsers := cs.getUserLists()
-
-			initialData := map[string]interface{}{
-				"messages":      messagesCopy,
-				"rooms":         roomsCopy,
-				"users":         usersList, // Keep for backward compatibility
-				"loggedInUsers": loggedInUsers,
-				"activeUsers":   activeUsers,
-				"userPubKeys":   userPubKeysCopy,
-			}
-			log.Printf("[%s] ✓ User just registered, sending INITIAL_DATA to %s", socketIDStr, username)
-			dataJSON, _ := json.Marshal(initialData)
-			log.Printf("[%s] INITIAL_DATA payload: %s", socketIDStr, string(dataJSON))
-			socket.Emit(EventInitialData, initialData)
-			log.Printf("[%s] ✓ INITIAL_DATA sent to newly registered user", socketIDStr)
-		}
-
-		// Prepare delta response: only send the newly created message.
-		response := map[string]interface{}{
-			"messages": map[string][]Message{room: {newMessage}},
-		}
-
-		log.Printf("[%s] Broadcasting SERVER_MESSAGE - rooms: %d, users: %d", socketIDStr, len(messagesCopy), len(usersList))
-
-		if userA, userB, ok := parseDMParticipants(room); ok {
-			cs.sendToUsers(defaultNsp, []string{userA, userB}, EventServerMessage, response)
-			log.Printf("[%s] ✓ Sent DM message only to participants: %s, %s", socketIDStr, userA, userB)
-		} else {
-			// Broadcast to all clients for non-DM rooms.
-			defaultNsp.Emit(EventServerMessage, response)
-			log.Printf("[%s] ✓ Broadcasted to all other clients", socketIDStr)
-		}
-		log.Printf("[%s] ✓ CLIENT_MESSAGE handler complete", socketIDStr)
-	})
-
-	defaultNsp.OnEvent(EventClientNewRoom, func(socket socketio.ServerSocket, roomName interface{}) {
-		socketIDStr := string(socket.ID())
-		log.Printf("[%s] ===== CLIENT_NEW_ROOM EVENT ======", socketIDStr)
-		log.Printf("[%s] Received room name: %+v (type: %T)", socketIDStr, roomName, roomName)
-
-		roomNameStr, ok := roomName.(string)
-		if !ok {
-			log.Printf("[%s] ✗ Invalid room name format", socketIDStr)
-			return
-		}
-		formattedRoom := formatRoomName(roomNameStr)
-		log.Printf("[%s] Formatted room name: %s", socketIDStr, formattedRoom)
-		cs.mu.Lock()
-		roomExists := false
-		for _, r := range cs.rooms {
-			if r == formattedRoom {
-				roomExists = true
-				break
-			}
-		}
-		log.Printf("[%s] Room exists: %v, current rooms: %v", socketIDStr, roomExists, cs.rooms)
-		if !roomExists {
-			requestingUser := ""
-			for user, sid := range cs.users {
-				if sid == socketIDStr {
-					requestingUser = user
-					break
-				}
-			}
-
-			cs.rooms = append(cs.rooms, formattedRoom)
-			cs.messages[formattedRoom] = []Message{}
-			if introMessage, ok := buildDMIntroMessage(formattedRoom, requestingUser); ok {
-				cs.messages[formattedRoom] = append([]Message{introMessage}, cs.messages[formattedRoom]...)
-			}
-			if cs.roomMembers[formattedRoom] == nil {
-				cs.roomMembers[formattedRoom] = make(map[string]bool)
-			}
-			log.Printf("[%s] ✓ Created new room: %s", socketIDStr, formattedRoom)
-		} else {
-			log.Printf("[%s] Room %s already exists", socketIDStr, formattedRoom)
-		}
-		sortedRooms := cs.alphabeticalSort(cs.rooms)
-
-		// Prepare data for saving
-		messagesCopyForSave := make(Messages)
-		for k, v := range cs.messages {
-			messagesCopyForSave[k] = make([]Message, len(v))
-			copy(messagesCopyForSave[k], v)
-		}
-		roomsCopyForSave := make([]string, len(cs.rooms))
-		copy(roomsCopyForSave, cs.rooms)
-		usersCopyForSave := make(map[string]string)
-		for k, v := range cs.users {
-			usersCopyForSave[k] = v
-		}
-		cs.mu.Unlock()
-
-		// Save to disk
-		if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
-			log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-		}
-
-		// Prepare response
-		response := map[string]interface{}{
-			"rooms": sortedRooms,
-		}
-
-		log.Printf("[%s] Broadcasting SERVER_NEW_ROOM with %d rooms", socketIDStr, len(sortedRooms))
-
-		// Broadcast to all clients.
-		defaultNsp.Emit(EventServerNewRoom, response)
-		log.Printf("[%s] ✓ Broadcasted SERVER_NEW_ROOM", socketIDStr)
-		log.Printf("[%s] ✓ SERVER_NEW_ROOM update sent", socketIDStr)
-	})
-
-	defaultNsp.OnEvent(EventClientDisconnecting, func(socket socketio.ServerSocket, sessionID interface{}) {
-		socketIDStr := string(socket.ID())
-		sessionIDStr, ok := sessionID.(string)
-		if !ok {
-			return
-		}
-		cs.mu.Lock()
-		for user, sid := range cs.users {
-			if sid == sessionIDStr {
-				delete(cs.users, user)
-				break
-			}
-		}
-
-		// Prepare data for saving
-		messagesCopyForSave := make(Messages)
-		for k, v := range cs.messages {
-			messagesCopyForSave[k] = make([]Message, len(v))
-			copy(messagesCopyForSave[k], v)
-		}
-		roomsCopyForSave := make([]string, len(cs.rooms))
-		copy(roomsCopyForSave, cs.rooms)
-		usersCopyForSave := make(map[string]string)
-		for k, v := range cs.users {
-			usersCopyForSave[k] = v
-		}
-		cs.mu.Unlock()
-
-		// Save to disk
-		if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
-			log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-		}
-
-		log.Printf("[%s] client disconnecting", socketIDStr)
-	})
-
-	// Register vote message handler
-	defaultNsp.OnEvent(EventClientVoteMessage, func(socket socketio.ServerSocket, voteData interface{}) {
-		socketIDStr := string(socket.ID())
-		log.Printf("[%s] ===== CLIENT_VOTE_MESSAGE EVENT ======", socketIDStr)
-
-		voteMap, ok := voteData.(map[string]interface{})
-		if !ok {
-			log.Printf("[%s] ✗ Invalid vote data format, type: %T", socketIDStr, voteData)
-			return
-		}
-
-		room, _ := voteMap["room"].(string)
-		username, _ := voteMap["username"].(string)
-		voteTypeRaw, hasVoteType := voteMap["voteType"]
-		messageID, messageTimestamp, hasMessageID, hasTimestamp := parseMessageReference(voteMap)
-
-		if (!hasMessageID && !hasTimestamp) || !hasVoteType || username == "" || room == "" {
-			log.Printf("[%s] ✗ Missing required vote fields", socketIDStr)
-			return
-		}
-
-		voteType, ok := voteTypeRaw.(string)
-		if !ok || (voteType != "up" && voteType != "down") {
-			log.Printf("[%s] ✗ Invalid voteType, must be 'up' or 'down'", socketIDStr)
-			return
-		}
-
-		cs.mu.Lock()
-
-		// Find the message
-		messages, exists := cs.messages[room]
-		if !exists {
-			cs.mu.Unlock()
-			log.Printf("[%s] ✗ Room %s not found", socketIDStr, room)
-			return
-		}
-
-		targetIndex := findMessageIndex(messages, messageID, messageTimestamp)
-		if targetIndex < 0 {
-			cs.mu.Unlock()
-			log.Printf("[%s] ✗ Message not found in room %s (id=%s, ts=%d)", socketIDStr, room, messageID, messageTimestamp)
-			return
-		}
-
-		targetMessage := &messages[targetIndex]
-
-		// Initialize vote fields if needed
-		if targetMessage.UserVotes == nil {
-			targetMessage.UserVotes = make(map[string]string)
-		}
-		if targetMessage.VoteTotal == nil {
-			zero := 0
-			targetMessage.VoteTotal = &zero
-		}
-
-		// Get current vote for this user
-		currentVote, hasVote := targetMessage.UserVotes[username]
-
-		// Handle vote logic
-		if hasVote && currentVote == voteType {
-			// User is clicking the same vote again - remove it
-			delete(targetMessage.UserVotes, username)
-			if currentVote == "up" {
-				*targetMessage.VoteTotal--
-			} else {
-				*targetMessage.VoteTotal++
-			}
-			log.Printf("[%s] ✓ Removed %s vote from message %d by %s (new total: %d)", socketIDStr, voteType, messageTimestamp, username, *targetMessage.VoteTotal)
-		} else if hasVote && currentVote != voteType {
-			// User is switching votes - remove old, add new
-			if currentVote == "up" {
-				*targetMessage.VoteTotal--
-			} else {
-				*targetMessage.VoteTotal++
-			}
-			targetMessage.UserVotes[username] = voteType
-			if voteType == "up" {
-				*targetMessage.VoteTotal++
-			} else {
-				*targetMessage.VoteTotal--
-			}
-			log.Printf("[%s] ✓ Switched vote from %s to %s for message %d by %s (new total: %d)", socketIDStr, currentVote, voteType, messageTimestamp, username, *targetMessage.VoteTotal)
-		} else {
-			// User is voting for the first time
-			targetMessage.UserVotes[username] = voteType
-			if voteType == "up" {
-				*targetMessage.VoteTotal++
-			} else {
-				*targetMessage.VoteTotal--
-			}
-			log.Printf("[%s] ✓ Added %s vote to message %d by %s (new total: %d)", socketIDStr, voteType, messageTimestamp, username, *targetMessage.VoteTotal)
-		}
-
-		// Copy data for saving and response while holding the lock
-		messagesCopyForSave := make(Messages)
-		for k, v := range cs.messages {
-			messagesCopyForSave[k] = make([]Message, len(v))
-			copy(messagesCopyForSave[k], v)
-		}
-		roomsCopyForSave := make([]string, len(cs.rooms))
-		copy(roomsCopyForSave, cs.rooms)
-		usersCopyForSave := make(map[string]string)
-		for k, v := range cs.users {
-			usersCopyForSave[k] = v
-		}
-
-		// Prepare response with updated messages
-		messagesCopy := make(Messages)
-		for k, v := range cs.messages {
-			messagesCopy[k] = make([]Message, len(v))
-			copy(messagesCopy[k], v)
-		}
-		usersList := make([]string, 0, len(cs.users))
-		for user := range cs.users {
-			usersList = append(usersList, user)
-		}
-
-		// Copy userPubKeys for save
-		userPubKeysCopy := make(map[string]string)
-		for k, v := range cs.userPubKeys {
-			userPubKeysCopy[k] = v
-		}
-
-		cs.mu.Unlock()
-
-		// Save state to disk
-		if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
-			log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-		}
-
-		response := map[string]interface{}{
-			"messages": map[string][]Message{room: {*targetMessage}},
-		}
-
-		// Broadcast to all clients
-		defaultNsp.Emit(EventServerVoteUpdate, response)
-		log.Printf("[%s] ✓ Broadcasted vote update", socketIDStr)
-	})
-
-	// Register edit message handler
-	defaultNsp.OnEvent(EventClientEditMessage, func(socket socketio.ServerSocket, editData interface{}) {
-		socketIDStr := string(socket.ID())
-		log.Printf("[%s] ===== CLIENT_EDIT_MESSAGE EVENT ======", socketIDStr)
-
-		editMap, ok := editData.(map[string]interface{})
-		if !ok {
-			log.Printf("[%s] ✗ Invalid edit data format, type: %T", socketIDStr, editData)
-			return
-		}
-
-		room, _ := editMap["room"].(string)
-		username, _ := editMap["username"].(string)
-		sessionID, _ := editMap["sessionId"].(string)
-		encryptedMessage, _ := editMap["encryptedMessage"].(string)
-		messageID, messageTimestamp, hasMessageID, hasTimestamp := parseMessageReference(editMap)
-
-		if (!hasMessageID && !hasTimestamp) || username == "" || room == "" || sessionID == "" {
-			log.Printf("[%s] ✗ Missing required edit fields", socketIDStr)
-			emitActionResult(socket, "edit", false, "invalid_request", "Missing required edit fields")
-			return
-		}
-
-		if !cs.isSessionAuthorizedForUser(sessionID, username) {
-			code, message := cs.getSessionAuthFailure(sessionID, username)
-			log.Printf("[%s] ✗ Rejected edit attempt by %s (%s)", socketIDStr, username, code)
-			emitActionResult(socket, "edit", false, code, message)
-			return
-		}
-
-		cs.mu.Lock()
-
-		// Find the message
-		messages, exists := cs.messages[room]
-		if !exists {
-			cs.mu.Unlock()
-			log.Printf("[%s] ✗ Room %s not found", socketIDStr, room)
-			emitActionResult(socket, "edit", false, "not_found", "Room not found")
-			return
-		}
-
-		targetIndex := findMessageIndex(messages, messageID, messageTimestamp)
-		if targetIndex < 0 {
-			cs.mu.Unlock()
-			log.Printf("[%s] ✗ Message not found in room %s (id=%s, ts=%d)", socketIDStr, room, messageID, messageTimestamp)
-			emitActionResult(socket, "edit", false, "not_found", "Message not found")
-			return
-		}
-
-		targetMessage := &messages[targetIndex]
-
-		// Validate that the editor is the original sender
-		if targetMessage.Username != username {
-			cs.mu.Unlock()
-			log.Printf("[%s] ✗ User %s attempted to edit message by %s (unauthorized)", socketIDStr, username, targetMessage.Username)
-			emitActionResult(socket, "edit", false, "not_owner", "Not owner")
-			return
-		}
-
-		// Prevent editing system messages
-		if targetMessage.Username == "system" {
-			cs.mu.Unlock()
-			log.Printf("[%s] ✗ User %s attempted to edit system message (not allowed)", socketIDStr, username)
-			emitActionResult(socket, "edit", false, "not_allowed", "System messages cannot be edited")
-			return
-		}
-
-		// Update the message
-		targetMessage.Content = "" // Clear plaintext (encrypted only)
-		targetMessage.EncryptedMessage = encryptedMessage
-		targetMessage.EncryptedFor = nil
-		targetMessage.Edited = true
-		cs.userLastSeen[username] = time.Now().Unix()
-
-		log.Printf("[%s] ✓ Message %d edited by %s", socketIDStr, messageTimestamp, username)
-
-		// Copy data for saving and response while holding the lock
-		messagesCopyForSave := make(Messages)
-		for k, v := range cs.messages {
-			messagesCopyForSave[k] = make([]Message, len(v))
-			copy(messagesCopyForSave[k], v)
-		}
-		roomsCopyForSave := make([]string, len(cs.rooms))
-		copy(roomsCopyForSave, cs.rooms)
-		usersCopyForSave := make(map[string]string)
-		for k, v := range cs.users {
-			usersCopyForSave[k] = v
-		}
-
-		// Prepare response with updated messages
-		messagesCopy := make(Messages)
-		for k, v := range cs.messages {
-			messagesCopy[k] = make([]Message, len(v))
-			copy(messagesCopy[k], v)
-		}
-		usersList := make([]string, 0, len(cs.users))
-		for user := range cs.users {
-			usersList = append(usersList, user)
-		}
-
-		// Copy userPubKeys for save
-		userPubKeysCopy := make(map[string]string)
-		for k, v := range cs.userPubKeys {
-			userPubKeysCopy[k] = v
-		}
-
-		userLastSeenCopy := make(map[string]int64)
-		for user, lastSeen := range cs.userLastSeen {
-			userLastSeenCopy[user] = lastSeen
-		}
-
-		cs.mu.Unlock()
-
-		// Save state to disk
-		if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
-			log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-		}
-
-		response := map[string]interface{}{
-			"messages": map[string][]Message{room: {*targetMessage}},
-		}
-
-		// Broadcast to all clients
-		defaultNsp.Emit(EventServerMessage, response)
-		log.Printf("[%s] ✓ Broadcasted message edit update", socketIDStr)
-		cs.broadcastUserListUpdate()
-		emitActionResult(socket, "edit", true, "ok", "Message updated")
-	})
-
-	defaultNsp.OnEvent(EventClientDeleteMessage, func(socket socketio.ServerSocket, deleteData interface{}) {
-		socketIDStr := string(socket.ID())
-		log.Printf("[%s] ===== CLIENT_DELETE_MESSAGE EVENT ======", socketIDStr)
-
-		deleteMap, ok := deleteData.(map[string]interface{})
-		if !ok {
-			log.Printf("[%s] ✗ Invalid delete data format, type: %T", socketIDStr, deleteData)
-			return
-		}
-
-		room, _ := deleteMap["room"].(string)
-		username, _ := deleteMap["username"].(string)
-		sessionID, _ := deleteMap["sessionId"].(string)
-		messageID, messageTimestamp, hasMessageID, hasTimestamp := parseMessageReference(deleteMap)
-
-		if (!hasMessageID && !hasTimestamp) || username == "" || room == "" || sessionID == "" {
-			log.Printf("[%s] ✗ Missing required delete fields", socketIDStr)
-			emitActionResult(socket, "delete", false, "invalid_request", "Missing required delete fields")
-			return
-		}
-
-		if !cs.isSessionAuthorizedForUser(sessionID, username) {
-			code, message := cs.getSessionAuthFailure(sessionID, username)
-			log.Printf("[%s] ✗ Rejected delete attempt by %s (%s)", socketIDStr, username, code)
-			emitActionResult(socket, "delete", false, code, message)
-			return
-		}
-
-		cs.mu.Lock()
-		messages, exists := cs.messages[room]
-		if !exists {
-			cs.mu.Unlock()
-			log.Printf("[%s] ✗ Room %s not found for delete", socketIDStr, room)
-			emitActionResult(socket, "delete", false, "not_found", "Room not found")
-			return
-		}
-
-		targetIndex := findMessageIndex(messages, messageID, messageTimestamp)
-		if targetIndex < 0 {
-			cs.mu.Unlock()
-			log.Printf("[%s] ✗ Message not found in room %s (id=%s, ts=%d)", socketIDStr, room, messageID, messageTimestamp)
-			emitActionResult(socket, "delete", false, "not_found", "Message not found")
-			return
-		}
-
-		targetMessage := &messages[targetIndex]
-
-		if targetMessage.Deleted {
-			cs.mu.Unlock()
-			log.Printf("[%s] ✓ Message %d already deleted; treating delete as idempotent", socketIDStr, messageTimestamp)
-			emitActionResult(socket, "delete", true, "ok", "Message deleted")
-			return
-		}
-
-		if targetMessage.Username != username {
-			cs.mu.Unlock()
-			log.Printf("[%s] ✗ User %s attempted to delete message by %s (unauthorized)", socketIDStr, username, targetMessage.Username)
-			emitActionResult(socket, "delete", false, "not_owner", "Not owner")
-			return
-		}
-
-		if targetMessage.Username == "system" {
-			cs.mu.Unlock()
-			log.Printf("[%s] ✗ User %s attempted to delete system message (not allowed)", socketIDStr, username)
-			emitActionResult(socket, "delete", false, "not_allowed", "System messages cannot be deleted")
-			return
-		}
-
-		targetMessage.Content = "Message deleted"
-		targetMessage.EncryptedMessage = ""
-		targetMessage.EncryptedFor = nil
-		targetMessage.Versions = nil
-		targetMessage.CurrentVersion = nil
-		targetMessage.VisibleTo = nil
-		targetMessage.VoteTotal = nil
-		targetMessage.UserVotes = nil
-		targetMessage.Edited = false
-		targetMessage.Deleted = true
-		cs.userLastSeen[username] = time.Now().Unix()
-
-		log.Printf("[%s] ✓ Marked message %d by %s as deleted", socketIDStr, messageTimestamp, username)
-
-		messagesCopyForSave := make(Messages)
-		for k, v := range cs.messages {
-			messagesCopyForSave[k] = make([]Message, len(v))
-			copy(messagesCopyForSave[k], v)
-		}
-		roomsCopyForSave := make([]string, len(cs.rooms))
-		copy(roomsCopyForSave, cs.rooms)
-		usersCopyForSave := make(map[string]string)
-		for k, v := range cs.users {
-			usersCopyForSave[k] = v
-		}
-
-		messagesCopy := make(Messages)
-		for k, v := range cs.messages {
-			messagesCopy[k] = make([]Message, len(v))
-			copy(messagesCopy[k], v)
-		}
-		usersList := make([]string, 0, len(cs.users))
-		for user := range cs.users {
-			usersList = append(usersList, user)
-		}
-
-		userPubKeysCopy := make(map[string]string)
-		for k, v := range cs.userPubKeys {
-			userPubKeysCopy[k] = v
-		}
-
-		userLastSeenCopy := make(map[string]int64)
-		for user, lastSeen := range cs.userLastSeen {
-			userLastSeenCopy[user] = lastSeen
-		}
-
-		cs.mu.Unlock()
-
-		if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
-			log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
-		}
-
-		response := map[string]interface{}{
-			"messages": map[string][]Message{room: {*targetMessage}},
-		}
-
-		defaultNsp.Emit(EventServerMessage, response)
-		log.Printf("[%s] ✓ Broadcasted message delete update", socketIDStr)
-		cs.broadcastUserListUpdate()
-		emitActionResult(socket, "delete", true, "ok", "Message deleted")
-	})
+	// Duplicate namespace-scoped handlers were removed.
+	// The socket.io library path used by this server requires per-socket registrations,
+	// which are defined below in OnConnection and are the canonical handlers.
 
 	// Register per-socket connection handler
 	defaultNsp.OnConnection(func(socket socketio.ServerSocket) {
@@ -993,34 +771,39 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			// Remove user from active users list (unreserve username) and send leave message
 			cs.mu.Lock()
-			var disconnectedUsername string
+			var disconnectedUserID string
 			var leaveMsg *Message
-			for username, sessionID := range cs.users {
+			for userID, sessionID := range cs.users {
 				if sessionID == socketIDStr {
-					disconnectedUsername = username
-					delete(cs.users, username)
+					disconnectedUserID = userID
+					delete(cs.userSocketsByID, userID)
+					delete(cs.users, userID)
 					// Clear the join message flag so they'll get a new one on next login
-					delete(cs.hasSentJoinMsg, username)
-					delete(cs.joinScheduled, username)
-					log.Printf("[%s] ✓ Removed user %s from active users (username unreserved)", socketIDStr, username)
+					delete(cs.hasSentJoinMsg, userID)
+					delete(cs.joinScheduled, userID)
+					log.Printf("[%s] ✓ Removed user %s from active users", socketIDStr, userID)
 
 					// Send leave message to default room
 					if cs.messages[DefaultRoom] == nil {
 						cs.messages[DefaultRoom] = []Message{}
 					}
 					msg := Message{
+						ID:        uuid.NewString(),
 						Timestamp: time.Now().Unix(),
 						Username:  "system",
-						Content:   fmt.Sprintf("%s %s", username, UserLeft),
+						UserID:    SystemUserID,
+						RoomID:    cs.ensureRoomIDLocked(DefaultRoom),
+						Content:   fmt.Sprintf("%s %s", userID, UserLeft),
 						Edited:    false, // System messages can't be edited
 					}
 					cs.messages[DefaultRoom] = append([]Message{msg}, cs.messages[DefaultRoom]...)
 					leaveMsg = &msg
-					log.Printf("[%s] ✓ Auto-sent leave message for %s from %s", socketIDStr, username, DefaultRoom)
+					log.Printf("[%s] ✓ Auto-sent leave message for %s from %s", socketIDStr, userID, DefaultRoom)
 
 					// Remove user from room members
-					if cs.roomMembers[DefaultRoom] != nil {
-						delete(cs.roomMembers[DefaultRoom], username)
+					defaultRoomID := cs.ensureRoomIDLocked(DefaultRoom)
+					if cs.roomMembers[defaultRoomID] != nil {
+						delete(cs.roomMembers[defaultRoomID], userID)
 					}
 
 					break
@@ -1030,12 +813,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			cs.mu.Unlock()
 
 			// Broadcast only the leave-message delta for default room.
-			if defaultNsp != nil && disconnectedUsername != "" && leaveMsg != nil {
+			if defaultNsp != nil && disconnectedUserID != "" && leaveMsg != nil {
 				response := map[string]interface{}{
 					"messages": map[string][]Message{DefaultRoom: {*leaveMsg}},
 				}
-				defaultNsp.Emit(EventServerMessage, response)
-				log.Printf("[%s] ✓ Broadcasted leave message for %s", socketIDStr, disconnectedUsername)
+				cs.emitNamespaceSigned(defaultNsp, EventServerMessage, response)
+				log.Printf("[%s] ✓ Broadcasted leave message for %s", socketIDStr, disconnectedUserID)
 			}
 
 			// Broadcast updated user list
@@ -1060,12 +843,49 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✗ Invalid message format received, type: %T", socketIDStr, msg)
 				return
 			}
+			auth, verified := cs.verifySignedMutation(socket, msgMap, EventClientMessage, []string{"roomId"})
+			if !verified {
+				return
+			}
+			msgMap["userId"] = auth.UserID
 
-			room, _ := msgMap["room"].(string)
-			username, _ := msgMap["username"].(string)
+			room := cs.resolveRoomFromPayload(msgMap, "roomId")
+			roomID := parseStringField(msgMap, "roomId")
+			username := cs.resolveUsernameFromPayload(msgMap, "userId")
+			actorUserID := parseStringField(msgMap, "userId")
 			content, _ := msgMap["content"].(string)
 			replyToRaw, hasReplyTo := msgMap["replyTo"]
 			encryptedMessage, _ := msgMap["encryptedMessage"].(string)
+
+			if roomID == "" || actorUserID == "" || room == "" || username == "" {
+				log.Printf("[%s] ✗ Missing required identity fields in message payload", socketIDStr)
+				emitActionResult(socket, "send", false, "invalid_request", "Missing required identity fields")
+				return
+			}
+
+			if exceedsMessageTextLimit(content) {
+				log.Printf("[%s] ✗ Rejected oversized plaintext message from %s (%d bytes)", socketIDStr, username, len([]byte(content)))
+				emitActionResult(
+					socket,
+					"send",
+					false,
+					"message_too_large",
+					fmt.Sprintf("Message exceeds max size (%d bytes)", maxMessageTextBytes),
+				)
+				return
+			}
+
+			if encryptedMessage != "" && exceedsMessageCiphertextLimit(encryptedMessage) {
+				log.Printf("[%s] ✗ Rejected oversized encrypted message from %s (%d bytes)", socketIDStr, username, len([]byte(encryptedMessage)))
+				emitActionResult(
+					socket,
+					"send",
+					false,
+					"message_too_large",
+					fmt.Sprintf("Encrypted message exceeds max size (%d bytes)", maxMessageCiphertextBytes),
+				)
+				return
+			}
 
 			// Parse replyTo if present
 			var replyTo *int64
@@ -1084,33 +904,50 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			log.Printf("[%s] ✓ Parsed message - User: %s, Room: %s, Content: %s, HasEncryptedPacket: %v, ReplyTo: %v", socketIDStr, username, room, content, encryptedMessage != "", replyTo)
 
-			if !isRoomVisibleToUser(room, username) {
+			if !isRoomVisibleToUser(cs.messages, room, actorUserID) {
 				log.Printf("[%s] ✗ Rejected DM send by non-participant user=%s room=%s", socketIDStr, username, room)
 				return
 			}
 
 			// Set user when they send a message
 			userJustRegistered := false
-			if username != "" {
+			if actorUserID != "" {
 				cs.mu.Lock()
-				existingSessionID, userExists := cs.users[username]
+				existingSessionID, userExists := cs.users[actorUserID]
 				cs.mu.Unlock()
 				log.Printf("[%s] Checking user registration - exists: %v, existing ID: %s, current ID: %s", socketIDStr, userExists, existingSessionID, socketIDStr)
 				if !userExists || existingSessionID != socketIDStr {
-					cs.setUser(username, socketIDStr)
+					cs.setUser(actorUserID, socketIDStr)
+					cs.mu.Lock()
+					cs.userSocketsByID[actorUserID] = socketIDStr
+					cs.mu.Unlock()
 					userJustRegistered = true
-					log.Printf("[%s] ✓ User %s registered with connection ID %s", socketIDStr, username, socketIDStr)
+					log.Printf("[%s] ✓ User %s registered with connection ID %s", socketIDStr, actorUserID, socketIDStr)
 				} else {
-					log.Printf("[%s] User %s already registered", socketIDStr, username)
+					log.Printf("[%s] User %s already registered", socketIDStr, actorUserID)
 				}
 			} else {
-				log.Printf("[%s] ✗ No username in message", socketIDStr)
+				log.Printf("[%s] ✗ No userId in message", socketIDStr)
 			}
 
 			cs.mu.Lock()
+			roomWasCreated := false
 			if cs.messages[room] == nil {
 				log.Printf("[%s] Creating new room: %s", socketIDStr, room)
 				cs.messages[room] = []Message{}
+				cs.ensureRoomIDLocked(room)
+				roomWasCreated = true
+			}
+			if !contains(cs.rooms, room) {
+				cs.rooms = append(cs.rooms, room)
+				cs.ensureRoomIDLocked(room)
+			}
+			if roomWasCreated {
+				if introMessage, ok := buildDMIntroMessage(room, actorUserID); ok {
+					introMessage.UserID = SystemUserID
+					introMessage.RoomID = cs.ensureRoomIDLocked(room)
+					cs.messages[room] = append([]Message{introMessage}, cs.messages[room]...)
+				}
 			}
 
 			// Reject join messages from clients - server sends these automatically
@@ -1123,105 +960,81 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			// Join message should already be sent or scheduled on login via setUser
 			// DO NOT add join message here - it should already exist from login
 			// If it doesn't exist and it's not scheduled, log a warning.
-			if username != "" && !cs.hasSentJoinMsg[username] && !cs.joinScheduled[username] {
-				log.Printf("[%s] ⚠ WARNING: Join message not sent for %s during login! This should not happen.", socketIDStr, username)
+			if actorUserID != "" && !cs.hasSentJoinMsg[actorUserID] && !cs.joinScheduled[actorUserID] {
+				log.Printf("[%s] ⚠ WARNING: Join message not sent for %s during login! This should not happen.", socketIDStr, actorUserID)
 				// Don't add join message here - it will cause issues
 				// Instead, just log the warning and continue with the user's message
 			}
 
 			// Update user last seen
-			cs.userLastSeen[username] = time.Now().Unix()
+			cs.userLastSeen[actorUserID] = time.Now().Unix()
 
 			beforeCount := len(cs.messages[room])
 
 			// Normal message handling (join messages are rejected earlier)
 			// Auto-upvote own message
 			one := 1
+			if actorUserID == "" {
+				cs.mu.Unlock()
+				log.Printf("[%s] ✗ Missing actor userId", socketIDStr)
+				return
+			}
+			roomID = cs.ensureRoomIDLocked(room)
 			userVotes := make(map[string]string)
-			userVotes[username] = "up"
+			userVotes[actorUserID] = "up"
 			newMessage := Message{
-				ID:           uuid.NewString(),
-				Timestamp:    time.Now().Unix(),
-				Username:     username,
-				Content:      content,
+				ID:               uuid.NewString(),
+				Timestamp:        time.Now().Unix(),
+				Username:         username,
+				UserID:           actorUserID,
+				RoomID:           roomID,
+				Content:          content,
 				EncryptedMessage: encryptedMessage,
-				EncryptedFor: nil,
-				ReplyTo:      replyTo,
-				VoteTotal:    &one,
-				UserVotes:    userVotes,
+				EncryptedFor:     nil,
+				ReplyTo:          replyTo,
+				VoteTotal:        &one,
+				UserVotes:        userVotes,
 			}
 			cs.messages[room] = append([]Message{newMessage}, cs.messages[room]...)
 
 			log.Printf("[%s] Added message to room %s (was %d, now has %d messages)", socketIDStr, room, beforeCount, len(cs.messages[room]))
 
-			// Save state to disk
-			messagesCopyForSave := make(Messages)
-			for k, v := range cs.messages {
-				messagesCopyForSave[k] = make([]Message, len(v))
-				copy(messagesCopyForSave[k], v)
-			}
-			roomsCopyForSave := make([]string, len(cs.rooms))
-			copy(roomsCopyForSave, cs.rooms)
-			usersCopyForSave := make(map[string]string)
-			for k, v := range cs.users {
-				usersCopyForSave[k] = v
-			}
+			messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopyForSave := cs.snapshotStateForSaveLocked()
 			cs.mu.Unlock()
 
 			// Save to disk
-			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
+			if err := cs.saveState(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopyForSave); err != nil {
 				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
 			}
 
 			cs.mu.Lock() // Re-acquire lock for response preparation
 
-			// Get current state for response - do this while holding the lock to avoid deadlock
-			messagesCopy := make(Messages)
-			for k, v := range cs.messages {
-				messagesCopy[k] = make([]Message, len(v))
-				copy(messagesCopy[k], v)
-			}
-			roomsCopy := make([]string, len(cs.rooms))
-			copy(roomsCopy, cs.rooms)
-
-			// Get user list inline to avoid deadlock (getUserList() tries to acquire RLock)
-			var usersList []string
-			for user := range cs.users {
-				if user != "" && user != "undefined" {
-					usersList = append(usersList, user)
-				}
-			}
-			sort.Slice(usersList, func(i, j int) bool {
-				return strings.ToLower(usersList[i]) < strings.ToLower(usersList[j])
-			})
+			// Get current state for response while holding the lock.
+			messagesCopy, roomsCopy, usersList, userPubKeysCopy := cs.snapshotMessageContextLocked()
+			userPubKeysUpdatedAtCopy := cloneInt64Map(cs.userPubKeysUpdatedAt)
 			cs.mu.Unlock()
 
 			log.Printf("[%s] Prepared response - rooms: %d, users: %d, message rooms: %d", socketIDStr, len(roomsCopy), len(usersList), len(messagesCopy))
 
-			// Get user public keys for INITIAL_DATA
-			cs.mu.RLock()
-			userPubKeysCopy := make(map[string]string)
-			for k, v := range cs.userPubKeys {
-				userPubKeysCopy[k] = v
-			}
-			cs.mu.RUnlock()
-
 			// If this is the user's first message (just registered), send initial data
 			if userJustRegistered {
-				roomsCopy = filterRoomsForUser(roomsCopy, username)
+				roomsCopy = filterRoomsForUser(roomsCopy, messagesCopy, actorUserID)
 				// Get logged-in and active user lists
 				loggedInUsers, activeUsers := cs.getUserLists()
 
 				initialData := map[string]interface{}{
-					"messages":      messagesCopy,
-					"rooms":         roomsCopy,
-					"users":         usersList, // Keep for backward compatibility
-					"loggedInUsers": loggedInUsers,
-					"activeUsers":   activeUsers,
-					"userPubKeys":   userPubKeysCopy,
+					"messages":               messagesCopy,
+					"rooms":                  roomsCopy,
+					"users":                  usersList, // Keep for backward compatibility
+					"loggedInUsers":          loggedInUsers,
+					"activeUsers":            activeUsers,
+					"userPubKeys":            userPubKeysCopy,
+					"userPubKeysUpdatedAt":   userPubKeysUpdatedAtCopy,
+					"roomNameCiphertexts":    cs.roomNameCiphertextsForRooms(roomsCopy),
+					"roomDirectoryUpdatedAt": cs.roomDirectoryUpdatedAtForRooms(roomsCopy),
 				}
-				log.Printf("[%s] ✓ User just registered, sending INITIAL_DATA to %s", socketIDStr, username)
-				socket.Emit(EventInitialData, initialData)
+				log.Printf("[%s] ✓ User just registered, sending INITIAL_DATA to %s", socketIDStr, actorUserID)
+				cs.emitSocketSigned(socket, EventInitialData, initialData)
 				log.Printf("[%s] ✓ INITIAL_DATA sent to newly registered user", socketIDStr)
 			}
 
@@ -1229,19 +1042,20 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			response := map[string]interface{}{
 				"messages": map[string][]Message{room: {newMessage}},
 			}
+			cs.attachIdentityDirectories(response)
 
 			log.Printf("[%s] Broadcasting SERVER_MESSAGE - rooms: %d, users: %d", socketIDStr, len(messagesCopy), len(usersList))
 
-			if userA, userB, ok := parseDMParticipants(room); ok {
-				cs.sendToUsers(defaultNsp, []string{userA, userB}, EventServerMessage, response)
-				log.Printf("[%s] ✓ Sent DM message only to participants: %s, %s", socketIDStr, userA, userB)
+			if userAID, userBID, ok := parseDMParticipants(room); ok {
+				cs.sendToUserIDs(defaultNsp, []string{userAID, userBID}, EventServerMessage, response)
+				log.Printf("[%s] ✓ Sent DM message only to participants: %s, %s", socketIDStr, userAID, userBID)
 			} else {
 				// Broadcast to all clients (excluding sender)
-				defaultNsp.Emit(EventServerMessage, response)
+				cs.emitNamespaceSigned(defaultNsp, EventServerMessage, response)
 				log.Printf("[%s] ✓ Broadcasted to all other clients", socketIDStr)
 
 				// Also emit directly to sender so they see their own messages
-				socket.Emit(EventServerMessage, response)
+				cs.emitSocketSigned(socket, EventServerMessage, response)
 			}
 			log.Printf("[%s] ✓ Emitted message update, CLIENT_MESSAGE handler complete", socketIDStr)
 		})
@@ -1252,60 +1066,127 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			log.Printf("[%s] ===== CLIENT_NEW_ROOM EVENT (per-socket) ======", socketIDStr)
 			log.Printf("[%s] Received room name: %+v (type: %T)", socketIDStr, roomName, roomName)
 
-			roomNameStr, ok := roomName.(string)
+			payload, ok := roomName.(map[string]interface{})
 			if !ok {
-				log.Printf("[%s] ✗ Invalid room name format", socketIDStr)
+				log.Printf("[%s] ✗ Invalid room payload format (strict mode requires object payload)", socketIDStr)
 				return
 			}
-			formattedRoom := formatRoomName(roomNameStr)
-			log.Printf("[%s] Formatted room name: %s", socketIDStr, formattedRoom)
+			auth, verified := cs.verifySignedMutation(socket, payload, EventClientNewRoom, []string{"roomNameCiphertext", "roomNameHash", "roomDirectoryUpdatedAt"})
+			if !verified {
+				return
+			}
+			requestingUserID := auth.UserID
+			roomNameCiphertext := parseStringField(payload, "roomNameCiphertext")
+			roomNameHash := parseStringField(payload, "roomNameHash")
+			if requestingUserID == "" || roomNameCiphertext == "" || roomNameHash == "" {
+				log.Printf("[%s] ✗ Missing required identity fields for new room", socketIDStr)
+				emitActionResult(socket, "newRoom", false, "invalid_request", "Missing required room metadata")
+				return
+			}
+
+			roomID := ""
+			formattedRoom := ""
+			appliedRoomCiphertext := roomNameCiphertext
+			appliedRoomUpdatedAt := int64(0)
+			created := false
+			roomDirectoryUpdatedAt := int64(0)
+			switch typed := payload["roomDirectoryUpdatedAt"].(type) {
+			case float64:
+				roomDirectoryUpdatedAt = int64(typed)
+			case int64:
+				roomDirectoryUpdatedAt = typed
+			case int:
+				roomDirectoryUpdatedAt = int64(typed)
+			case string:
+				if parsed, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64); err == nil {
+					roomDirectoryUpdatedAt = parsed
+				}
+			}
+			if roomDirectoryUpdatedAt <= 0 {
+				roomDirectoryUpdatedAt = time.Now().UTC().UnixMilli()
+			}
+
 			cs.mu.Lock()
-			requestingUser := ""
-			for user, sid := range cs.users {
-				if sid == socketIDStr {
-					requestingUser = user
-					break
-				}
+			requestingUser := requestingUserID
+			if cs.roomNameHashes == nil {
+				cs.roomNameHashes = make(map[string]string)
+			}
+			if cs.roomNameCiphertexts == nil {
+				cs.roomNameCiphertexts = make(map[string]string)
 			}
 
-			if !isRoomVisibleToUser(formattedRoom, requestingUser) {
-				cs.mu.Unlock()
-				log.Printf("[%s] ✗ Rejected DM room creation by non-participant user=%s room=%s", socketIDStr, requestingUser, formattedRoom)
-				return
-			}
-
-			roomExists := false
-			for _, r := range cs.rooms {
-				if r == formattedRoom {
-					roomExists = true
-					break
+			if existingRoomID, exists := cs.roomNameHashes[roomNameHash]; exists && existingRoomID != "" {
+				roomID = existingRoomID
+				formattedRoom = cs.roomsByID[roomID]
+				if formattedRoom == "" {
+					formattedRoom = roomID
 				}
-			}
-			if !roomExists {
+				existingUpdatedAt := cs.roomDirectoryUpdatedAt[roomID]
+				if existingCiphertext := cs.roomNameCiphertexts[roomID]; existingCiphertext != "" {
+					appliedRoomCiphertext = existingCiphertext
+					appliedRoomUpdatedAt = existingUpdatedAt
+				} else if existingUpdatedAt == 0 || roomDirectoryUpdatedAt >= existingUpdatedAt {
+					cs.roomNameCiphertexts[roomID] = roomNameCiphertext
+					cs.roomDirectoryUpdatedAt[roomID] = roomDirectoryUpdatedAt
+					appliedRoomUpdatedAt = roomDirectoryUpdatedAt
+				} else {
+					appliedRoomUpdatedAt = existingUpdatedAt
+				}
+				if appliedRoomUpdatedAt == 0 {
+					appliedRoomUpdatedAt = cs.roomDirectoryUpdatedAt[roomID]
+				}
+				cs.roomIDs[formattedRoom] = roomID
+				cs.roomsByID[roomID] = formattedRoom
+			} else {
+				roomID = uuid.NewString()
+				formattedRoom = roomID
+
+				if !isRoomVisibleToUser(cs.messages, formattedRoom, requestingUserID) {
+					cs.mu.Unlock()
+					log.Printf("[%s] ✗ Rejected DM room creation by non-participant user=%s room=%s", socketIDStr, requestingUser, formattedRoom)
+					return
+				}
+
 				cs.rooms = append(cs.rooms, formattedRoom)
+				cs.roomIDs[formattedRoom] = roomID
+				cs.roomsByID[roomID] = formattedRoom
+				cs.roomNameCiphertexts[roomID] = roomNameCiphertext
+				cs.roomDirectoryUpdatedAt[roomID] = roomDirectoryUpdatedAt
+				cs.roomNameHashes[roomNameHash] = roomID
+				appliedRoomUpdatedAt = roomDirectoryUpdatedAt
 				cs.messages[formattedRoom] = []Message{}
-				if introMessage, ok := buildDMIntroMessage(formattedRoom, requestingUser); ok {
+				if introMessage, ok := buildDMIntroMessage(formattedRoom, requestingUserID); ok {
+					introMessage.UserID = SystemUserID
+					introMessage.RoomID = cs.ensureRoomIDLocked(formattedRoom)
 					cs.messages[formattedRoom] = append([]Message{introMessage}, cs.messages[formattedRoom]...)
 				}
-				if cs.roomMembers[formattedRoom] == nil {
-					cs.roomMembers[formattedRoom] = make(map[string]bool)
+				if cs.roomMembers[roomID] == nil {
+					cs.roomMembers[roomID] = make(map[string]bool)
 				}
-				log.Printf("[%s] ✓ Created new room: %s", socketIDStr, formattedRoom)
+				created = true
+				log.Printf("[%s] ✓ Created new room id=%s", socketIDStr, roomID)
 			}
 			sortedRooms := cs.alphabeticalSort(cs.rooms)
 			roomMessages := make([]Message, len(cs.messages[formattedRoom]))
 			copy(roomMessages, cs.messages[formattedRoom])
 			cs.mu.Unlock()
 
-			if userA, userB, ok := parseDMParticipants(formattedRoom); ok {
-				for _, participant := range []string{userA, userB} {
+			if userAID, userBID, ok := parseDMParticipants(formattedRoom); ok {
+				for _, participantID := range []string{userAID, userBID} {
 					payload := map[string]interface{}{
 						"messages": map[string][]Message{
-							formattedRoom: filterMessagesByVisibility(roomMessages, participant),
+							formattedRoom: filterMessagesByVisibility(roomMessages, participantID),
 						},
-						"rooms": filterRoomsForUser(sortedRooms, participant),
+						"rooms": filterRoomsForUser(sortedRooms, cs.messages, participantID),
+						"roomNameCiphertexts": map[string]string{
+							roomID: appliedRoomCiphertext,
+						},
+						"roomDirectoryUpdatedAt": map[string]int64{
+							roomID: appliedRoomUpdatedAt,
+						},
 					}
-					cs.sendToUsers(defaultNsp, []string{participant}, EventServerNewRoom, payload)
+					cs.attachIdentityDirectories(payload)
+					cs.sendToUserIDs(defaultNsp, []string{participantID}, EventServerNewRoom, payload)
 				}
 				log.Printf("[%s] ✓ Sent DM room update only to participants", socketIDStr)
 				return
@@ -1313,11 +1194,23 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			response := map[string]interface{}{
 				"rooms": sortedRooms,
+				"roomNameCiphertexts": map[string]string{
+					roomID: appliedRoomCiphertext,
+				},
+				"roomDirectoryUpdatedAt": map[string]int64{
+					roomID: appliedRoomUpdatedAt,
+				},
 			}
+			cs.attachIdentityDirectories(response)
 
 			log.Printf("[%s] Broadcasting SERVER_NEW_ROOM with %d rooms", socketIDStr, len(sortedRooms))
-			defaultNsp.Emit(EventServerNewRoom, response)
-			socket.Emit(EventServerNewRoom, response)
+			cs.emitNamespaceSigned(defaultNsp, EventServerNewRoom, response)
+			cs.emitSocketSigned(socket, EventServerNewRoom, response)
+			if created {
+				emitActionResult(socket, "newRoom", true, "ok", "Room created")
+			} else {
+				emitActionResult(socket, "newRoom", true, "ok", "Room already exists")
+			}
 			log.Printf("[%s] ✓ SERVER_NEW_ROOM sent", socketIDStr)
 		})
 
@@ -1328,11 +1221,22 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✗ Invalid send public key payload", socketIDStr)
 				return
 			}
-			targetUser, _ := dataMap["targetUser"].(string)
-			fromUser, _ := dataMap["fromUser"].(string)
+			auth, verified := cs.verifySignedMutation(socket, dataMap, EventClientSendPublicKey, []string{"fromUserId", "publicKey"})
+			if !verified {
+				return
+			}
+			if parseStringField(dataMap, "fromUserId") != auth.UserID {
+				log.Printf("[%s] ✗ Signed identity mismatch in send public key", socketIDStr)
+				emitActionResult(socket, "sendPublicKey", false, "unauthorized", "Signed identity mismatch")
+				return
+			}
+			fromUserID := parseStringField(dataMap, "fromUserId")
+			targetUserID := parseStringField(dataMap, "targetUserId")
+			targetUser := cs.resolveUsernameFromPayload(dataMap, "targetUserId")
+			fromUser := cs.resolveUsernameFromPayload(dataMap, "fromUserId")
 			publicKey, _ := dataMap["publicKey"].(string)
 			encryptedAccountPackage, _ := dataMap["encryptedAccountPackage"].(string)
-			if fromUser == "" || publicKey == "" {
+			if fromUserID == "" || fromUser == "" || publicKey == "" {
 				log.Printf("[%s] ✗ Missing fields in send public key payload", socketIDStr)
 				return
 			}
@@ -1344,14 +1248,21 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			dmRoomCreatedForTransfer := false
 
 			cs.mu.Lock()
-			cs.userPubKeys[fromUser] = publicKey
+			cs.userPubKeys[fromUserID] = publicKey
+			if cs.userPubKeysUpdatedAt == nil {
+				cs.userPubKeysUpdatedAt = make(map[string]int64)
+			}
+			publicKeyUpdatedAt := time.Now().UTC().UnixMilli()
+			cs.userPubKeysUpdatedAt[fromUserID] = publicKeyUpdatedAt
 
 			if targetUser != "" {
-				dmRoomForTransfer = buildCanonicalDMRoom(fromUser, targetUser)
+				dmRoomForTransfer = buildCanonicalDMRoom(fromUserID, targetUserID)
 				if _, exists := cs.messages[dmRoomForTransfer]; !exists {
 					dmRoomCreatedForTransfer = true
 					cs.messages[dmRoomForTransfer] = []Message{}
-					if introMessage, ok := buildDMIntroMessage(dmRoomForTransfer, targetUser); ok {
+					if introMessage, ok := buildDMIntroMessage(dmRoomForTransfer, targetUserID); ok {
+						introMessage.UserID = SystemUserID
+						introMessage.RoomID = cs.ensureRoomIDLocked(dmRoomForTransfer)
 						dmIntroTimestamp = introMessage.Timestamp
 						cs.messages[dmRoomForTransfer] = append(
 							[]Message{introMessage},
@@ -1374,22 +1285,26 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				}
 
 				transferNotice := Message{
-					ID:        uuid.NewString(),
-					Timestamp: transferTimestamp,
-					Username:  "system",
-					Content:   fmt.Sprintf("%s sent you a private key bundle. You can switch to this imported account from login.", fromUser),
+					ID:                          uuid.NewString(),
+					Timestamp:                   transferTimestamp,
+					Username:                    "system",
+					UserID:                      SystemUserID,
+					RoomID:                      cs.ensureRoomIDLocked(dmRoomForTransfer),
+					Content:                     fmt.Sprintf("%s sent you a private key bundle. You can switch to this imported account from login.", fromUser),
 					KeyTransferEncryptedPackage: encryptedAccountPackage,
-					KeyTransferFromUser: fromUser,
-					Edited:    false,
-					VisibleTo: []string{targetUser},
+					KeyTransferFromUserID:       fromUserID,
+					Edited:                      false,
+					VisibleTo:                   []string{targetUserID},
 				}
 				senderTransferNotice := Message{
 					ID:        uuid.NewString(),
 					Timestamp: senderTransferTimestamp,
 					Username:  "system",
-					Content:   fmt.Sprintf("you sent key to user %s", targetUser),
+					UserID:    SystemUserID,
+					RoomID:    cs.ensureRoomIDLocked(dmRoomForTransfer),
+					Content:   fmt.Sprintf("you sent key to user %s", targetUserID),
 					Edited:    false,
-					VisibleTo: []string{fromUser},
+					VisibleTo: []string{fromUserID},
 				}
 				cs.messages[dmRoomForTransfer] = append(
 					[]Message{senderTransferNotice, transferNotice},
@@ -1398,48 +1313,38 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 				dmMessagesForTarget = filterMessagesByVisibility(
 					cs.messages[dmRoomForTransfer],
-					targetUser,
+					targetUserID,
 				)
 				dmMessagesForSender = filterMessagesByVisibility(
 					cs.messages[dmRoomForTransfer],
-					fromUser,
+					fromUserID,
 				)
 			}
 
-			messagesCopyForSave := make(Messages)
-			for k, v := range cs.messages {
-				messagesCopyForSave[k] = make([]Message, len(v))
-				copy(messagesCopyForSave[k], v)
-			}
-			roomsCopyForSave := make([]string, len(cs.rooms))
-			copy(roomsCopyForSave, cs.rooms)
-			usersCopyForSave := make(map[string]string)
-			for k, v := range cs.users {
-				usersCopyForSave[k] = v
-			}
-			userPubKeysCopy := make(map[string]string)
-			for k, v := range cs.userPubKeys {
-				userPubKeysCopy[k] = v
-			}
+			messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy := cs.snapshotStateForSaveLocked()
 			activeUsers := make([]string, 0, len(cs.users))
 			for user := range cs.users {
-				if user != fromUser {
+				if user != fromUserID {
 					activeUsers = append(activeUsers, user)
 				}
 			}
 			cs.mu.Unlock()
 
-			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+			if err := cs.saveState(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
 				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
 			}
 
 			payload := map[string]interface{}{
-				"fromUser":  fromUser,
-				"publicKey": publicKey,
+				"fromUserId":         fromUserID,
+				"publicKey":          publicKey,
+				"publicKeyUpdatedAt": publicKeyUpdatedAt,
 			}
 			if targetUser != "" && encryptedAccountPackage != "" {
 				payload["transferDmRoom"] = dmRoomForTransfer
+				payload["transferDmRoomId"] = cs.ensureRoomID(dmRoomForTransfer)
+				payload["targetUserId"] = targetUserID
 			}
+			cs.attachIdentityDirectories(payload)
 
 			if targetUser == "" {
 				if len(activeUsers) > 0 {
@@ -1449,22 +1354,169 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				return
 			}
 
-			cs.sendToUsers(defaultNsp, []string{targetUser}, EventServerPublicKeyReceived, payload)
+			cs.sendToUserIDs(defaultNsp, []string{targetUserID}, EventServerPublicKeyReceived, payload)
 			if dmRoomForTransfer != "" && len(dmMessagesForTarget) > 0 {
-				cs.sendToUsers(defaultNsp, []string{targetUser}, EventServerMessage, map[string]interface{}{
+				cs.sendToUserIDs(defaultNsp, []string{targetUserID}, EventServerMessage, map[string]interface{}{
 					"messages": map[string][]Message{
 						dmRoomForTransfer: dmMessagesForTarget,
 					},
 				})
 			}
 			if dmRoomForTransfer != "" && len(dmMessagesForSender) > 0 {
-				cs.sendToUsers(defaultNsp, []string{fromUser}, EventServerMessage, map[string]interface{}{
+				cs.sendToUserIDs(defaultNsp, []string{fromUserID}, EventServerMessage, map[string]interface{}{
 					"messages": map[string][]Message{
 						dmRoomForTransfer: dmMessagesForSender,
 					},
 				})
 			}
 			log.Printf("[%s] ✓ Relayed key transfer from %s to %s", socketIDStr, fromUser, targetUser)
+		})
+
+		socket.OnEvent(EventClientIdentityDirectoryRefresh, func(data interface{}) {
+			socketIDStr := string(socket.ID())
+			payload, ok := data.(map[string]interface{})
+			if !ok {
+				log.Printf("[%s] ✗ Invalid identity refresh payload", socketIDStr)
+				return
+			}
+
+			auth, verified := cs.verifySignedMutation(
+				socket,
+				payload,
+				EventClientIdentityDirectoryRefresh,
+				[]string{"userId", "refreshedForUserIds"},
+			)
+			if !verified {
+				return
+			}
+
+			payload["userId"] = auth.UserID
+			actorUserID := parseStringField(payload, "userId")
+			if actorUserID == "" {
+				emitActionResult(socket, "identityRefresh", false, "invalid_request", "Missing sender identity")
+				return
+			}
+
+			refreshedForUserIDs := parseStringList(payload["refreshedForUserIds"])
+			if len(refreshedForUserIDs) == 0 {
+				emitActionResult(socket, "identityRefresh", false, "invalid_request", "Missing refreshed user IDs")
+				return
+			}
+
+			roomCiphertexts := parseCiphertextMap(payload["roomNameCiphertexts"], maxIdentityCiphertextBytes)
+			userCiphertexts := parseCiphertextMap(payload["userDirectoryCiphertexts"], maxIdentityCiphertextBytes)
+			roomUpdatedAtMap := parseTimestampMap(payload["roomDirectoryUpdatedAt"])
+			userUpdatedAtMap := parseTimestampMap(payload["userDirectoryUpdatedAt"])
+			if len(roomCiphertexts) == 0 && len(userCiphertexts) == 0 {
+				emitActionResult(socket, "identityRefresh", false, "invalid_request", "No directory ciphertexts provided")
+				return
+			}
+
+			acceptedRoomCiphertexts := make(map[string]string)
+			acceptedUserCiphertexts := make(map[string]string)
+			acceptedRoomUpdatedAt := make(map[string]int64)
+			acceptedUserUpdatedAt := make(map[string]int64)
+			acceptedRefreshedUsers := make([]string, 0, len(refreshedForUserIDs))
+
+			cs.mu.Lock()
+			for _, targetUserID := range refreshedForUserIDs {
+				if targetUserID == "" {
+					continue
+				}
+				if _, exists := cs.userPubKeys[targetUserID]; exists {
+					acceptedRefreshedUsers = append(acceptedRefreshedUsers, targetUserID)
+				}
+			}
+
+			if cs.roomNameCiphertexts == nil {
+				cs.roomNameCiphertexts = make(map[string]string)
+			}
+			if cs.roomDirectoryUpdatedAt == nil {
+				cs.roomDirectoryUpdatedAt = make(map[string]int64)
+			}
+			for roomID, cipher := range roomCiphertexts {
+				if roomID == "" || cipher == "" {
+					continue
+				}
+				if _, exists := cs.roomsByID[roomID]; !exists {
+					continue
+				}
+				incomingUpdatedAt := int64(0)
+				if roomUpdatedAtMap != nil {
+					incomingUpdatedAt = roomUpdatedAtMap[roomID]
+				}
+				if incomingUpdatedAt <= 0 {
+					incomingUpdatedAt = time.Now().UTC().UnixMilli()
+				}
+				existingUpdatedAt := cs.roomDirectoryUpdatedAt[roomID]
+				if existingUpdatedAt > 0 && incomingUpdatedAt < existingUpdatedAt {
+					continue
+				}
+				cs.roomNameCiphertexts[roomID] = cipher
+				cs.roomDirectoryUpdatedAt[roomID] = incomingUpdatedAt
+				acceptedRoomCiphertexts[roomID] = cipher
+				acceptedRoomUpdatedAt[roomID] = incomingUpdatedAt
+			}
+
+			if cs.usernameCiphertexts == nil {
+				cs.usernameCiphertexts = make(map[string]string)
+			}
+			if cs.userDirectoryUpdatedAt == nil {
+				cs.userDirectoryUpdatedAt = make(map[string]int64)
+			}
+			for userID, cipher := range userCiphertexts {
+				if userID == "" || cipher == "" {
+					continue
+				}
+				if _, exists := cs.userPubKeys[userID]; !exists {
+					continue
+				}
+				incomingUpdatedAt := int64(0)
+				if userUpdatedAtMap != nil {
+					incomingUpdatedAt = userUpdatedAtMap[userID]
+				}
+				if incomingUpdatedAt <= 0 {
+					incomingUpdatedAt = time.Now().UTC().UnixMilli()
+				}
+				existingUpdatedAt := cs.userDirectoryUpdatedAt[userID]
+				if existingUpdatedAt > 0 && incomingUpdatedAt < existingUpdatedAt {
+					continue
+				}
+				cs.usernameCiphertexts[userID] = cipher
+				cs.userDirectoryUpdatedAt[userID] = incomingUpdatedAt
+				acceptedUserCiphertexts[userID] = cipher
+				acceptedUserUpdatedAt[userID] = incomingUpdatedAt
+			}
+			cs.mu.Unlock()
+
+			if len(acceptedRoomCiphertexts) == 0 && len(acceptedUserCiphertexts) == 0 {
+				emitActionResult(socket, "identityRefresh", false, "invalid_request", "No valid directory updates accepted")
+				return
+			}
+
+			cs.mu.RLock()
+			messagesCopyForSave := cloneMessages(cs.messages)
+			roomsCopyForSave := cloneStringSlice(cs.rooms)
+			usersCopyForSave := cloneStringMap(cs.users)
+			userPubKeysCopyForSave := cloneStringMap(cs.userPubKeys)
+			cs.mu.RUnlock()
+			if err := cs.saveState(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopyForSave); err != nil {
+				log.Printf("[%s] ✗ Failed to save identity refresh state: %v", socketIDStr, err)
+			}
+
+			response := map[string]interface{}{
+				"refreshedByUserId":        actorUserID,
+				"refreshedForUserIds":      acceptedRefreshedUsers,
+				"roomNameCiphertexts":      acceptedRoomCiphertexts,
+				"roomDirectoryUpdatedAt":   acceptedRoomUpdatedAt,
+				"userDirectoryCiphertexts": acceptedUserCiphertexts,
+				"userDirectoryUpdatedAt":   acceptedUserUpdatedAt,
+			}
+
+			cs.emitNamespaceSigned(defaultNsp, EventServerIdentityDirectoryRefresh, response)
+			cs.emitSocketSigned(socket, EventServerIdentityDirectoryRefresh, response)
+			emitActionResult(socket, "identityRefresh", true, "ok", "Identity directory refresh propagated")
+			log.Printf("[%s] ✓ Identity directory refresh accepted from %s (rooms=%d users=%d)", socketIDStr, actorUserID, len(acceptedRoomCiphertexts), len(acceptedUserCiphertexts))
 		})
 
 		socket.OnEvent(EventClientUnblockUserDelta, func(data interface{}) {
@@ -1474,10 +1526,17 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✗ Invalid unblock delta payload", socketIDStr)
 				return
 			}
+			auth, verified := cs.verifySignedMutation(socket, payload, EventClientUnblockUserDelta, []string{"userId", "targetUserId", "blockedSince"})
+			if !verified {
+				return
+			}
+			payload["userId"] = auth.UserID
 
-			requestingUser, _ := payload["username"].(string)
+			requestingUser := cs.resolveUsernameFromPayload(payload, "userId")
+			requestingUserID := parseStringField(payload, "userId")
 			sessionID, _ := payload["sessionId"].(string)
-			targetUser, _ := payload["targetUser"].(string)
+			targetUser := cs.resolveUsernameFromPayload(payload, "targetUserId")
+			targetUserID := parseStringField(payload, "targetUserId")
 			blockedSince := int64(0)
 			if rawBlockedSince, ok := payload["blockedSince"]; ok {
 				switch value := rawBlockedSince.(type) {
@@ -1490,14 +1549,14 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				}
 			}
 
-			if requestingUser == "" || targetUser == "" || sessionID == "" {
+			if requestingUserID == "" || requestingUser == "" || targetUserID == "" || targetUser == "" || sessionID == "" {
 				log.Printf("[%s] ✗ Missing fields in unblock delta payload", socketIDStr)
 				emitActionResult(socket, "unblockDelta", false, "invalid_request", "Missing required fields")
 				return
 			}
 
-			if !cs.isSessionAuthorizedForUser(sessionID, requestingUser) {
-				code, message := cs.getSessionAuthFailure(sessionID, requestingUser)
+			if !cs.isSessionAuthorizedForUser(sessionID, requestingUserID) {
+				code, message := cs.getSessionAuthFailure(sessionID, requestingUserID)
 				log.Printf("[%s] ✗ Rejected unblock delta request by %s (%s)", socketIDStr, requestingUser, code)
 				emitActionResult(socket, "unblockDelta", false, code, message)
 				return
@@ -1508,7 +1567,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			for room, roomMessages := range cs.messages {
 				filtered := make([]Message, 0)
 				for _, msg := range roomMessages {
-					if msg.Username != targetUser {
+					if msg.UserID != targetUserID {
 						continue
 					}
 					if blockedSince > 0 && msg.Timestamp < blockedSince {
@@ -1521,7 +1580,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 					continue
 				}
 
-				visible := filterMessagesByVisibility(filtered, requestingUser)
+				visible := filterMessagesByVisibility(filtered, requestingUserID)
 				if len(visible) > 0 {
 					delta[room] = visible
 				}
@@ -1533,7 +1592,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				return
 			}
 
-			socket.Emit(EventServerMessage, map[string]interface{}{
+			cs.emitSocketSigned(socket, EventServerMessage, map[string]interface{}{
 				"messages": delta,
 			})
 			emitActionResult(socket, "unblockDelta", true, "ok", "Message delta synced")
@@ -1548,11 +1607,13 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				return
 			}
 
-			username, _ := payload["username"].(string)
+			username := cs.resolveUsernameFromPayload(payload, "userId")
+			requestUserID := parseStringField(payload, "userId")
 			sessionID, _ := payload["sessionId"].(string)
 			defaultRoom, _ := payload["defaultRoom"].(string)
-			currentRoom, _ := payload["currentRoom"].(string)
+			currentRoom := cs.resolveRoomFromPayload(payload, "currentRoomId")
 			openRooms := parseStringList(payload["openRooms"])
+			openRoomIDs := parseStringList(payload["openRoomIds"])
 
 			if defaultRoom == "" {
 				defaultRoom = DefaultRoom
@@ -1563,42 +1624,39 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			if len(openRooms) == 0 {
 				openRooms = []string{defaultRoom}
 			}
+			if len(openRoomIDs) > 0 {
+				for _, roomID := range openRoomIDs {
+					cs.mu.RLock()
+					roomName := cs.roomsByID[roomID]
+					cs.mu.RUnlock()
+					if roomName != "" {
+						openRooms = append(openRooms, roomName)
+					}
+				}
+			}
 
-			if username == "" || sessionID == "" {
+			if username == "" || requestUserID == "" || sessionID == "" {
 				emitActionResult(socket, "initialData", false, "invalid_request", "Missing authentication fields")
 				return
 			}
 
-			if !cs.isSessionAuthorizedForUser(sessionID, username) {
-				code, message := cs.getSessionAuthFailure(sessionID, username)
+			if !cs.isSessionAuthorizedForUser(sessionID, requestUserID) {
+				code, message := cs.getSessionAuthFailure(sessionID, requestUserID)
 				log.Printf("[%s] ✗ Rejected initial data request by %s (%s)", socketIDStr, username, code)
 				emitActionResult(socket, "initialData", false, code, message)
 				return
 			}
 
 			// Keep presence mapping accurate for online users even if they haven't sent chat messages yet.
-			cs.registerUserFromAuth(username, socketIDStr)
+			cs.registerUserFromAuth(requestUserID, socketIDStr)
 
 			cs.mu.RLock()
-			messagesCopy := buildScopedMessagesForUser(cs.messages, username, defaultRoom, currentRoom, openRooms)
-			roomsCopy := make([]string, len(cs.rooms))
-			copy(roomsCopy, cs.rooms)
-			roomsCopy = filterRoomsForUser(roomsCopy, username)
-
-			var usersCopy []string
-			for user := range cs.users {
-				if user != "" && user != "undefined" {
-					usersCopy = append(usersCopy, user)
-				}
-			}
-			sort.Slice(usersCopy, func(i, j int) bool {
-				return strings.ToLower(usersCopy[i]) < strings.ToLower(usersCopy[j])
-			})
-
-			userPubKeysCopy := make(map[string]string)
-			for k, v := range cs.userPubKeys {
-				userPubKeysCopy[k] = v
-			}
+			messagesCopy := buildScopedMessagesForUser(cs.messages, requestUserID, defaultRoom, currentRoom, openRooms)
+			roomsCopy := cloneStringSlice(cs.rooms)
+			roomsCopy = filterRoomsForUser(roomsCopy, cs.messages, requestUserID)
+			usersCopy := cs.sortedConnectedUsersLocked()
+			userPubKeysCopy := cloneStringMap(cs.userPubKeys)
+			userPubKeysUpdatedAtCopy := cloneInt64Map(cs.userPubKeysUpdatedAt)
 
 			roomMembersCopy := make(map[string][]string)
 			for room, members := range cs.roomMembers {
@@ -1617,16 +1675,22 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			loggedInUsers, activeUsers := cs.getUserLists()
 
-			socket.Emit(EventInitialData, map[string]interface{}{
-				"messages":      messagesCopy,
-				"rooms":         roomsCopy,
-				"users":         usersCopy,
-				"loggedInUsers": loggedInUsers,
-				"activeUsers":   activeUsers,
-				"userPubKeys":   userPubKeysCopy,
-				"roomMembers":   roomMembersCopy,
-				"userLastSeen":  userLastSeenCopy,
-			})
+			initialData := map[string]interface{}{
+				"messages":               messagesCopy,
+				"rooms":                  roomsCopy,
+				"users":                  usersCopy,
+				"loggedInUsers":          loggedInUsers,
+				"activeUsers":            activeUsers,
+				"userPubKeys":            userPubKeysCopy,
+				"userPubKeysUpdatedAt":   userPubKeysUpdatedAtCopy,
+				"roomMembers":            roomMembersCopy,
+				"userLastSeen":           userLastSeenCopy,
+				"currentUserId":          requestUserID,
+				"roomNameCiphertexts":    cs.roomNameCiphertextsForRooms(roomsCopy),
+				"roomDirectoryUpdatedAt": cs.roomDirectoryUpdatedAtForRooms(roomsCopy),
+			}
+			cs.attachIdentityDirectories(initialData)
+			cs.emitSocketSigned(socket, EventInitialData, initialData)
 			emitActionResult(socket, "initialData", true, "ok", "Initial data sent")
 			log.Printf("[%s] ✓ Sent filtered initial data to %s (rooms requested: %d, rooms returned: %d)", socketIDStr, username, len(openRooms), len(messagesCopy))
 		})
@@ -1639,23 +1703,25 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				return
 			}
 
-			username, _ := payload["username"].(string)
+			username := cs.resolveUsernameFromPayload(payload, "userId")
+			requestUserID := parseStringField(payload, "userId")
 			sessionID, _ := payload["sessionId"].(string)
-			room, _ := payload["room"].(string)
+			room := cs.resolveRoomFromPayload(payload, "roomId")
+			roomID := parseStringField(payload, "roomId")
 
-			if username == "" || sessionID == "" || room == "" {
+			if username == "" || requestUserID == "" || sessionID == "" || roomID == "" || room == "" {
 				emitActionResult(socket, "roomData", false, "invalid_request", "Missing required fields")
 				return
 			}
 
-			if !cs.isSessionAuthorizedForUser(sessionID, username) {
-				code, message := cs.getSessionAuthFailure(sessionID, username)
+			if !cs.isSessionAuthorizedForUser(sessionID, requestUserID) {
+				code, message := cs.getSessionAuthFailure(sessionID, requestUserID)
 				log.Printf("[%s] ✗ Rejected room data request by %s (%s)", socketIDStr, username, code)
 				emitActionResult(socket, "roomData", false, code, message)
 				return
 			}
 
-			if !isRoomVisibleToUser(room, username) {
+			if !isRoomVisibleToUser(cs.messages, room, requestUserID) {
 				log.Printf("[%s] ✗ Rejected room data request by non-participant user=%s room=%s", socketIDStr, username, room)
 				emitActionResult(socket, "roomData", false, "unauthorized", "Unauthorized room access")
 				return
@@ -1663,7 +1729,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			cs.mu.RLock()
 			roomMessages := cs.messages[room]
-			visible := filterMessagesByVisibility(roomMessages, username)
+			visible := filterMessagesByVisibility(roomMessages, requestUserID)
 			cs.mu.RUnlock()
 
 			delta := make(Messages)
@@ -1671,9 +1737,11 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				delta[room] = visible
 			}
 
-			socket.Emit(EventServerMessage, map[string]interface{}{
+			response := map[string]interface{}{
 				"messages": delta,
-			})
+			}
+			cs.attachIdentityDirectories(response)
+			cs.emitSocketSigned(socket, EventServerMessage, response)
 			emitActionResult(socket, "roomData", true, "ok", "Room data sent")
 			log.Printf("[%s] ✓ Sent lazy room data to %s for room %s (%d messages)", socketIDStr, username, room, len(visible))
 		})
@@ -1694,10 +1762,16 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✗ Invalid request access format", socketIDStr)
 				return
 			}
+			auth, verified := cs.verifySignedMutation(socket, msgMap, EventClientRequestAccess, []string{"userId", "requestAccess.originalSenderId", "requestAccess.originalRoomId", "requestAccess.messageTimestamp"})
+			if !verified {
+				return
+			}
+			msgMap["userId"] = auth.UserID
 
 			// Forward the access request to the original poster
 			// Note: The room name in the message is a hint, but we'll use @originalSender for the DM room
-			requestingUser, _ := msgMap["username"].(string)
+			requestingUser := cs.resolveUsernameFromPayload(msgMap, "userId")
+			requestingUserID := parseStringField(msgMap, "userId")
 			requestAccessRaw, hasRequestAccess := msgMap["requestAccess"]
 			if !hasRequestAccess {
 				log.Printf("[%s] ✗ Missing requestAccess field", socketIDStr)
@@ -1710,9 +1784,10 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				return
 			}
 
-			originalSender, _ := requestAccess["originalSender"].(string)
-			if originalSender == "" {
-				log.Printf("[%s] ✗ Missing originalSender in requestAccess", socketIDStr)
+			originalSenderID := parseStringField(requestAccess, "originalSenderId")
+			originalSender := cs.resolveUsernameFromPayload(requestAccess, "originalSenderId")
+			if requestingUserID == "" || requestingUser == "" || originalSenderID == "" || originalSender == "" {
+				log.Printf("[%s] ✗ Missing originalSender identity in requestAccess", socketIDStr)
 				return
 			}
 
@@ -1720,7 +1795,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			// Find the original sender and send them the request
 			cs.mu.RLock()
-			_, exists := cs.users[originalSender]
+			_, exists := cs.userSocketsByID[originalSenderID]
 			cs.mu.RUnlock()
 
 			if exists {
@@ -1728,13 +1803,21 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				// For the original sender, it's @requestingUser
 				// For the requesting user, it's @originalSender
 				// We'll use @originalSender as the canonical name, but both users will see messages
-				dmRoomForOriginalSender := fmt.Sprintf("@%s", requestingUser) // Original sender sees @requestingUser
-				dmRoomForRequestingUser := fmt.Sprintf("@%s", originalSender) // Requesting user sees @originalSender
-				// Use the requesting user's name as canonical (so original sender sees @requestingUser)
-				dmRoom := dmRoomForOriginalSender
+				dmRoom := buildCanonicalDMRoom(requestingUserID, originalSenderID)
 
 				// Find the original message to get its content for quoting
-				originalRoom, _ := requestAccess["originalRoom"].(string)
+				originalRoomID := parseStringField(requestAccess, "originalRoomId")
+				if originalRoomID == "" {
+					log.Printf("[%s] ✗ Missing originalRoomId in requestAccess", socketIDStr)
+					return
+				}
+				cs.mu.RLock()
+				originalRoom := cs.roomsByID[originalRoomID]
+				cs.mu.RUnlock()
+				if strings.TrimSpace(originalRoom) == "" {
+					log.Printf("[%s] ✗ Unknown originalRoomId in requestAccess", socketIDStr)
+					return
+				}
 				var messageTimestamp int64
 				if ts, ok := requestAccess["messageTimestamp"].(float64); ok {
 					messageTimestamp = int64(ts)
@@ -1749,7 +1832,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				originalMessageContent := ""
 				if originalRoomMessages, exists := cs.messages[originalRoom]; exists {
 					for _, msg := range originalRoomMessages {
-						if msg.Timestamp == messageTimestamp && msg.Username == originalSender {
+						if msg.Timestamp == messageTimestamp && msg.UserID == originalSenderID {
 							// Try to get decrypted content if available, otherwise use encrypted indicator
 							if msg.Content != "" && !strings.Contains(msg.Content, "🔒") {
 								originalMessageContent = msg.Content
@@ -1773,6 +1856,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 					log.Printf("[%s] Creating new DM room: %s", socketIDStr, dmRoom)
 					cs.messages[dmRoom] = []Message{}
 					cs.rooms = append(cs.rooms, dmRoom)
+					cs.ensureRoomIDLocked(dmRoom)
 				} else {
 					log.Printf("[%s] Reusing existing DM room: %s", socketIDStr, dmRoom)
 					if cs.messages[dmRoom] == nil {
@@ -1796,41 +1880,25 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				originalSenderMsg := Message{
 					Timestamp:    time.Now().Unix(),
 					Username:     requestingUser,
+					UserID:       requestingUserID,
+					RoomID:       cs.ensureRoomIDLocked(dmRoom),
 					Content:      originalSenderContent,
 					EncryptedFor: make(map[string]string),
-					VisibleTo:    []string{originalSender}, // Only original sender can see this
+					VisibleTo:    []string{originalSenderID}, // Only original sender can see this
 				}
 
 				// Message for requesting user (they'll see this with status) - visible only to requesting user
 				requestingUserMsg := Message{
 					Timestamp:    time.Now().Unix(),
 					Username:     originalSender, // Show original sender's name
+					UserID:       originalSenderID,
+					RoomID:       cs.ensureRoomIDLocked(dmRoom),
 					Content:      requestingUserContent,
 					EncryptedFor: make(map[string]string),
-					VisibleTo:    []string{requestingUser}, // Only requesting user can see this
+					VisibleTo:    []string{requestingUserID}, // Only requesting user can see this
 				}
 
-				// Store messages in both room names (each user sees their own room)
-				cs.messages[dmRoomForOriginalSender] = append([]Message{originalSenderMsg}, cs.messages[dmRoomForOriginalSender]...)
-				cs.messages[dmRoomForRequestingUser] = append([]Message{requestingUserMsg}, cs.messages[dmRoomForRequestingUser]...)
-
-				// Add both rooms to room list if they don't exist
-				roomExists1 := false
-				roomExists2 := false
-				for _, r := range cs.rooms {
-					if r == dmRoomForOriginalSender {
-						roomExists1 = true
-					}
-					if r == dmRoomForRequestingUser {
-						roomExists2 = true
-					}
-				}
-				if !roomExists1 {
-					cs.rooms = append(cs.rooms, dmRoomForOriginalSender)
-				}
-				if !roomExists2 {
-					cs.rooms = append(cs.rooms, dmRoomForRequestingUser)
-				}
+				cs.messages[dmRoom] = append([]Message{requestingUserMsg, originalSenderMsg}, cs.messages[dmRoom]...)
 
 				cs.mu.Unlock()
 
@@ -1838,36 +1906,42 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				if defaultNsp != nil {
 					// Include the requesting user's public key so the client can encrypt for them
 					requestingUserPubKey := ""
+					requestingUserPubKeyUpdatedAt := int64(0)
 					cs.mu.RLock()
-					if key, exists := cs.userPubKeys[requestingUser]; exists {
+					if key, exists := cs.userPubKeys[requestingUserID]; exists {
 						requestingUserPubKey = key
+					}
+					if updatedAt, exists := cs.userPubKeysUpdatedAt[requestingUserID]; exists {
+						requestingUserPubKeyUpdatedAt = updatedAt
 					}
 					cs.mu.RUnlock()
 
 					// Send to original sender: access request with their room name
 					accessRequestDataForOriginalSender := map[string]interface{}{
-						"requestAccess":        requestAccess,
-						"requestingUser":       requestingUser,
-						"requestRoom":          dmRoomForOriginalSender, // Original sender sees @requestingUser
-						"requestingUserPubKey": requestingUserPubKey,
+						"requestAccess":                 requestAccess,
+						"requestRoom":                   dmRoom,
+						"requestingUserId":              requestingUserID,
+						"originalSenderId":              originalSenderID,
+						"requestingUserPubKey":          requestingUserPubKey,
+						"requestingUserPubKeyUpdatedAt": requestingUserPubKeyUpdatedAt,
 					}
-					cs.sendToUsers(defaultNsp, []string{originalSender}, EventServerAccessRequest, accessRequestDataForOriginalSender)
+					cs.sendToUserIDs(defaultNsp, []string{originalSenderID}, EventServerAccessRequest, accessRequestDataForOriginalSender)
 
 					// Send message update to original sender (only their visible message)
 					responseForOriginalSender := map[string]interface{}{
-						"messages": map[string][]Message{dmRoomForOriginalSender: {originalSenderMsg}},
+						"messages": map[string][]Message{dmRoom: {originalSenderMsg}},
 						"rooms":    cs.rooms,
 					}
-					cs.sendToUsers(defaultNsp, []string{originalSender}, EventServerMessage, responseForOriginalSender)
+					cs.sendToUserIDs(defaultNsp, []string{originalSenderID}, EventServerMessage, responseForOriginalSender)
 
 					// Send message update to requesting user (only their visible message)
 					responseForRequestingUser := map[string]interface{}{
-						"messages": map[string][]Message{dmRoomForRequestingUser: {requestingUserMsg}},
+						"messages": map[string][]Message{dmRoom: {requestingUserMsg}},
 						"rooms":    cs.rooms,
 					}
-					cs.sendToUsers(defaultNsp, []string{requestingUser}, EventServerMessage, responseForRequestingUser)
+					cs.sendToUserIDs(defaultNsp, []string{requestingUserID}, EventServerMessage, responseForRequestingUser)
 
-					log.Printf("[%s] ✓ Access request sent to %s (room: %s) and %s (room: %s)", socketIDStr, originalSender, dmRoomForOriginalSender, requestingUser, dmRoomForRequestingUser)
+					log.Printf("[%s] ✓ Access request sent to %s and %s in room %s", socketIDStr, originalSender, requestingUser, dmRoom)
 				} else {
 					log.Printf("[%s] ✗ defaultNsp is nil, cannot forward access request", socketIDStr)
 				}
@@ -1894,9 +1968,15 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✗ Invalid grant access format", socketIDStr)
 				return
 			}
+			_, verified := cs.verifySignedMutation(socket, grantMap, EventClientGrantAccess, []string{"requestingUserId", "originalRoomId", "messageTimestamp", "encryptedMessage"})
+			if !verified {
+				return
+			}
 
-			requestingUser, _ := grantMap["requestingUser"].(string)
-			originalRoom, _ := grantMap["originalRoom"].(string)
+			requestingUser := cs.resolveUsernameFromPayload(grantMap, "requestingUserId")
+			requestingUserID := parseStringField(grantMap, "requestingUserId")
+			originalRoom := cs.resolveRoomFromPayload(grantMap, "originalRoomId")
+			originalRoomID := parseStringField(grantMap, "originalRoomId")
 			encryptedMessage, _ := grantMap["encryptedMessage"].(string)
 
 			// Handle messageTimestamp - it might come as float64 from JSON
@@ -1912,7 +1992,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				return
 			}
 
-			if requestingUser == "" || originalRoom == "" || encryptedMessage == "" {
+			if requestingUser == "" || requestingUserID == "" || originalRoomID == "" || originalRoom == "" || encryptedMessage == "" {
 				log.Printf("[%s] ✗ Missing required fields in grant access: requestingUser=%s, originalRoom=%s, hasEncryptedMessage=%v", socketIDStr, requestingUser, originalRoom, encryptedMessage != "")
 				return
 			}
@@ -1933,9 +2013,9 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 							if messages[i].EncryptedMessage != "" {
 								messages[i].Versions = append(messages[i].Versions, MessageVersion{
 									EncryptedMessage: messages[i].EncryptedMessage,
-									Version:       0,
-									ChangeSummary: "original version",
-									Timestamp:     messages[i].Timestamp,
+									Version:          0,
+									ChangeSummary:    "original version",
+									Timestamp:        messages[i].Timestamp,
 								})
 							}
 						}
@@ -1945,9 +2025,9 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 						// Add new version (newest first)
 						newVersion := MessageVersion{
 							EncryptedMessage: encryptedMessage,
-							Version:       len(messages[i].Versions),
-							ChangeSummary: changeSummary,
-							Timestamp:     time.Now().Unix(),
+							Version:          len(messages[i].Versions),
+							ChangeSummary:    changeSummary,
+							Timestamp:        time.Now().Unix(),
 						}
 						messages[i].Versions = append([]MessageVersion{newVersion}, messages[i].Versions...)
 						messages[i].CurrentVersion = new(int)
@@ -1966,10 +2046,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			// Get original sender while we still have the lock
 			originalSenderForDM := ""
+			originalSenderID := ""
 			if messages, exists := cs.messages[originalRoom]; exists {
 				for _, msg := range messages {
 					if msg.Timestamp == messageTimestamp {
-						originalSenderForDM = msg.Username
+						originalSenderForDM = msg.UserID
+						originalSenderID = msg.UserID
 						log.Printf("[%s] ✓ Found original sender: %s", socketIDStr, originalSenderForDM)
 						break
 					}
@@ -1979,16 +2061,13 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				}
 			}
 
-			dmRoomForOriginalSender := fmt.Sprintf("@%s", requestingUser)      // Original sender sees @requestingUser
-			dmRoomForRequestingUser := fmt.Sprintf("@%s", originalSenderForDM) // Requesting user sees @originalSender
-			log.Printf("[%s] Original sender for DM: %s, DM rooms: %s (original sender) and %s (requesting user)", socketIDStr, originalSenderForDM, dmRoomForOriginalSender, dmRoomForRequestingUser)
+			dmRoom := buildCanonicalDMRoom(requestingUserID, originalSenderID)
+			log.Printf("[%s] Original sender for DM: %s, DM room: %s", socketIDStr, originalSenderForDM, dmRoom)
 
 			if originalSenderForDM != "" {
-				// Update DM room messages while we still have the lock
-				// Update original sender's room (@requestingUser)
-				if dmRoomMessages, exists := cs.messages[dmRoomForOriginalSender]; exists && dmRoomMessages != nil {
+				if dmRoomMessages, exists := cs.messages[dmRoom]; exists {
 					for i := range dmRoomMessages {
-						if strings.Contains(dmRoomMessages[i].Content, "requests access") {
+						if len(dmRoomMessages[i].VisibleTo) == 1 && dmRoomMessages[i].VisibleTo[0] == originalSenderID && strings.Contains(dmRoomMessages[i].Content, "requests access") {
 							if !strings.Contains(dmRoomMessages[i].Content, "[Access Granted]") {
 								dmRoomMessages[i].Content = strings.Replace(
 									dmRoomMessages[i].Content,
@@ -1996,22 +2075,17 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 									"requests access [Access Granted]",
 									1,
 								)
-								log.Printf("[%s] ✓ Updated access request message to show grant in %s", socketIDStr, dmRoomForOriginalSender)
+								log.Printf("[%s] ✓ Updated access request message to show grant in %s", socketIDStr, dmRoom)
 							}
 						}
-					}
-				}
-				// Update requesting user's room (@originalSender)
-				if dmRoomMessages, exists := cs.messages[dmRoomForRequestingUser]; exists && dmRoomMessages != nil {
-					for i := range dmRoomMessages {
-						if strings.Contains(dmRoomMessages[i].Content, "You requested access") {
+						if len(dmRoomMessages[i].VisibleTo) == 1 && dmRoomMessages[i].VisibleTo[0] == requestingUserID && strings.Contains(dmRoomMessages[i].Content, "You requested access") {
 							dmRoomMessages[i].Content = strings.Replace(
 								dmRoomMessages[i].Content,
 								"[Pending]",
 								"[Access Granted]",
 								1,
 							)
-							log.Printf("[%s] ✓ Updated requesting user status message to show grant in %s", socketIDStr, dmRoomForRequestingUser)
+							log.Printf("[%s] ✓ Updated requesting user status message to show grant in %s", socketIDStr, dmRoom)
 						}
 					}
 				}
@@ -2027,13 +2101,17 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				messagesCopy := make([]Message, len(cs.messages[originalRoom]))
 				for i, msg := range cs.messages[originalRoom] {
 					messagesCopy[i] = Message{
-						Timestamp:      msg.Timestamp,
-						Username:       msg.Username,
-						Content:        msg.Content, // This will be empty for encrypted messages
-						EncryptedFor:   make(map[string]string),
-						Versions:       msg.Versions,
-						CurrentVersion: msg.CurrentVersion,
-						VisibleTo:      msg.VisibleTo,
+						ID:               msg.ID,
+						Timestamp:        msg.Timestamp,
+						Username:         msg.Username,
+						UserID:           msg.UserID,
+						RoomID:           msg.RoomID,
+						Content:          msg.Content, // This will be empty for encrypted messages
+						EncryptedMessage: msg.EncryptedMessage,
+						EncryptedFor:     make(map[string]string),
+						Versions:         msg.Versions,
+						CurrentVersion:   msg.CurrentVersion,
+						VisibleTo:        msg.VisibleTo,
 					}
 					// Copy encryptedFor map
 					for k, v := range msg.EncryptedFor {
@@ -2067,12 +2145,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 				// Get updated messages for both DM rooms (filtered by visibility)
 				dmRoomMessagesForOriginalSender := filterMessagesByVisibility(
-					cs.messages[dmRoomForOriginalSender],
-					originalSenderForDM,
+					cs.messages[dmRoom],
+					originalSenderID,
 				)
 				dmRoomMessagesForRequestingUser := filterMessagesByVisibility(
-					cs.messages[dmRoomForRequestingUser],
-					requestingUser,
+					cs.messages[dmRoom],
+					requestingUserID,
 				)
 
 				cs.mu.RUnlock()
@@ -2098,41 +2176,43 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				responseForOriginalSender := map[string]interface{}{
 					"accessGrant": map[string]interface{}{
 						"originalRoom":     originalRoom,
+						"originalRoomId":   cs.ensureRoomID(originalRoom),
 						"messageTimestamp": messageTimestamp,
 						"encryptedMessage": encryptedMessage,
 					},
 					"messages": map[string][]Message{
-						originalRoom:            messagesCopy,
-						dmRoomForOriginalSender: dmRoomMessagesForOriginalSender,
+						originalRoom: messagesCopy,
+						dmRoom:       dmRoomMessagesForOriginalSender,
 					},
 					"rooms": cs.rooms,
 				}
 				log.Printf("[%s] Sending to original sender: %s", socketIDStr, originalSenderForDM)
-				cs.sendToUsers(defaultNsp, []string{originalSenderForDM}, EventServerMessage, responseForOriginalSender)
+				cs.sendToUserIDs(defaultNsp, []string{originalSenderID}, EventServerMessage, responseForOriginalSender)
 
 				// Send to requesting user: original room + their DM room
 				responseForRequestingUser := map[string]interface{}{
 					"accessGrant": map[string]interface{}{
 						"originalRoom":     originalRoom,
+						"originalRoomId":   cs.ensureRoomID(originalRoom),
 						"messageTimestamp": messageTimestamp,
 						"encryptedMessage": encryptedMessage,
 					},
 					"messages": map[string][]Message{
-						originalRoom:            messagesCopy,
-						dmRoomForRequestingUser: dmRoomMessagesForRequestingUser,
+						originalRoom: messagesCopy,
+						dmRoom:       dmRoomMessagesForRequestingUser,
 					},
 					"rooms": cs.rooms,
 				}
 				log.Printf("[%s] About to send to requesting user: %s", socketIDStr, requestingUser)
 				log.Printf("[%s] Checking if requesting user is in users map...", socketIDStr)
 				cs.mu.RLock()
-				if socketIDForRequestingUser, exists := cs.users[requestingUser]; exists {
+				if socketIDForRequestingUser, exists := cs.userSocketsByID[requestingUserID]; exists {
 					log.Printf("[%s] ✓ Requesting user %s found in users map with socketID: %s", socketIDStr, requestingUser, socketIDForRequestingUser)
 				} else {
 					log.Printf("[%s] ✗ Requesting user %s NOT found in users map!", socketIDStr, requestingUser)
 					log.Printf("[%s] Available users in map: %v", socketIDStr, func() []string {
-						users := make([]string, 0, len(cs.users))
-						for u := range cs.users {
+						users := make([]string, 0, len(cs.userSocketsByID))
+						for u := range cs.userSocketsByID {
 							users = append(users, u)
 						}
 						return users
@@ -2140,7 +2220,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				}
 				cs.mu.RUnlock()
 				log.Printf("[%s] Sending to requesting user: %s", socketIDStr, requestingUser)
-				cs.sendToUsers(defaultNsp, []string{requestingUser}, EventServerMessage, responseForRequestingUser)
+				cs.sendToUserIDs(defaultNsp, []string{requestingUserID}, EventServerMessage, responseForRequestingUser)
 
 				log.Printf("[%s] ✓ Access grant notifications sent to %s and %s", socketIDStr, originalSenderForDM, requestingUser)
 			} else {
@@ -2163,9 +2243,15 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✗ Invalid deny access format", socketIDStr)
 				return
 			}
+			_, verified := cs.verifySignedMutation(socket, denyMap, EventClientDenyAccess, []string{"requestingUserId", "originalRoomId", "messageTimestamp"})
+			if !verified {
+				return
+			}
 
-			requestingUser, _ := denyMap["requestingUser"].(string)
-			originalRoom, _ := denyMap["originalRoom"].(string)
+			requestingUser := cs.resolveUsernameFromPayload(denyMap, "requestingUserId")
+			requestingUserID := parseStringField(denyMap, "requestingUserId")
+			originalRoom := cs.resolveRoomFromPayload(denyMap, "originalRoomId")
+			originalRoomID := parseStringField(denyMap, "originalRoomId")
 
 			// Handle messageTimestamp
 			var messageTimestamp int64
@@ -2180,7 +2266,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				return
 			}
 
-			if requestingUser == "" || originalRoom == "" {
+			if requestingUser == "" || requestingUserID == "" || originalRoomID == "" || originalRoom == "" {
 				log.Printf("[%s] ✗ Missing required fields in deny access", socketIDStr)
 				return
 			}
@@ -2190,10 +2276,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			// Find the original sender to determine DM room names
 			cs.mu.RLock()
 			originalSender := ""
+			originalSenderID := ""
 			if originalRoomMessages, exists := cs.messages[originalRoom]; exists {
 				for _, msg := range originalRoomMessages {
 					if msg.Timestamp == messageTimestamp {
-						originalSender = msg.Username
+						originalSender = msg.UserID
+						originalSenderID = msg.UserID
 						break
 					}
 				}
@@ -2205,35 +2293,33 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				return
 			}
 
-			dmRoomForOriginalSender := fmt.Sprintf("@%s", requestingUser) // Original sender sees @requestingUser
-			dmRoomForRequestingUser := fmt.Sprintf("@%s", originalSender) // Requesting user sees @originalSender
+			dmRoom := buildCanonicalDMRoom(requestingUserID, originalSenderID)
 
 			cs.mu.Lock()
 			// Update original sender's room (@requestingUser)
-			if dmRoomMessages, exists := cs.messages[dmRoomForOriginalSender]; exists && dmRoomMessages != nil {
+			if dmRoomMessages, exists := cs.messages[dmRoom]; exists {
 				for i := range dmRoomMessages {
-					if strings.Contains(dmRoomMessages[i].Content, "requests access") {
+					if len(dmRoomMessages[i].VisibleTo) == 1 && dmRoomMessages[i].VisibleTo[0] == originalSenderID && strings.Contains(dmRoomMessages[i].Content, "requests access") {
 						dmRoomMessages[i].Content = strings.Replace(
 							dmRoomMessages[i].Content,
 							"requests access",
 							"requests access [Access Denied]",
 							1,
 						)
-						log.Printf("[%s] ✓ Updated access request message to show denial in %s", socketIDStr, dmRoomForOriginalSender)
+						log.Printf("[%s] ✓ Updated access request message to show denial in %s", socketIDStr, dmRoom)
 					}
 				}
 			}
-			// Update requesting user's room (@originalSender)
-			if dmRoomMessages, exists := cs.messages[dmRoomForRequestingUser]; exists && dmRoomMessages != nil {
+			if dmRoomMessages, exists := cs.messages[dmRoom]; exists {
 				for i := range dmRoomMessages {
-					if strings.Contains(dmRoomMessages[i].Content, "You requested access") {
+					if len(dmRoomMessages[i].VisibleTo) == 1 && dmRoomMessages[i].VisibleTo[0] == requestingUserID && strings.Contains(dmRoomMessages[i].Content, "You requested access") {
 						dmRoomMessages[i].Content = strings.Replace(
 							dmRoomMessages[i].Content,
 							"[Pending]",
 							"[Access Denied]",
 							1,
 						)
-						log.Printf("[%s] ✓ Updated requesting user status message to show denial in %s", socketIDStr, dmRoomForRequestingUser)
+						log.Printf("[%s] ✓ Updated requesting user status message to show denial in %s", socketIDStr, dmRoom)
 					}
 				}
 			}
@@ -2243,28 +2329,28 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			if defaultNsp != nil {
 				cs.mu.RLock()
 				dmRoomMessagesForOriginalSender := filterMessagesByVisibility(
-					cs.messages[dmRoomForOriginalSender],
-					originalSender,
+					cs.messages[dmRoom],
+					originalSenderID,
 				)
 				dmRoomMessagesForRequestingUser := filterMessagesByVisibility(
-					cs.messages[dmRoomForRequestingUser],
-					requestingUser,
+					cs.messages[dmRoom],
+					requestingUserID,
 				)
 				cs.mu.RUnlock()
 
 				// Send to original sender
 				responseForOriginalSender := map[string]interface{}{
-					"messages": map[string][]Message{dmRoomForOriginalSender: dmRoomMessagesForOriginalSender},
+					"messages": map[string][]Message{dmRoom: dmRoomMessagesForOriginalSender},
 					"rooms":    cs.rooms,
 				}
-				cs.sendToUsers(defaultNsp, []string{originalSender}, EventServerMessage, responseForOriginalSender)
+				cs.sendToUserIDs(defaultNsp, []string{originalSenderID}, EventServerMessage, responseForOriginalSender)
 
 				// Send to requesting user
 				responseForRequestingUser := map[string]interface{}{
-					"messages": map[string][]Message{dmRoomForRequestingUser: dmRoomMessagesForRequestingUser},
+					"messages": map[string][]Message{dmRoom: dmRoomMessagesForRequestingUser},
 					"rooms":    cs.rooms,
 				}
-				cs.sendToUsers(defaultNsp, []string{requestingUser}, EventServerMessage, responseForRequestingUser)
+				cs.sendToUserIDs(defaultNsp, []string{requestingUserID}, EventServerMessage, responseForRequestingUser)
 			}
 
 			// Notify the requesting user
@@ -2275,7 +2361,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 						"messageTimestamp": messageTimestamp,
 					},
 				}
-				defaultNsp.Emit(EventServerAccessDenied, denialData)
+				cs.emitNamespaceSigned(defaultNsp, EventServerAccessDenied, denialData)
 				log.Printf("[%s] ✓ Access denial notification sent to %s", socketIDStr, requestingUser)
 			} else {
 				log.Printf("[%s] ✗ defaultNsp is nil, cannot send access denial notification", socketIDStr)
@@ -2311,22 +2397,21 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✗ Invalid vote data format, type: %T", socketIDStr, voteData)
 				return
 			}
-
-			room, _ := voteMap["room"].(string)
-			messageTimestampRaw, hasTimestamp := voteMap["messageTimestamp"]
-			username, _ := voteMap["username"].(string)
-			voteTypeRaw, hasVoteType := voteMap["voteType"]
-
-			if !hasTimestamp || !hasVoteType || username == "" || room == "" {
-				log.Printf("[%s] ✗ Missing required vote fields", socketIDStr)
+			auth, verified := cs.verifySignedMutation(socket, voteMap, EventClientVoteMessage, []string{"roomId", "messageTimestamp", "voteType"})
+			if !verified {
 				return
 			}
+			voteMap["userId"] = auth.UserID
 
-			var messageTimestamp int64
-			if tsFloat, ok := messageTimestampRaw.(float64); ok {
-				messageTimestamp = int64(tsFloat)
-			} else {
-				log.Printf("[%s] ✗ Invalid messageTimestamp format", socketIDStr)
+			room := cs.resolveRoomFromPayload(voteMap, "roomId")
+			roomID := parseStringField(voteMap, "roomId")
+			username := cs.resolveUsernameFromPayload(voteMap, "userId")
+			actorUserID := parseStringField(voteMap, "userId")
+			voteTypeRaw, hasVoteType := voteMap["voteType"]
+			messageID, messageTimestamp, hasMessageID, hasTimestamp := parseMessageReference(voteMap)
+
+			if (!hasMessageID && !hasTimestamp) || !hasVoteType || actorUserID == "" || roomID == "" || room == "" || username == "" {
+				log.Printf("[%s] ✗ Missing required vote fields", socketIDStr)
 				return
 			}
 
@@ -2346,19 +2431,14 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				return
 			}
 
-			var targetMessage *Message
-			for i := range messages {
-				if messages[i].Timestamp == messageTimestamp {
-					targetMessage = &messages[i]
-					break
-				}
-			}
-
-			if targetMessage == nil {
+			targetIndex := findMessageIndex(messages, messageID, messageTimestamp)
+			if targetIndex < 0 {
 				cs.mu.Unlock()
-				log.Printf("[%s] ✗ Message with timestamp %d not found in room %s", socketIDStr, messageTimestamp, room)
+				log.Printf("[%s] ✗ Message not found in room %s (id=%s, ts=%d)", socketIDStr, room, messageID, messageTimestamp)
 				return
 			}
+
+			targetMessage := &messages[targetIndex]
 
 			// Initialize vote fields if needed
 			if targetMessage.UserVotes == nil {
@@ -2370,12 +2450,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			}
 
 			// Get current vote for this user
-			currentVote, hasVote := targetMessage.UserVotes[username]
+			currentVote, hasVote := targetMessage.UserVotes[actorUserID]
 
 			// Handle vote logic
 			if hasVote && currentVote == voteType {
 				// User is clicking the same vote again - remove it
-				delete(targetMessage.UserVotes, username)
+				delete(targetMessage.UserVotes, actorUserID)
 				if currentVote == "up" {
 					*targetMessage.VoteTotal--
 				} else {
@@ -2389,7 +2469,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				} else {
 					*targetMessage.VoteTotal++
 				}
-				targetMessage.UserVotes[username] = voteType
+				targetMessage.UserVotes[actorUserID] = voteType
 				if voteType == "up" {
 					*targetMessage.VoteTotal++
 				} else {
@@ -2398,7 +2478,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✓ Switched vote from %s to %s for message %d by %s (new total: %d)", socketIDStr, currentVote, voteType, messageTimestamp, username, *targetMessage.VoteTotal)
 			} else {
 				// User is voting for the first time
-				targetMessage.UserVotes[username] = voteType
+				targetMessage.UserVotes[actorUserID] = voteType
 				if voteType == "up" {
 					*targetMessage.VoteTotal++
 				} else {
@@ -2407,50 +2487,22 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✓ Added %s vote to message %d by %s (new total: %d)", socketIDStr, voteType, messageTimestamp, username, *targetMessage.VoteTotal)
 			}
 
-			// Copy data for saving and response while holding the lock
-			messagesCopyForSave := make(Messages)
-			for k, v := range cs.messages {
-				messagesCopyForSave[k] = make([]Message, len(v))
-				copy(messagesCopyForSave[k], v)
-			}
-			roomsCopyForSave := make([]string, len(cs.rooms))
-			copy(roomsCopyForSave, cs.rooms)
-			usersCopyForSave := make(map[string]string)
-			for k, v := range cs.users {
-				usersCopyForSave[k] = v
-			}
-
-			// Prepare response with updated messages
-			messagesCopy := make(Messages)
-			for k, v := range cs.messages {
-				messagesCopy[k] = make([]Message, len(v))
-				copy(messagesCopy[k], v)
-			}
-			usersList := make([]string, 0, len(cs.users))
-			for user := range cs.users {
-				usersList = append(usersList, user)
-			}
-
-			// Copy userPubKeys for save
-			userPubKeysCopy := make(map[string]string)
-			for k, v := range cs.userPubKeys {
-				userPubKeysCopy[k] = v
-			}
+			messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy := cs.snapshotStateForSaveLocked()
 
 			cs.mu.Unlock()
 
 			// Save state to disk
-			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+			if err := cs.saveState(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
 				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
 			}
 
 			response := map[string]interface{}{
-				"messages": messagesCopy,
-				"users":    usersList,
+				"messages": map[string][]Message{room: {*targetMessage}},
 			}
+			cs.attachIdentityDirectories(response)
 
 			// Broadcast to all clients
-			defaultNsp.Emit(EventServerVoteUpdate, response)
+			cs.emitNamespaceSigned(defaultNsp, EventServerVoteUpdate, response)
 			log.Printf("[%s] ✓ Broadcasted vote update", socketIDStr)
 		})
 
@@ -2468,22 +2520,43 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✗ Invalid edit data format, type: %T", socketIDStr, editData)
 				return
 			}
+			auth, verified := cs.verifySignedMutation(socket, editMap, EventClientEditMessage, []string{"userId", "roomId", "messageTimestamp", "encryptedMessage"})
+			if !verified {
+				return
+			}
+			editMap["userId"] = auth.UserID
+			editMap["sessionId"] = auth.SessionID
 
-			room, _ := editMap["room"].(string)
-			messageTimestampRaw, hasTimestamp := editMap["messageTimestamp"]
-			username, _ := editMap["username"].(string)
+			room := cs.resolveRoomFromPayload(editMap, "roomId")
+			roomID := parseStringField(editMap, "roomId")
+			username := cs.resolveUsernameFromPayload(editMap, "userId")
+			actorUserID := parseStringField(editMap, "userId")
+			sessionID, _ := editMap["sessionId"].(string)
 			encryptedMessage, _ := editMap["encryptedMessage"].(string)
+			messageID, messageTimestamp, hasMessageID, hasTimestamp := parseMessageReference(editMap)
 
-			if !hasTimestamp || username == "" || room == "" {
-				log.Printf("[%s] ✗ Missing required edit fields", socketIDStr)
+			if encryptedMessage != "" && exceedsMessageCiphertextLimit(encryptedMessage) {
+				log.Printf("[%s] ✗ Rejected oversized encrypted edit from %s (%d bytes)", socketIDStr, username, len([]byte(encryptedMessage)))
+				emitActionResult(
+					socket,
+					"edit",
+					false,
+					"message_too_large",
+					fmt.Sprintf("Encrypted message exceeds max size (%d bytes)", maxMessageCiphertextBytes),
+				)
 				return
 			}
 
-			var messageTimestamp int64
-			if tsFloat, ok := messageTimestampRaw.(float64); ok {
-				messageTimestamp = int64(tsFloat)
-			} else {
-				log.Printf("[%s] ✗ Invalid messageTimestamp format", socketIDStr)
+			if (!hasMessageID && !hasTimestamp) || actorUserID == "" || roomID == "" || room == "" || username == "" || sessionID == "" {
+				log.Printf("[%s] ✗ Missing required edit fields", socketIDStr)
+				emitActionResult(socket, "edit", false, "invalid_request", "Missing required edit fields")
+				return
+			}
+
+			if !cs.isSessionAuthorizedForUser(sessionID, actorUserID) {
+				code, message := cs.getSessionAuthFailure(sessionID, actorUserID)
+				log.Printf("[%s] ✗ Rejected edit attempt by %s (%s)", socketIDStr, username, code)
+				emitActionResult(socket, "edit", false, code, message)
 				return
 			}
 
@@ -2494,34 +2567,33 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			if !exists {
 				cs.mu.Unlock()
 				log.Printf("[%s] ✗ Room %s not found", socketIDStr, room)
+				emitActionResult(socket, "edit", false, "not_found", "Room not found")
 				return
 			}
 
-			var targetMessage *Message
-			for i := range messages {
-				if messages[i].Timestamp == messageTimestamp {
-					targetMessage = &messages[i]
-					break
-				}
-			}
-
-			if targetMessage == nil {
+			targetIndex := findMessageIndex(messages, messageID, messageTimestamp)
+			if targetIndex < 0 {
 				cs.mu.Unlock()
-				log.Printf("[%s] ✗ Message with timestamp %d not found in room %s", socketIDStr, messageTimestamp, room)
+				log.Printf("[%s] ✗ Message not found in room %s (id=%s, ts=%d)", socketIDStr, room, messageID, messageTimestamp)
+				emitActionResult(socket, "edit", false, "not_found", "Message not found")
 				return
 			}
+
+			targetMessage := &messages[targetIndex]
 
 			// Validate that the editor is the original sender
-			if targetMessage.Username != username {
+			if targetMessage.UserID != actorUserID {
 				cs.mu.Unlock()
-				log.Printf("[%s] ✗ User %s attempted to edit message by %s (unauthorized)", socketIDStr, username, targetMessage.Username)
+				log.Printf("[%s] ✗ User %s attempted to edit message by %s (unauthorized)", socketIDStr, actorUserID, targetMessage.UserID)
+				emitActionResult(socket, "edit", false, "not_owner", "Not owner")
 				return
 			}
 
 			// Prevent editing system messages
-			if targetMessage.Username == "system" {
+			if targetMessage.UserID == SystemUserID {
 				cs.mu.Unlock()
-				log.Printf("[%s] ✗ User %s attempted to edit system message (not allowed)", socketIDStr, username)
+				log.Printf("[%s] ✗ User %s attempted to edit system message (not allowed)", socketIDStr, actorUserID)
+				emitActionResult(socket, "edit", false, "not_allowed", "System messages cannot be edited")
 				return
 			}
 
@@ -2530,39 +2602,13 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			targetMessage.EncryptedMessage = encryptedMessage
 			targetMessage.EncryptedFor = nil
 			targetMessage.Edited = true
-			cs.userLastSeen[username] = time.Now().Unix()
-
-			log.Printf("[%s] ✓ Message %d edited by %s", socketIDStr, messageTimestamp, username)
-
-			// Copy data for saving and response while holding the lock
-			messagesCopyForSave := make(Messages)
-			for k, v := range cs.messages {
-				messagesCopyForSave[k] = make([]Message, len(v))
-				copy(messagesCopyForSave[k], v)
-			}
-			roomsCopyForSave := make([]string, len(cs.rooms))
-			copy(roomsCopyForSave, cs.rooms)
-			usersCopyForSave := make(map[string]string)
-			for k, v := range cs.users {
-				usersCopyForSave[k] = v
+			if actorUserID != "" {
+				cs.userLastSeen[actorUserID] = time.Now().Unix()
 			}
 
-			// Prepare response with updated messages
-			messagesCopy := make(Messages)
-			for k, v := range cs.messages {
-				messagesCopy[k] = make([]Message, len(v))
-				copy(messagesCopy[k], v)
-			}
-			usersList := make([]string, 0, len(cs.users))
-			for user := range cs.users {
-				usersList = append(usersList, user)
-			}
+			log.Printf("[%s] ✓ Message %d edited by %s", socketIDStr, messageTimestamp, actorUserID)
 
-			// Copy userPubKeys for save
-			userPubKeysCopy := make(map[string]string)
-			for k, v := range cs.userPubKeys {
-				userPubKeysCopy[k] = v
-			}
+			messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy := cs.snapshotStateForSaveLocked()
 
 			userLastSeenCopy := make(map[string]int64)
 			for user, lastSeen := range cs.userLastSeen {
@@ -2570,25 +2616,22 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			}
 
 			cs.mu.Unlock()
-			loggedInUsers, activeUsers := cs.getUserLists()
 
 			// Save state to disk
-			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+			if err := cs.saveState(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
 				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
 			}
 
 			response := map[string]interface{}{
-				"messages": messagesCopy,
-				"users":    usersList,
-				"loggedInUsers": loggedInUsers,
-				"activeUsers":   activeUsers,
-				"userLastSeen":  userLastSeenCopy,
+				"messages": map[string][]Message{room: {*targetMessage}},
 			}
+			cs.attachIdentityDirectories(response)
 
 			// Broadcast to all clients
-			defaultNsp.Emit(EventServerMessage, response)
+			cs.emitNamespaceSigned(defaultNsp, EventServerMessage, response)
 			log.Printf("[%s] ✓ Broadcasted message edit update", socketIDStr)
 			cs.broadcastUserListUpdate()
+			emitActionResult(socket, "edit", true, "ok", "Message updated")
 		})
 
 		socket.OnEvent(EventClientDeleteMessage, func(deleteData interface{}) {
@@ -2600,20 +2643,28 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✗ Invalid delete data format, type: %T", socketIDStr, deleteData)
 				return
 			}
+			auth, verified := cs.verifySignedMutation(socket, deleteMap, EventClientDeleteMessage, []string{"userId", "roomId", "messageTimestamp"})
+			if !verified {
+				return
+			}
+			deleteMap["userId"] = auth.UserID
+			deleteMap["sessionId"] = auth.SessionID
 
-			room, _ := deleteMap["room"].(string)
-			username, _ := deleteMap["username"].(string)
+			room := cs.resolveRoomFromPayload(deleteMap, "roomId")
+			roomID := parseStringField(deleteMap, "roomId")
+			username := cs.resolveUsernameFromPayload(deleteMap, "userId")
+			actorUserID := parseStringField(deleteMap, "userId")
 			sessionID, _ := deleteMap["sessionId"].(string)
 			messageID, messageTimestamp, hasMessageID, hasTimestamp := parseMessageReference(deleteMap)
 
-			if (!hasMessageID && !hasTimestamp) || username == "" || room == "" || sessionID == "" {
+			if (!hasMessageID && !hasTimestamp) || actorUserID == "" || roomID == "" || room == "" || username == "" || sessionID == "" {
 				log.Printf("[%s] ✗ Missing required delete fields", socketIDStr)
 				emitActionResult(socket, "delete", false, "invalid_request", "Missing required delete fields")
 				return
 			}
 
-			if !cs.isSessionAuthorizedForUser(sessionID, username) {
-				code, message := cs.getSessionAuthFailure(sessionID, username)
+			if !cs.isSessionAuthorizedForUser(sessionID, actorUserID) {
+				code, message := cs.getSessionAuthFailure(sessionID, actorUserID)
 				log.Printf("[%s] ✗ Rejected delete attempt by %s (%s)", socketIDStr, username, code)
 				emitActionResult(socket, "delete", false, code, message)
 				return
@@ -2643,14 +2694,14 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				return
 			}
 
-			if targetMessage.Username != username {
+			if targetMessage.UserID != actorUserID {
 				cs.mu.Unlock()
-				log.Printf("[%s] ✗ User %s attempted to delete message by %s (unauthorized)", socketIDStr, username, targetMessage.Username)
+				log.Printf("[%s] ✗ User %s attempted to delete message by %s (unauthorized)", socketIDStr, actorUserID, targetMessage.UserID)
 				emitActionResult(socket, "delete", false, "not_owner", "Not owner")
 				return
 			}
 
-			if targetMessage.Username == "system" {
+			if targetMessage.UserID == SystemUserID {
 				cs.mu.Unlock()
 				emitActionResult(socket, "delete", false, "not_allowed", "System messages cannot be deleted")
 				return
@@ -2666,35 +2717,23 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			targetMessage.UserVotes = nil
 			targetMessage.Edited = false
 			targetMessage.Deleted = true
-			cs.userLastSeen[username] = time.Now().Unix()
+			if actorUserID != "" {
+				cs.userLastSeen[actorUserID] = time.Now().Unix()
+			}
 
-			messagesCopyForSave := make(Messages)
-			for k, v := range cs.messages {
-				messagesCopyForSave[k] = make([]Message, len(v))
-				copy(messagesCopyForSave[k], v)
-			}
-			roomsCopyForSave := make([]string, len(cs.rooms))
-			copy(roomsCopyForSave, cs.rooms)
-			usersCopyForSave := make(map[string]string)
-			for k, v := range cs.users {
-				usersCopyForSave[k] = v
-			}
-			userPubKeysCopy := make(map[string]string)
-			for k, v := range cs.userPubKeys {
-				userPubKeysCopy[k] = v
-			}
+			messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy := cs.snapshotStateForSaveLocked()
 
 			updatedMessage := *targetMessage
 			cs.mu.Unlock()
 
-			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
+			if err := cs.saveState(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopy); err != nil {
 				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
 			}
 
 			response := map[string]interface{}{
 				"messages": map[string][]Message{room: {updatedMessage}},
 			}
-			defaultNsp.Emit(EventServerMessage, response)
+			cs.emitNamespaceSigned(defaultNsp, EventServerMessage, response)
 			cs.broadcastUserListUpdate()
 			emitActionResult(socket, "delete", true, "ok", "Message deleted")
 			log.Printf("[%s] ✓ Broadcasted message delete update", socketIDStr)
@@ -2714,18 +2753,26 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✗ Invalid vote format", socketIDStr)
 				return
 			}
+			auth, verified := cs.verifySignedMutation(socket, voteMap, EventClientVoteJoin, []string{"roomId", "requestingUserId", "voterUserId", "vote"})
+			if !verified {
+				return
+			}
+			voteMap["voterUserId"] = auth.UserID
 
-			room, _ := voteMap["room"].(string)
-			requestingUser, _ := voteMap["requestingUser"].(string)
+			room := cs.resolveRoomFromPayload(voteMap, "roomId")
+			roomID := parseStringField(voteMap, "roomId")
+			requestingUser := cs.resolveUsernameFromPayload(voteMap, "requestingUserId")
+			requestingUserID := parseStringField(voteMap, "requestingUserId")
 			vote, _ := voteMap["vote"].(bool) // true = accept, false = deny
-			voter, _ := voteMap["voter"].(string)
+			voter := cs.resolveUsernameFromPayload(voteMap, "voterUserId")
+			voterUserID := parseStringField(voteMap, "voterUserId")
 
-			if room == "" || requestingUser == "" || voter == "" {
+			if room == "" || roomID == "" || requestingUser == "" || requestingUserID == "" || voterUserID == "" {
 				log.Printf("[%s] ✗ Missing required fields in vote", socketIDStr)
 				return
 			}
 
-			requestKey := fmt.Sprintf("%s:%s", room, requestingUser)
+			requestKey := fmt.Sprintf("%s:%s", roomID, requestingUserID)
 			cs.mu.Lock()
 			req, exists := cs.joinRequests[requestKey]
 			if !exists {
@@ -2735,7 +2782,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			}
 
 			// Record vote
-			req.Votes[voter] = vote
+			req.Votes[voterUserID] = vote
 			log.Printf("[%s] Vote recorded: %s voted %v for %s to join %s", socketIDStr, voter, vote, requestingUser, room)
 
 			// Count votes
@@ -2750,7 +2797,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			}
 
 			// Get room member count (excluding the requesting user)
-			roomMemberCount := len(cs.roomMembers[room])
+			roomMemberCount := len(cs.roomMembers[roomID])
 
 			// Calculate threshold: min(3, halfMembers rounded up)
 			threshold := 3
@@ -2778,16 +2825,19 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			if approved {
 				// Add user to room members
-				if cs.roomMembers[room] == nil {
-					cs.roomMembers[room] = make(map[string]bool)
+				if cs.roomMembers[roomID] == nil {
+					cs.roomMembers[roomID] = make(map[string]bool)
 				}
-				cs.roomMembers[room][requestingUser] = true
+				cs.roomMembers[roomID][requestingUserID] = true
 
 				// Post join message (system message, not editable)
 				joinMsg := Message{
+					ID:        uuid.NewString(),
 					Timestamp: time.Now().Unix(),
 					Username:  "system",
-					Content:   fmt.Sprintf("%s %s", requestingUser, UserJoined),
+					UserID:    SystemUserID,
+					RoomID:    cs.ensureRoomIDLocked(room),
+					Content:   fmt.Sprintf("%s %s", requestingUserID, UserJoined),
 					Edited:    false, // System messages can't be edited
 				}
 				if cs.messages[room] == nil {
@@ -2802,11 +2852,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 				// Broadcast approval
 				approvalData := map[string]interface{}{
-					"type":           "joinApproved",
-					"requestingUser": requestingUser,
-					"room":           room,
+					"type":             "joinApproved",
+					"requestingUserId": requestingUserID,
+					"room":             room,
+					"roomId":           roomID,
 				}
-				defaultNsp.Emit(EventServerJoinApproved, approvalData)
+				cs.emitNamespaceSigned(defaultNsp, EventServerJoinApproved, approvalData)
 
 				// Broadcast updated message
 				// Don't include users field - we're not updating the user list here
@@ -2815,7 +2866,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 					"rooms":    cs.rooms,
 					// Don't send users field - it would overwrite the client's user list
 				}
-				defaultNsp.Emit(EventServerMessage, response)
+				cs.emitNamespaceSigned(defaultNsp, EventServerMessage, response)
 
 				log.Printf("[%s] ✓ Join request approved for %s to join %s", socketIDStr, requestingUser, room)
 			} else if denied {
@@ -2824,9 +2875,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 				// Post denial message
 				denialMsg := Message{
+					ID:        uuid.NewString(),
 					Timestamp: time.Now().Unix(),
 					Username:  "system",
-					Content:   fmt.Sprintf("%s was denied access to this room", requestingUser),
+					UserID:    SystemUserID,
+					RoomID:    cs.ensureRoomIDLocked(room),
+					Content:   fmt.Sprintf("%s was denied access to this room", requestingUserID),
 				}
 				if cs.messages[room] == nil {
 					cs.messages[room] = []Message{}
@@ -2837,11 +2891,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 				// Broadcast denial
 				denialData := map[string]interface{}{
-					"type":           "joinDenied",
-					"requestingUser": requestingUser,
-					"room":           room,
+					"type":             "joinDenied",
+					"requestingUserId": requestingUserID,
+					"room":             room,
+					"roomId":           roomID,
 				}
-				defaultNsp.Emit(EventServerJoinDenied, denialData)
+				cs.emitNamespaceSigned(defaultNsp, EventServerJoinDenied, denialData)
 
 				// Broadcast updated message
 				// Don't include users field - we're not updating the user list here
@@ -2850,7 +2905,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 					"rooms":    cs.rooms,
 					// Don't send users field - it would overwrite the client's user list
 				}
-				defaultNsp.Emit(EventServerMessage, response)
+				cs.emitNamespaceSigned(defaultNsp, EventServerMessage, response)
 
 				log.Printf("[%s] ✗ Join request denied for %s to join %s", socketIDStr, requestingUser, room)
 			} else {
@@ -2868,27 +2923,17 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			cs.mu.Lock()
 			for user, sid := range cs.users {
 				if sid == sessionIDStrParam {
+					delete(cs.userSocketsByID, user)
 					delete(cs.users, user)
 					break
 				}
 			}
 
-			// Prepare data for saving
-			messagesCopyForSave := make(Messages)
-			for k, v := range cs.messages {
-				messagesCopyForSave[k] = make([]Message, len(v))
-				copy(messagesCopyForSave[k], v)
-			}
-			roomsCopyForSave := make([]string, len(cs.rooms))
-			copy(roomsCopyForSave, cs.rooms)
-			usersCopyForSave := make(map[string]string)
-			for k, v := range cs.users {
-				usersCopyForSave[k] = v
-			}
+			messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopyForSave := cs.snapshotStateForSaveLocked()
 			cs.mu.Unlock()
 
 			// Save to disk
-			if err := cs.store.Save(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, cs.userPubKeys); err != nil {
+			if err := cs.saveState(messagesCopyForSave, roomsCopyForSave, usersCopyForSave, userPubKeysCopyForSave); err != nil {
 				log.Printf("[%s] ✗ Failed to save state: %v", socketIDStr, err)
 			}
 

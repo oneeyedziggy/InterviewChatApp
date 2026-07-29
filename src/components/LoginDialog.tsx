@@ -7,6 +7,7 @@ import { styled } from 'styled-components';
 import { VALIDATION } from '../constants';
 import { apiPath } from '@/utils/appPaths';
 import {
+  buildOpaqueUsernameEnvelope,
   generateKeyPair,
   storeKeys,
   loadKeys,
@@ -18,6 +19,7 @@ import {
   verifyChallengeResponseWithKeyRefresh,
   type StoredKeys,
 } from '../utils/gpg';
+import { requireUserIdByUsername } from '../utils/identityMap';
 
 type LoginDialogProps = {
   username: string;
@@ -173,12 +175,20 @@ export const LoginDialog = ({
         };
       }
 
-      // First login attempt - send username and public key
+      const userId = requireUserIdByUsername(username);
+      const opaqueIdentity = await buildOpaqueUsernameEnvelope(
+        username,
+        keys.serverPublicKey,
+      );
+
+      // First login attempt - send opaque identity and public key
       const loginResponse = await fetch(apiPath('/api/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          username,
+          userId,
+          usernameHash: opaqueIdentity.usernameHash,
+          usernameCiphertext: opaqueIdentity.usernameCiphertext,
           publicKey: keys.publicKey,
         }),
       });
@@ -205,7 +215,7 @@ export const LoginDialog = ({
         console.log('[LoginDialog] Decrypted UUID:', decryptedUUID);
 
         const verifyData = await verifyChallengeResponseWithKeyRefresh({
-          username,
+          userId,
           decryptedUUID,
           serverPublicKey: keys.serverPublicKey,
         });

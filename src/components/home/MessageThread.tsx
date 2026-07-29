@@ -8,11 +8,19 @@ import { ContextMenuItem, ContextMenuSurface } from '../styled/ContextMenu';
 import { SOCKET_EVENTS, FEATURES } from '../../constants';
 import { type Messages, type Message } from '../../types/types';
 import { canUserViewMessage } from '../../utils/messages';
+import { loadKeys } from '../../utils/gpg';
+import { emitSignedMutation } from '../../utils/socketAuth';
 import {
   CONTEXT_MENU_CLOSE_EVENT,
   closeOtherContextMenus,
 } from '../../utils/contextMenuEvents';
 import { mdStringToReact } from '../../utils/markdown';
+import {
+  getCurrentUserId,
+  getUsernameByUserId,
+  requireRoomIdByName,
+  requireUserIdByUsername,
+} from '../../utils/identityMap';
 
 const IMPORTED_TRANSFER_MARKERS_KEY = 'imported_transfer_markers_v1';
 
@@ -54,7 +62,12 @@ function transferImportMarker(message: Message): string {
   if (message.id && message.id.trim() !== '') {
     return `id:${message.id}`;
   }
-  const fromUser = message.keyTransferFromUser || 'unknown';
+  const fromUser =
+    (message.keyTransferFromUserId
+      ? getUsernameByUserId(message.keyTransferFromUserId)
+      : undefined) ||
+    message.keyTransferFromUserId ||
+    'unknown';
   return `legacy:${message.timestamp}:${fromUser}`;
 }
 
@@ -80,7 +93,20 @@ function messageKey(message: Message, index: number): string {
   if (message.id && message.id.trim() !== '') {
     return `id:${message.id}`;
   }
-  return `ts:${message.timestamp}:u:${message.username}:i:${index}`;
+  return `ts:${message.timestamp}:u:${message.userId || 'unknown'}:i:${index}`;
+}
+
+function resolveDisplayUsername(message: Message): string {
+  if (message.userId === 'system') {
+    return 'system';
+  }
+  if (message.userId) {
+    const mapped = getUsernameByUserId(message.userId);
+    if (mapped) {
+      return mapped;
+    }
+  }
+  return message.userId || 'unknown';
 }
 
 function isSameMessageRun(
@@ -93,7 +119,8 @@ function isSameMessageRun(
   const previousReplyTo = previous.replyTo ?? null;
   const currentReplyTo = current.replyTo ?? null;
   return (
-    previous.username === current.username && previousReplyTo === currentReplyTo
+    (previous.userId || previous.username) ===
+      (current.userId || current.username) && previousReplyTo === currentReplyTo
   );
 }
 
@@ -130,18 +157,17 @@ const MessageWithReplies = ({
   room: string;
   username?: string;
   onRequestAccess?: (
-    messageUsername: string,
+    messageUserId: string,
     room: string,
     messageTimestamp: number,
   ) => void;
   onGrantAccess?: (
-    requestingUser: string,
+    requestingUserId: string,
     originalRoom: string,
     messageTimestamp: number,
-    plaintext?: string,
   ) => void;
   onDenyAccess?: (
-    requestingUser: string,
+    requestingUserId: string,
     originalRoom: string,
     messageTimestamp: number,
   ) => void;
@@ -178,6 +204,11 @@ const MessageWithReplies = ({
   indentLevel?: number;
   collapseIntoPrevious?: boolean;
 }) => {
+  const transferDisplayFromUser =
+    (message.keyTransferFromUserId
+      ? getUsernameByUserId(message.keyTransferFromUserId)
+      : undefined) || message.keyTransferFromUserId;
+
   const [isExpanded, setIsExpanded] = useState(false);
   const [isCompactHovered, setIsCompactHovered] = useState(false);
   const [actionMenuAnchor, setActionMenuAnchor] = useState<DOMRect | null>(
@@ -214,15 +245,18 @@ const MessageWithReplies = ({
     if (!readImportedTransferMarkers()[marker]) {
       return '';
     }
-    return getDefaultImportedTransferNote(message.keyTransferFromUser);
+    return getDefaultImportedTransferNote(transferDisplayFromUser);
   });
   const replies = childrenByParent.get(message.timestamp) ?? [];
   const hasReplies = replies.length > 0;
+  const messageDisplayUsername = resolveDisplayUsername(message);
   const isOwnNonSystemMessage =
     !!username &&
-    message.username === username &&
-    message.username !== 'system';
-  const isSystemMessage = message.username === 'system';
+    messageDisplayUsername === username &&
+    message.userId !== 'system';
+  const isSystemMessage = message.userId === 'system';
+  const currentUserId = getCurrentUserId();
+  const voteIdentityKey = currentUserId || username;
   const isDeletedMessage =
     !!message.deleted || message.content === 'Message deleted';
   const isCompactMessage = collapseIntoPrevious;
@@ -244,21 +278,21 @@ const MessageWithReplies = ({
     const marker = transferImportMarkerFromParts(
       message.id,
       message.timestamp,
-      message.keyTransferFromUser,
+      transferDisplayFromUser,
     );
     const imported = !!readImportedTransferMarkers()[marker];
     setIsImportedOnThisDevice(imported);
     setImportTransferStatus(imported ? 'success' : null);
     if (imported && !importTransferNote) {
       setImportTransferNote(
-        getDefaultImportedTransferNote(message.keyTransferFromUser),
+        getDefaultImportedTransferNote(transferDisplayFromUser),
       );
     }
   }, [
     message.id,
     message.timestamp,
     message.keyTransferEncryptedPackage,
-    message.keyTransferFromUser,
+    transferDisplayFromUser,
     importTransferNote,
   ]);
 
@@ -316,7 +350,7 @@ const MessageWithReplies = ({
   const localTimestamp = new Date(message.timestamp * 1000).toLocaleString();
 
   const isBlockedAuthor =
-    !!blockedUsers && blockedUsers.includes(message.username);
+    !!blockedUsers && blockedUsers.includes(messageDisplayUsername);
 
   const renderAuthorLine = () => (
     <span
@@ -333,7 +367,7 @@ const MessageWithReplies = ({
           !onBlockUser ||
           !onUnblockUser ||
           !username ||
-          message.username === 'system'
+          message.userId === 'system'
         ) {
           return;
         }
@@ -353,7 +387,7 @@ const MessageWithReplies = ({
         });
       }}
     >
-      <span>{message.username}</span>
+      <span>{messageDisplayUsername}</span>
       <span
         style={{
           marginLeft: '6px',
@@ -398,10 +432,11 @@ const MessageWithReplies = ({
     }
 
     if (
-      message.username === 'system' &&
+      message.userId === 'system' &&
       message.keyTransferEncryptedPackage &&
-      message.keyTransferFromUser
+      message.keyTransferFromUserId
     ) {
+      const transferFromUser = transferDisplayFromUser || '';
       return (
         <div
           style={{
@@ -425,7 +460,7 @@ const MessageWithReplies = ({
 
                 setIsImportingTransfer(true);
                 void onImportTransferredAccount(
-                  message.keyTransferFromUser!,
+                  transferFromUser,
                   message.keyTransferEncryptedPackage!,
                 )
                   .then((result) => {
@@ -559,7 +594,7 @@ const MessageWithReplies = ({
       if (match) {
         const originalRoom = match[1];
         const messageTimestamp = parseInt(match[2], 10);
-        const requestingUser = message.username;
+        const requestingUserId = message.userId;
         const isDenied = message.content.includes('[Access Denied]');
         const isGranted = message.content.includes('[Access Granted]');
 
@@ -597,7 +632,7 @@ const MessageWithReplies = ({
                   onClick={async () => {
                     if (onGrantAccess) {
                       await onGrantAccess(
-                        requestingUser,
+                        requestingUserId,
                         originalRoom,
                         messageTimestamp,
                       );
@@ -619,7 +654,7 @@ const MessageWithReplies = ({
                   onClick={() => {
                     if (onDenyAccess) {
                       onDenyAccess(
-                        requestingUser,
+                        requestingUserId,
                         originalRoom,
                         messageTimestamp,
                       );
@@ -654,9 +689,11 @@ const MessageWithReplies = ({
           </span>
           {onRequestAccess && (
             <button
-              onClick={() =>
-                onRequestAccess(message.username, room, message.timestamp)
-              }
+              onClick={() => {
+                if (message.userId && message.userId !== 'system') {
+                  onRequestAccess(message.userId, room, message.timestamp);
+                }
+              }}
               style={{
                 marginLeft: '8px',
                 padding: '4px 8px',
@@ -908,7 +945,9 @@ const MessageWithReplies = ({
                   backgroundColor: 'transparent',
                   border: 'none',
                   color:
-                    message.userVotes?.[username] === 'up' ? '#4caf50' : '#999',
+                    message.userVotes?.[voteIdentityKey || ''] === 'up'
+                      ? '#4caf50'
+                      : '#999',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -940,7 +979,7 @@ const MessageWithReplies = ({
                   backgroundColor: 'transparent',
                   border: 'none',
                   color:
-                    message.userVotes?.[username] === 'down'
+                    message.userVotes?.[voteIdentityKey || ''] === 'down'
                       ? '#f44336'
                       : '#999',
                   display: 'flex',
@@ -984,7 +1023,7 @@ const MessageWithReplies = ({
           onBlockUser &&
           onUnblockUser &&
           username &&
-          message.username !== 'system' &&
+          message.userId !== 'system' &&
           createPortal(
             <ContextMenuSurface
               $top={userContextMenuAnchor.bottom + 4}
@@ -996,7 +1035,7 @@ const MessageWithReplies = ({
               <ContextMenuItem
                 type="button"
                 onClick={() => {
-                  onMessageUser(message.username);
+                  onMessageUser(messageDisplayUsername);
                   closeUserContextMenu();
                 }}
               >
@@ -1008,7 +1047,7 @@ const MessageWithReplies = ({
                 onClick={() => {
                   if (userContextMenuAnchor) {
                     setPendingSendKeyConfirm({
-                      user: message.username,
+                      user: messageDisplayUsername,
                       anchor: userContextMenuAnchor,
                     });
                   }
@@ -1017,22 +1056,22 @@ const MessageWithReplies = ({
               >
                 Send private key
               </ContextMenuItem>
-              {message.username !== username && isBlockedAuthor ? (
+              {messageDisplayUsername !== username && isBlockedAuthor ? (
                 <ContextMenuItem
                   type="button"
                   onClick={() => {
-                    onUnblockUser(message.username);
+                    onUnblockUser(messageDisplayUsername);
                     closeUserContextMenu();
                   }}
                 >
                   Unblock
                 </ContextMenuItem>
-              ) : message.username !== username ? (
+              ) : messageDisplayUsername !== username ? (
                 <ContextMenuItem
                   type="button"
                   $danger
                   onClick={() => {
-                    onBlockUser(message.username);
+                    onBlockUser(messageDisplayUsername);
                     closeUserContextMenu();
                   }}
                 >
@@ -1044,15 +1083,15 @@ const MessageWithReplies = ({
           )}
 
         {pendingSendKeyConfirm &&
-          pendingSendKeyConfirm.user === message.username &&
+          pendingSendKeyConfirm.user === messageDisplayUsername &&
           onSendPublicKeyToUser && (
             <ConfirmPopover
-              message={`Send your private key bundle to ${message.username}?`}
+              message={`Send your private key bundle to ${messageDisplayUsername}?`}
               confirmLabel="Send"
               variant="primary"
               anchorRect={pendingSendKeyConfirm.anchor}
               onConfirm={() => {
-                onSendPublicKeyToUser(message.username);
+                onSendPublicKeyToUser(messageDisplayUsername);
                 setPendingSendKeyConfirm(null);
               }}
               onCancel={() => setPendingSendKeyConfirm(null)}
@@ -1278,15 +1317,14 @@ function MessageThreadCard({
   currentRoom: string;
   username?: string;
   onRequestAccess?: (
-    messageUsername: string,
+    messageUserId: string,
     room: string,
     messageTimestamp: number,
   ) => void;
   onGrantAccess?: (
-    requestingUser: string,
+    requestingUserId: string,
     originalRoom: string,
     messageTimestamp: number,
-    plaintext?: string,
   ) => void;
   onSelectVersion?: (
     room: string,
@@ -1459,17 +1497,30 @@ function MessageThreadCard({
             onRequestAccess={onRequestAccess}
             onGrantAccess={onGrantAccess}
             onDenyAccess={(
-              requestingUser: string,
+              requestingUserId: string,
               originalRoom: string,
               messageTimestamp: number,
             ) => {
-              if (socket) {
-                socket.emit(SOCKET_EVENTS.CLIENT_DENY_ACCESS, {
-                  requestingUser,
-                  originalRoom,
+              const keys = loadKeys();
+              if (!socket || !username || !keys?.sessionId) return;
+              const voterUserId = requireUserIdByUsername(username);
+              const originalRoomId = requireRoomIdByName(originalRoom);
+              void emitSignedMutation(socket, {
+                event: SOCKET_EVENTS.CLIENT_DENY_ACCESS,
+                payload: {
+                  requestingUserId,
+                  originalRoomId,
                   messageTimestamp,
-                });
-              }
+                  sessionId: keys.sessionId,
+                },
+                userId: voterUserId,
+                sessionId: keys.sessionId,
+                claims: {
+                  requestingUserId,
+                  originalRoomId,
+                  messageTimestamp,
+                },
+              });
             }}
             onSelectVersion={onSelectVersion}
             onReply={onReply}
@@ -1501,15 +1552,14 @@ export const renderMessageThread = (
   username?: string,
   blockedUsers: string[] = [],
   onRequestAccess?: (
-    messageUsername: string,
+    messageUserId: string,
     room: string,
     messageTimestamp: number,
   ) => void,
   onGrantAccess?: (
-    requestingUser: string,
+    requestingUserId: string,
     originalRoom: string,
     messageTimestamp: number,
-    plaintext?: string,
   ) => void,
   onSelectVersion?: (
     room: string,

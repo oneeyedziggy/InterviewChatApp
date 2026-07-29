@@ -1,7 +1,8 @@
 import { type Dispatch, type SetStateAction } from 'react';
 import { type Socket } from 'socket.io-client';
-import { SOCKET_EVENTS } from '../constants';
+import { MESSAGE_LIMITS, SOCKET_EVENTS } from '../constants';
 import { type Message, type Messages } from '../types/types';
+import { getUtf8ByteLength } from './messages';
 import {
   encryptForAllUsers,
   filterPubKeysForEncryption,
@@ -9,6 +10,12 @@ import {
   loadKeys,
   loadUserPublicKeyEntries,
 } from '../utils/gpg';
+import { emitSignedMutation } from '../utils/socketAuth';
+import {
+  getUsernameByUserId,
+  requireRoomIdByName,
+  requireUserIdByUsername,
+} from '../utils/identityMap';
 
 type SetMessages = Dispatch<SetStateAction<Messages>>;
 
@@ -80,9 +87,29 @@ export async function doSendAction({
     return;
   }
 
+  const draftByteLength = getUtf8ByteLength(userDraftMessage);
+  if (draftByteLength > MESSAGE_LIMITS.MAX_TEXT_BYTES) {
+    console.warn(
+      '[doSend] ✗ Message exceeds max allowed size:',
+      draftByteLength,
+      'bytes',
+    );
+    return;
+  }
+
   // Encrypt message with all user public keys (including sender's own key)
   const userPubKeys = loadUserPublicKeyEntries();
   const keys = loadKeys();
+  let userId: string;
+  let roomId: string;
+  try {
+    userId = requireUserIdByUsername(username);
+    roomId = requireRoomIdByName(currentRoom);
+  } catch (error) {
+    console.error('[doSend] ✗ Missing identity mapping:', error);
+    alert('Identity mapping is unavailable. Please refresh and retry.');
+    return;
+  }
   let encryptedMessage: string | undefined;
 
   if (!userPubKeys || Object.keys(userPubKeys).length === 0) {
@@ -130,9 +157,10 @@ export async function doSendAction({
 
     const editData = {
       room: currentRoom,
+      roomId,
       ...(editingMessageId ? { messageId: editingMessageId } : {}),
       messageTimestamp: editingMessageTimestamp,
-      username,
+      userId,
       sessionId: keys.sessionId,
       encryptedMessage,
     };
@@ -140,7 +168,18 @@ export async function doSendAction({
       alert('Session expired. Please log in again.');
       return;
     }
-    activeSocket.emit(SOCKET_EVENTS.CLIENT_EDIT_MESSAGE, editData);
+    await emitSignedMutation(activeSocket, {
+      event: SOCKET_EVENTS.CLIENT_EDIT_MESSAGE,
+      payload: editData,
+      userId,
+      sessionId: keys.sessionId,
+      claims: {
+        userId,
+        roomId,
+        messageTimestamp: editingMessageTimestamp,
+        encryptedMessage,
+      },
+    });
     console.log('[doSend] ✓ Edit message emitted');
     setEditingMessageTimestamp(undefined);
     setEditingMessageId(undefined);
@@ -178,8 +217,9 @@ export async function doSendAction({
   const currentReplyTo = replyingTo;
 
   const messageData = {
-    username,
+    userId,
     room: currentRoom,
+    roomId,
     encryptedMessage,
     ...(shouldIncludeReplyTo ? { replyTo: replyingTo } : {}), // Include replyTo if replying to a message
   };
@@ -202,7 +242,23 @@ export async function doSendAction({
     replyTo: currentReplyTo || 'none',
   });
   console.log('[doSend] Event name:', SOCKET_EVENTS.CLIENT_MESSAGE);
-  activeSocket.emit(SOCKET_EVENTS.CLIENT_MESSAGE, messageData);
+  if (!keys.sessionId) {
+    alert('Session expired. Please log in again.');
+    return;
+  }
+  await emitSignedMutation(activeSocket, {
+    event: SOCKET_EVENTS.CLIENT_MESSAGE,
+    payload: {
+      ...messageData,
+      sessionId: keys.sessionId,
+    },
+    userId,
+    sessionId: keys.sessionId,
+    claims: {
+      roomId,
+      encryptedMessage,
+    },
+  });
   console.log(
     '[doSend] ✓ Message emitted with replyTo:',
     messageData.replyTo || 'none',
@@ -214,23 +270,41 @@ export function requestAccessAction({
   socket,
   username,
   chatValues,
-  messageUsername,
+  messageUserId,
   room,
   messageTimestamp,
 }: {
   socket: Socket | undefined;
   username: string;
   chatValues: Messages;
-  messageUsername: string;
+  messageUserId: string;
   room: string;
   messageTimestamp: number;
 }) {
   if (!socket || !username) return;
 
   console.log('[RequestAccess] ===== REQUESTING ACCESS TO MESSAGE =====');
-  console.log('[RequestAccess] Message username:', messageUsername);
+  console.log('[RequestAccess] Message userId:', messageUserId);
   console.log('[RequestAccess] Room:', room);
   console.log('[RequestAccess] Message timestamp:', messageTimestamp);
+
+  // Create a private room name for the access request (format: @requestingUser)
+  const requestRoom = `@${username}`;
+
+  let requestingUserId: string;
+  let requestRoomId: string;
+  let originalRoomId: string;
+  let originalSenderId: string;
+  try {
+    requestingUserId = requireUserIdByUsername(username);
+    requestRoomId = requireRoomIdByName(requestRoom);
+    originalRoomId = requireRoomIdByName(room);
+    originalSenderId = messageUserId;
+  } catch (error) {
+    console.error('[RequestAccess] ✗ Missing identity mapping:', error);
+    alert('Identity mapping is unavailable. Please refresh and retry.');
+    return;
+  }
 
   // Find the message to get its current state
   const roomMessages = chatValues[room];
@@ -266,14 +340,17 @@ export function requestAccessAction({
         '[RequestAccess]   - Versions count:',
         targetMessage.versions?.length || 0,
       );
-      if (targetMessage.encryptedFor && targetMessage.encryptedFor[username]) {
+      if (
+        targetMessage.encryptedFor &&
+        targetMessage.encryptedFor[requestingUserId]
+      ) {
         console.log(
           '[RequestAccess]   - Has encrypted version for requesting user:',
-          !!targetMessage.encryptedFor[username],
+          !!targetMessage.encryptedFor[requestingUserId],
         );
         console.log(
           '[RequestAccess]   - Encrypted data length:',
-          targetMessage.encryptedFor[username]?.length || 0,
+          targetMessage.encryptedFor[requestingUserId]?.length || 0,
         );
       }
       if (targetMessage.versions && targetMessage.versions.length > 0) {
@@ -286,11 +363,11 @@ export function requestAccessAction({
         );
         if (
           newestVersion.encryptedFor &&
-          newestVersion.encryptedFor[username]
+          newestVersion.encryptedFor[requestingUserId]
         ) {
           console.log(
             '[RequestAccess]   - Has encrypted version in newest version for requesting user:',
-            !!newestVersion.encryptedFor[username],
+            !!newestVersion.encryptedFor[requestingUserId],
           );
         }
       }
@@ -303,18 +380,17 @@ export function requestAccessAction({
     console.warn('[RequestAccess] ⚠ Room messages not found');
   }
 
-  // Create a private room name for the access request (format: @requestingUser)
-  const requestRoom = `@${username}`;
-
   const requestMessage = {
-    username,
+    userId: requestingUserId,
     room: requestRoom,
-    content: `User ${username} requests access to your message in ${room} (timestamp: ${messageTimestamp})`,
+    roomId: requestRoomId,
+    content: `Access request for room ${room} (timestamp: ${messageTimestamp})`,
     requestAccess: {
-      requestingUser: username,
+      requestingUserId,
       originalRoom: room,
+      originalRoomId,
       messageTimestamp,
-      originalSender: messageUsername,
+      originalSenderId,
     },
   };
 
@@ -322,7 +398,26 @@ export function requestAccessAction({
     ...requestMessage,
     requestAccess: requestMessage.requestAccess,
   });
-  socket.emit(SOCKET_EVENTS.CLIENT_REQUEST_ACCESS, requestMessage);
+  const keys = loadKeys();
+  if (!keys?.sessionId) {
+    alert('Session expired. Please log in again.');
+    return;
+  }
+  void emitSignedMutation(socket, {
+    event: SOCKET_EVENTS.CLIENT_REQUEST_ACCESS,
+    payload: {
+      ...requestMessage,
+      sessionId: keys.sessionId,
+    },
+    userId: requestingUserId,
+    sessionId: keys.sessionId,
+    claims: {
+      userId: requestingUserId,
+      'requestAccess.originalSenderId': originalSenderId,
+      'requestAccess.originalRoomId': originalRoomId,
+      'requestAccess.messageTimestamp': messageTimestamp,
+    },
+  });
   console.log('[RequestAccess] ✓ Access request sent');
 }
 
@@ -336,26 +431,35 @@ export async function grantAccessAction({
   chatValues,
   blockedUsers,
   setChatValues,
-  requestingUser,
+  requestingUserId,
   originalRoom,
   messageTimestamp,
-  providedPlaintext,
 }: {
   socket: Socket | undefined;
   username: string;
   chatValues: Messages;
   blockedUsers: string[];
   setChatValues: SetMessages;
-  requestingUser: string;
+  requestingUserId: string;
   originalRoom: string;
   messageTimestamp: number;
-  providedPlaintext?: string;
 }) {
+  let actorUserId: string;
+  try {
+    actorUserId = requireUserIdByUsername(username);
+  } catch (error) {
+    console.error('[GrantAccess] ✗ Missing actor userId mapping:', error);
+    return;
+  }
+
+  const requestingUsername =
+    getUsernameByUserId(requestingUserId) || requestingUserId;
+
   console.log('[GrantAccess] ===== STARTING GRANT ACCESS =====');
-  console.log('[GrantAccess] requestingUser:', requestingUser);
+  console.log('[GrantAccess] requestingUserId:', requestingUserId);
   console.log('[GrantAccess] originalRoom:', originalRoom);
   console.log('[GrantAccess] messageTimestamp:', messageTimestamp);
-  console.log('[GrantAccess] username (original author):', username);
+  console.log('[GrantAccess] actorUserId (original author):', actorUserId);
   console.log(
     '[GrantAccess] NOTE: Looking up original message by timestamp in original room to get plaintext',
   );
@@ -447,16 +551,14 @@ export async function grantAccessAction({
     return;
   }
 
-  // CRITICAL: Always look up the original message by timestamp in the original room
-  // The original author should already have this message decrypted locally
-  // We do NOT use providedPlaintext from the access request message
+  // CRITICAL: Always look up the original message by timestamp in the original room.
   console.log('[GrantAccess] ===== LOOKING UP ORIGINAL MESSAGE =====');
   console.log('[GrantAccess] Looking in room:', originalRoom);
   console.log(
     '[GrantAccess] Looking for message with timestamp:',
     messageTimestamp,
   );
-  console.log('[GrantAccess] Looking for message from user:', username);
+  console.log('[GrantAccess] Looking for message from userId:', actorUserId);
 
   const roomMessages = chatValues[originalRoom];
   if (!roomMessages) {
@@ -466,7 +568,7 @@ export async function grantAccessAction({
   }
 
   const originalMessage = roomMessages.find(
-    (msg) => msg.timestamp === messageTimestamp && msg.username === username,
+    (msg) => msg.timestamp === messageTimestamp && msg.userId === actorUserId,
   );
 
   if (!originalMessage) {
@@ -475,7 +577,7 @@ export async function grantAccessAction({
       '[GrantAccess] Messages in room:',
       roomMessages.map((m) => ({
         timestamp: m.timestamp,
-        username: m.username,
+        userId: m.userId,
       })),
     );
     return;
@@ -521,21 +623,21 @@ export async function grantAccessAction({
     plaintext = originalMessage.content;
   } else if (
     originalMessage.encryptedFor &&
-    originalMessage.encryptedFor[username]
+    originalMessage.encryptedFor[actorUserId]
   ) {
     // Decrypt the sender's own encrypted version
     console.log('[GrantAccess] ===== DECRYPTING FROM encryptedFor =====');
     console.log(
       '[GrantAccess] Encrypted data length:',
-      originalMessage.encryptedFor[username]?.length || 0,
+      originalMessage.encryptedFor[actorUserId]?.length || 0,
     );
     console.log(
       '[GrantAccess] Encrypted data (first 200 chars):',
-      originalMessage.encryptedFor[username]?.substring(0, 200) || 'N/A',
+      originalMessage.encryptedFor[actorUserId]?.substring(0, 200) || 'N/A',
     );
     try {
       plaintext = await decryptMessageForUser(
-        originalMessage.encryptedFor[username],
+        originalMessage.encryptedFor[actorUserId],
         keys.privateKey,
       );
       console.log(
@@ -557,22 +659,22 @@ export async function grantAccessAction({
         const newestVersion = originalMessage.versions[0];
         if (
           newestVersion.encryptedFor &&
-          newestVersion.encryptedFor[username]
+          newestVersion.encryptedFor[actorUserId]
         ) {
           console.log(
             '[GrantAccess] ===== DECRYPTING FROM NEWEST VERSION =====',
           );
           console.log(
             '[GrantAccess] Encrypted data length:',
-            newestVersion.encryptedFor[username]?.length || 0,
+            newestVersion.encryptedFor[actorUserId]?.length || 0,
           );
           console.log(
             '[GrantAccess] Encrypted data (first 200 chars):',
-            newestVersion.encryptedFor[username]?.substring(0, 200) || 'N/A',
+            newestVersion.encryptedFor[actorUserId]?.substring(0, 200) || 'N/A',
           );
           try {
             plaintext = await decryptMessageForUser(
-              newestVersion.encryptedFor[username],
+              newestVersion.encryptedFor[actorUserId],
               keys.privateKey,
             );
             console.log(
@@ -604,21 +706,21 @@ export async function grantAccessAction({
   } else if (originalMessage.versions && originalMessage.versions.length > 0) {
     // Try newest version
     const newestVersion = originalMessage.versions[0];
-    if (newestVersion.encryptedFor && newestVersion.encryptedFor[username]) {
+    if (newestVersion.encryptedFor && newestVersion.encryptedFor[actorUserId]) {
       console.log(
         '[GrantAccess] ===== DECRYPTING FROM NEWEST VERSION (fallback) =====',
       );
       console.log(
         '[GrantAccess] Encrypted data length:',
-        newestVersion.encryptedFor[username]?.length || 0,
+        newestVersion.encryptedFor[actorUserId]?.length || 0,
       );
       console.log(
         '[GrantAccess] Encrypted data (first 200 chars):',
-        newestVersion.encryptedFor[username]?.substring(0, 200) || 'N/A',
+        newestVersion.encryptedFor[actorUserId]?.substring(0, 200) || 'N/A',
       );
       try {
         plaintext = await decryptMessageForUser(
-          newestVersion.encryptedFor[username],
+          newestVersion.encryptedFor[actorUserId],
           keys.privateKey,
         );
         console.log(
@@ -686,10 +788,10 @@ export async function grantAccessAction({
 
     // CRITICAL: Ensure the requesting user's public key is included
     // The server should have sent it in the access request, but check anyway
-    if (!userPubKeys[requestingUser]?.publicKey) {
+    if (!userPubKeys[requestingUsername]?.publicKey) {
       console.error(
         '[GrantAccess] ✗ Requesting user',
-        requestingUser,
+        requestingUserId,
         'public key not found in local storage!',
       );
       console.error(
@@ -703,13 +805,13 @@ export async function grantAccessAction({
         "[GrantAccess] ✗ The server should have sent the requesting user's public key in the access request",
       );
       alert(
-        `Cannot grant access: Public key for ${requestingUser} not found. Please refresh the page and try again.`,
+        `Cannot grant access: Public key for ${requestingUsername} not found. Please refresh the page and try again.`,
       );
       return;
     } else {
       console.log(
         '[GrantAccess] ✓ Requesting user',
-        requestingUser,
+        requestingUserId,
         'public key found in local storage',
       );
     }
@@ -733,7 +835,7 @@ export async function grantAccessAction({
     console.log('[GrantAccess] Sender included:', username in userPubKeys);
     console.log(
       '[GrantAccess] Requesting user included:',
-      requestingUser in userPubKeys,
+      requestingUsername in userPubKeys,
     );
 
     // Encrypt for all users including the sender
@@ -770,14 +872,15 @@ export async function grantAccessAction({
 
     // Send grant access message with a single multi-recipient ciphertext
     const emitData = {
-      requestingUser,
+      requestingUserId,
       originalRoom,
+      originalRoomId: requireRoomIdByName(originalRoom),
       messageTimestamp,
       encryptedMessage,
     };
 
     console.log('[GrantAccess] Emit data:', {
-      requestingUser,
+      requestingUserId,
       originalRoom,
       messageTimestamp,
       encryptedMessageLength: encryptedMessage.length,
@@ -829,7 +932,26 @@ export async function grantAccessAction({
         // Emit the event - socket.emit returns the socket instance
         console.log('[GrantAccess] Calling emit now...');
         try {
-          activeSocket.emit(SOCKET_EVENTS.CLIENT_GRANT_ACCESS, emitData);
+          const keysForSign = loadKeys();
+          if (!keysForSign?.sessionId) {
+            alert('Session expired. Please log in again.');
+            return;
+          }
+          void emitSignedMutation(activeSocket, {
+            event: SOCKET_EVENTS.CLIENT_GRANT_ACCESS,
+            payload: {
+              ...emitData,
+              sessionId: keysForSign.sessionId,
+            },
+            userId: actorUserId,
+            sessionId: keysForSign.sessionId,
+            claims: {
+              requestingUserId: emitData.requestingUserId,
+              originalRoomId: emitData.originalRoomId,
+              messageTimestamp: emitData.messageTimestamp,
+              encryptedMessage: emitData.encryptedMessage,
+            },
+          });
           console.log('[GrantAccess] ✓ emit() call completed without error');
         } catch (emitError) {
           console.error('[GrantAccess] ✗ Error during emit() call:', emitError);
@@ -854,7 +976,7 @@ export async function grantAccessAction({
         );
         console.log(
           '[GrantAccess] ✓ Access granted to',
-          requestingUser,
+          requestingUserId,
           '- re-encrypted for',
           'multiple recipients',
         );
@@ -937,7 +1059,12 @@ export function leaveRoomAction({
     }
   }
 
-  socket.emit(SOCKET_EVENTS.CLIENT_LEAVE_ROOM, { username, room });
+  socket.emit(SOCKET_EVENTS.CLIENT_LEAVE_ROOM, {
+    username,
+    userId: requireUserIdByUsername(username),
+    room,
+    roomId: requireRoomIdByName(room),
+  });
   console.log('[LeaveRoom] Left room:', room);
 }
 
@@ -962,7 +1089,12 @@ export function rejoinRoomAction({
     return newSet;
   });
 
-  socket.emit(SOCKET_EVENTS.CLIENT_REJOIN_ROOM, { username, room });
+  socket.emit(SOCKET_EVENTS.CLIENT_REJOIN_ROOM, {
+    username,
+    userId: requireUserIdByUsername(username),
+    room,
+    roomId: requireRoomIdByName(room),
+  });
   setCurrentRoom(room);
   console.log('[RejoinRoom] Rejoined room:', room);
 }
@@ -985,6 +1117,7 @@ export async function selectVersionAction({
   versionIndex: number;
 }) {
   if (!socket || !username) return;
+  const viewerUserId = requireUserIdByUsername(username);
 
   // Find the message in local state
   const roomMessages = chatValues[room];
@@ -999,7 +1132,7 @@ export async function selectVersionAction({
   const selectedVersion = message.versions[versionIndex];
   const selectedVersionEncrypted =
     selectedVersion.encryptedMessage ||
-    selectedVersion.encryptedFor?.[username];
+    selectedVersion.encryptedFor?.[viewerUserId];
 
   // Update local state to show the selected version
   setChatValues((prev) => {

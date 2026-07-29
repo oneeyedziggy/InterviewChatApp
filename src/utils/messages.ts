@@ -1,15 +1,35 @@
 import type { Message } from '../types/types';
+import { getCurrentUserId, getUsernameByUserId } from './identityMap';
 import { isUserBlocked } from './userSettings';
+
+export function getUtf8ByteLength(value: string): number {
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(value).length;
+  }
+  return value.length;
+}
 
 export function canUserViewMessage(
   message: Message,
   viewerUsername?: string,
 ): boolean {
+  const viewerUserId = getCurrentUserId();
+  const authorUsername =
+    (message.userId ? getUsernameByUserId(message.userId) : undefined) ||
+    message.username ||
+    message.userId;
+
   if (!viewerUsername) {
-    return true;
+    if (!viewerUserId) {
+      return true;
+    }
   }
 
-  if (message.username !== 'system' && isUserBlocked(message.username)) {
+  if (
+    message.userId !== 'system' &&
+    authorUsername &&
+    isUserBlocked(authorUsername)
+  ) {
     return false;
   }
 
@@ -22,7 +42,11 @@ export function canUserViewMessage(
     return true;
   }
 
-  if (message.encryptedFor?.[viewerUsername]) {
+  if (viewerUserId && message.encryptedFor?.[viewerUserId]) {
+    return true;
+  }
+
+  if (viewerUsername && message.encryptedFor?.[viewerUsername]) {
     return true;
   }
 
@@ -35,7 +59,10 @@ export function canUserViewMessage(
     if (newest.encryptedMessage) {
       return true;
     }
-    if (newest.encryptedFor?.[viewerUsername]) {
+    if (viewerUserId && newest.encryptedFor?.[viewerUserId]) {
+      return true;
+    }
+    if (viewerUsername && newest.encryptedFor?.[viewerUsername]) {
       return true;
     }
   }

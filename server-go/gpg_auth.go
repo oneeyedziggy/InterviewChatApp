@@ -2,10 +2,10 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 	"github.com/google/uuid"
@@ -71,13 +71,17 @@ func (cs *ChatServer) handleAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check session cache
-	storedUsername, exists := cs.sessionCache.Get(req.SessionID)
-	if !exists || storedUsername == "" {
+	storedUserID, exists := cs.sessionCache.Get(req.SessionID)
+	if !exists || storedUserID == "" {
+		json.NewEncoder(w).Encode(map[string]any{"valid": false, "serverPublicKey": cs.serverPublicKey})
+		return
+	}
+	if storedUserID == "" {
 		json.NewEncoder(w).Encode(map[string]any{"valid": false, "serverPublicKey": cs.serverPublicKey})
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]any{"valid": true, "username": storedUsername})
+	json.NewEncoder(w).Encode(map[string]any{"valid": true, "userId": storedUserID})
 }
 
 // handleLogin handles GPG-based authentication
@@ -112,29 +116,16 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[handleLogin] ✓ Decoded request - Username: %s, Has PublicKey: %v, Has EncryptedUUID: %v",
-		req.Username, req.PublicKey != "", req.EncryptedUUID != "")
+	log.Printf("[handleLogin] ✓ Decoded request - UserID: %s, Has PublicKey: %v, Has EncryptedUUID: %v",
+		req.UserID, req.PublicKey != "", req.EncryptedUUID != "")
 
-	// Validate username
-	if req.Username == "" || len(req.Username) < MinUsernameLength {
-		log.Printf("[handleLogin] ✗ Validation failed - Username: %s", req.Username)
-		json.NewEncoder(w).Encode(LoginResponse{
-			Error: fmt.Sprintf("Username must be at least %d characters", MinUsernameLength),
-		})
-		return
-	}
-
-	// Validate username doesn't contain whitespace
-	if strings.ContainsAny(req.Username, " \t\n\r") {
-		log.Printf("[handleLogin] ✗ Username contains whitespace: %s", req.Username)
-		json.NewEncoder(w).Encode(LoginResponse{
-			Error: "Username cannot contain whitespace",
-		})
+	if strings.TrimSpace(req.UserID) == "" {
+		json.NewEncoder(w).Encode(LoginResponse{Error: "Missing userId"})
 		return
 	}
 
 	cs.mu.RLock()
-	userPubKey, userExists := cs.userPubKeys[req.Username]
+	userPubKey, userExists := cs.userPubKeys[req.UserID]
 	cs.mu.RUnlock()
 
 	// If user exists and they're sending a public key, check if it matches
@@ -142,7 +133,7 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Check if the public key matches the stored one
 		if userPubKey == req.PublicKey {
 			// Public key matches - this is a login attempt, send challenge
-			log.Printf("[handleLogin] User exists with matching public key, sending challenge: %s", req.Username)
+			log.Printf("[handleLogin] User exists with matching public key, sending challenge: %s", req.UserID)
 
 			// Generate challenge UUID
 			challengeUUID := uuid.New().String()
@@ -186,26 +177,47 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Store challenge temporarily
-			cs.sessionCache.Set("challenge_"+req.Username, challengeUUID)
+			cs.sessionCache.Set("challenge_"+req.UserID, challengeUUID)
 
-			log.Printf("[handleLogin] ✓ Challenge sent to existing user: %s", req.Username)
+			log.Printf("[handleLogin] ✓ Challenge sent to existing user: %s", req.UserID)
 			json.NewEncoder(w).Encode(LoginResponse{
 				Challenge: encryptedArmored,
+				UserID:    req.UserID,
 			})
 			return
 		} else {
 			// Public key doesn't match - reject registration attempt
-			log.Printf("[handleLogin] ✗ Username already exists with different public key: %s", req.Username)
+			log.Printf("[handleLogin] ✗ User already exists with different public key: %s", req.UserID)
 			json.NewEncoder(w).Encode(LoginResponse{
-				Error: "Username already exists",
+				Error:  "Account already exists. Please sign in with the original keypair.",
+				UserID: req.UserID,
 			})
 			return
 		}
 	}
 
-	// First-time registration: user sends public key
+	// First-time registration: user sends public key and opaque identity metadata
 	if req.PublicKey != "" && !userExists {
-		log.Printf("[handleLogin] First-time registration for user: %s", req.Username)
+		log.Printf("[handleLogin] First-time registration for userId: %s", req.UserID)
+
+		if strings.TrimSpace(req.UsernameHash) == "" || strings.TrimSpace(req.UsernameCiphertext) == "" {
+			json.NewEncoder(w).Encode(LoginResponse{
+				Error:  "Missing encrypted identity metadata",
+				UserID: req.UserID,
+			})
+			return
+		}
+
+		cs.mu.RLock()
+		existingUserIDForHash, hashExists := cs.usernameHashes[req.UsernameHash]
+		cs.mu.RUnlock()
+		if hashExists && existingUserIDForHash != req.UserID {
+			json.NewEncoder(w).Encode(LoginResponse{
+				Error:  "Username already exists. Please use a different username.",
+				UserID: req.UserID,
+			})
+			return
+		}
 
 		// Validate the public key
 		_, err := crypto.NewKeyFromArmored(req.PublicKey)
@@ -219,10 +231,26 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 		// Store the user's public key
 		cs.mu.Lock()
-		cs.userPubKeys[req.Username] = req.PublicKey
+		cs.userPubKeys[req.UserID] = req.PublicKey
+		if cs.userPubKeysUpdatedAt == nil {
+			cs.userPubKeysUpdatedAt = make(map[string]int64)
+		}
+		cs.userPubKeysUpdatedAt[req.UserID] = time.Now().UTC().UnixMilli()
+		cs.usernameHashes[req.UsernameHash] = req.UserID
+		cs.usernameCiphertexts[req.UserID] = req.UsernameCiphertext
+		if req.UsernameCiphertext != "" {
+			if cs.userDirectoryUpdatedAt == nil {
+				cs.userDirectoryUpdatedAt = make(map[string]int64)
+			}
+			cs.userDirectoryUpdatedAt[req.UserID] = time.Now().UTC().UnixMilli()
+		}
 		userPubKeysCopy := make(map[string]string)
 		for k, v := range cs.userPubKeys {
 			userPubKeysCopy[k] = v
+		}
+		userPubKeysUpdatedAtCopy := make(map[string]int64)
+		for k, v := range cs.userPubKeysUpdatedAt {
+			userPubKeysUpdatedAtCopy[k] = v
 		}
 		messagesCopy := make(Messages)
 		for k, v := range cs.messages {
@@ -235,23 +263,46 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		for k, v := range cs.users {
 			usersCopy[k] = v
 		}
+		userDirectoryUpdatedAtCopy := make(map[string]int64)
+		for k, v := range cs.userDirectoryUpdatedAt {
+			userDirectoryUpdatedAtCopy[k] = v
+		}
+		roomDirectoryUpdatedAtCopy := make(map[string]int64)
+		for k, v := range cs.roomDirectoryUpdatedAt {
+			roomDirectoryUpdatedAtCopy[k] = v
+		}
+		roomNameCiphertextsCopy := make(map[string]string)
+		for k, v := range cs.roomNameCiphertexts {
+			roomNameCiphertextsCopy[k] = v
+		}
+		roomNameHashesCopy := make(map[string]string)
+		for k, v := range cs.roomNameHashes {
+			roomNameHashesCopy[k] = v
+		}
+		usernameCiphertextsCopy := make(map[string]string)
+		for k, v := range cs.usernameCiphertexts {
+			usernameCiphertextsCopy[k] = v
+		}
 		cs.mu.Unlock()
 
 		// Save to disk
 		go func() {
-			if err := cs.store.Save(messagesCopy, roomsCopy, usersCopy, userPubKeysCopy); err != nil {
+			roomIDsCopy := cs.getIdentityMapsForSave()
+			if err := cs.store.SaveWithIdentity(messagesCopy, roomsCopy, usersCopy, userPubKeysCopy, userPubKeysUpdatedAtCopy, nil, roomIDsCopy, roomNameHashesCopy, roomNameCiphertextsCopy, usernameCiphertextsCopy, userDirectoryUpdatedAtCopy, roomDirectoryUpdatedAtCopy); err != nil {
 				log.Printf("[handleLogin] ✗ Failed to save state: %v", err)
 			}
 		}()
 
 		// Create session and return success
 		sessionID := generateSalt()
-		cs.sessionCache.Set(sessionID, req.Username)
-		cs.setUser(req.Username, sessionID)
+		userID := req.UserID
+		cs.sessionCache.Set(sessionID, userID)
+		cs.setUser(req.UserID, sessionID)
 
-		log.Printf("[handleLogin] ✓ New user registered: %s", req.Username)
+		log.Printf("[handleLogin] ✓ New user registered: %s", req.UserID)
 		json.NewEncoder(w).Encode(LoginResponse{
 			SessionID:       sessionID,
+			UserID:          userID,
 			ServerPublicKey: cs.serverPublicKey,
 		})
 		return
@@ -261,11 +312,11 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if userExists {
 		// If no encrypted UUID provided, send challenge
 		if req.EncryptedUUID == "" {
-			log.Printf("[handleLogin] Sending challenge to user: %s", req.Username)
+			log.Printf("[handleLogin] Sending challenge to user: %s", req.UserID)
 
 			// Generate UUID challenge
 			challengeUUID := uuid.New().String()
-			log.Printf("[handleLogin] Generated login challenge for user: %s", req.Username)
+			log.Printf("[handleLogin] Generated login challenge for user: %s", req.UserID)
 
 			// Encrypt UUID with user's public key
 			userKey, err := crypto.NewKeyFromArmored(userPubKey)
@@ -306,24 +357,26 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Store challenge temporarily (in production, use Redis with TTL)
-			cs.sessionCache.Set("challenge_"+req.Username, challengeUUID)
+			cs.sessionCache.Set("challenge_"+req.UserID, challengeUUID)
 
-			log.Printf("[handleLogin] ✓ Challenge sent to user: %s", req.Username)
+			log.Printf("[handleLogin] ✓ Challenge sent to user: %s", req.UserID)
 			json.NewEncoder(w).Encode(LoginResponse{
 				Challenge: encryptedArmored,
+				UserID:    req.UserID,
 			})
 			return
 		}
 
 		// Verify encrypted UUID response
-		log.Printf("[handleLogin] Verifying challenge response for user: %s", req.Username)
+		log.Printf("[handleLogin] Verifying challenge response for user: %s", req.UserID)
 
 		// Get stored challenge
-		storedChallenge, exists := cs.sessionCache.Get("challenge_" + req.Username)
+		storedChallenge, exists := cs.sessionCache.Get("challenge_" + req.UserID)
 		if !exists {
-			log.Printf("[handleLogin] ✗ No challenge found for user: %s", req.Username)
+			log.Printf("[handleLogin] ✗ No challenge found for user: %s", req.UserID)
 			json.NewEncoder(w).Encode(LoginResponse{
-				Error: "Challenge expired or not found",
+				Error:  "Challenge expired or not found",
+				UserID: req.UserID,
 			})
 			return
 		}
@@ -351,30 +404,34 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 		// Compare UUIDs
 		if decryptedUUID != storedChallenge {
-			log.Printf("[handleLogin] ✗ UUID mismatch for user: %s", req.Username)
+			log.Printf("[handleLogin] ✗ UUID mismatch for user: %s", req.UserID)
 			json.NewEncoder(w).Encode(LoginResponse{
-				Error: "Authentication failed",
+				Error:  "Authentication failed",
+				UserID: req.UserID,
 			})
 			return
 		}
 
 		// Authentication successful
 		sessionID := generateSalt()
-		cs.sessionCache.Set(sessionID, req.Username)
-		cs.sessionCache.Delete("challenge_" + req.Username) // Clean up challenge
-		cs.setUser(req.Username, sessionID)
+		userID := req.UserID
+		cs.sessionCache.Set(sessionID, userID)
+		cs.sessionCache.Delete("challenge_" + req.UserID) // Clean up challenge
+		cs.setUser(req.UserID, sessionID)
 
-		log.Printf("[handleLogin] ✓ Authentication successful for user: %s", req.Username)
+		log.Printf("[handleLogin] ✓ Authentication successful for user: %s", req.UserID)
 		json.NewEncoder(w).Encode(LoginResponse{
 			SessionID: sessionID,
+			UserID:    userID,
 		})
 		return
 	}
 
 	// User doesn't exist and no public key provided
-	log.Printf("[handleLogin] ✗ User not found: %s", req.Username)
+	log.Printf("[handleLogin] ✗ User not found: %s", req.UserID)
 	json.NewEncoder(w).Encode(LoginResponse{
-		Error: "User not found. Please register with a public key first.",
+		Error:  "User not found. Please register first.",
+		UserID: req.UserID,
 	})
 }
 
@@ -418,35 +475,44 @@ func (cs *ChatServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify session
-	storedUsername, exists := cs.sessionCache.Get(req.SessionID)
-	if !exists || storedUsername != req.Username {
-		log.Printf("[handleDeleteUser] ✗ Invalid session for user: %s", req.Username)
+	storedUserID, exists := cs.sessionCache.Get(req.SessionID)
+	if !exists || storedUserID == "" || storedUserID != req.UserID {
+		log.Printf("[handleDeleteUser] ✗ Invalid session for user: %s", req.UserID)
 		json.NewEncoder(w).Encode(DeleteUserResponse{
 			Error: "Invalid session",
 		})
 		return
 	}
 
-	log.Printf("[handleDeleteUser] Deleting user: %s", req.Username)
+	log.Printf("[handleDeleteUser] Deleting user: %s", req.UserID)
 
 	// Delete user from server state
 	cs.mu.Lock()
 
 	// Remove from users map
-	delete(cs.users, req.Username)
+	delete(cs.users, req.UserID)
+	delete(cs.userSocketsByID, req.UserID)
 
 	// Remove from userPubKeys
-	delete(cs.userPubKeys, req.Username)
+	delete(cs.userPubKeys, req.UserID)
+	delete(cs.userPubKeysUpdatedAt, req.UserID)
+	delete(cs.usernameCiphertexts, req.UserID)
+	delete(cs.userDirectoryUpdatedAt, req.UserID)
+	for hash, userID := range cs.usernameHashes {
+		if userID == req.UserID {
+			delete(cs.usernameHashes, hash)
+		}
+	}
 
 	// Remove from roomMembers
-	for room := range cs.roomMembers {
-		if cs.roomMembers[room] != nil {
-			delete(cs.roomMembers[room], req.Username)
+	for roomID := range cs.roomMembers {
+		if cs.roomMembers[roomID] != nil {
+			delete(cs.roomMembers[roomID], req.UserID)
 		}
 	}
 
 	// Remove from userLastSeen
-	delete(cs.userLastSeen, req.Username)
+	delete(cs.userLastSeen, req.UserID)
 
 	// Remove session from cache
 	cs.sessionCache.Delete(req.SessionID)
@@ -467,9 +533,38 @@ func (cs *ChatServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		for k, v := range cs.users {
 			usersCopy[k] = v
 		}
+		userPubKeysCopy := make(map[string]string)
+		for k, v := range cs.userPubKeys {
+			userPubKeysCopy[k] = v
+		}
+		userPubKeysUpdatedAtCopy := make(map[string]int64)
+		for k, v := range cs.userPubKeysUpdatedAt {
+			userPubKeysUpdatedAtCopy[k] = v
+		}
+		userDirectoryUpdatedAtCopy := make(map[string]int64)
+		for k, v := range cs.userDirectoryUpdatedAt {
+			userDirectoryUpdatedAtCopy[k] = v
+		}
+		roomDirectoryUpdatedAtCopy := make(map[string]int64)
+		for k, v := range cs.roomDirectoryUpdatedAt {
+			roomDirectoryUpdatedAtCopy[k] = v
+		}
+		roomNameCiphertextsCopy := make(map[string]string)
+		for k, v := range cs.roomNameCiphertexts {
+			roomNameCiphertextsCopy[k] = v
+		}
+		roomNameHashesCopy := make(map[string]string)
+		for k, v := range cs.roomNameHashes {
+			roomNameHashesCopy[k] = v
+		}
+		usernameCiphertextsCopy := make(map[string]string)
+		for k, v := range cs.usernameCiphertexts {
+			usernameCiphertextsCopy[k] = v
+		}
 		cs.mu.RUnlock()
+		roomIDsCopy := cs.getIdentityMapsForSave()
 
-		if err := cs.store.Save(messagesCopy, roomsCopy, usersCopy, cs.userPubKeys); err != nil {
+		if err := cs.store.SaveWithIdentity(messagesCopy, roomsCopy, usersCopy, userPubKeysCopy, userPubKeysUpdatedAtCopy, nil, roomIDsCopy, roomNameHashesCopy, roomNameCiphertextsCopy, usernameCiphertextsCopy, userDirectoryUpdatedAtCopy, roomDirectoryUpdatedAtCopy); err != nil {
 			log.Printf("[handleDeleteUser] ✗ Failed to save state: %v", err)
 		}
 	}()
@@ -478,7 +573,7 @@ func (cs *ChatServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	// We don't have direct access to defaultNsp here, but the deletion
 	// will be reflected in the next user list update
 
-	log.Printf("[handleDeleteUser] ✓ User deleted: %s", req.Username)
+	log.Printf("[handleDeleteUser] ✓ User deleted: %s", req.UserID)
 	json.NewEncoder(w).Encode(DeleteUserResponse{
 		Success: true,
 	})

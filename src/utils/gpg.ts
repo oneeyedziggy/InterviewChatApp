@@ -2,6 +2,11 @@ import * as openpgp from 'openpgp';
 import { apiPath, withBasePath } from '@/utils/appPaths';
 import { getDmParticipants, isDmRoom } from './dmRooms';
 import { getBlockedUsers } from './userSettings';
+import {
+  getUserIdByUsername,
+  requireUserIdByUsername,
+  storeIdentityDirectories,
+} from './identityMap';
 
 const STORAGE_KEYS = {
   USERNAME: 'gpg_username',
@@ -28,6 +33,7 @@ export interface StoredKeys {
 
 export type UserPublicKeyEntry = {
   publicKey: string;
+  updatedAt?: number;
   blocked?: boolean;
   blockedAt?: number;
   blockedBy?: string[];
@@ -105,6 +111,8 @@ function normalizeUserPublicKeyEntries(
     if (raw && typeof raw === 'object') {
       normalized[username] = {
         publicKey: raw.publicKey || '',
+        updatedAt:
+          typeof raw.updatedAt === 'number' ? raw.updatedAt : undefined,
         blocked: !!raw.blocked,
         blockedAt:
           typeof raw.blockedAt === 'number' ? raw.blockedAt : undefined,
@@ -156,7 +164,10 @@ export function storeKeys(keys: StoredKeys): void {
   storeKeysForUser(keys, true);
 }
 
-export function storeKeysForUser(keys: StoredKeys, setAsCurrent: boolean): void {
+export function storeKeysForUser(
+  keys: StoredKeys,
+  setAsCurrent: boolean,
+): void {
   if (typeof window === 'undefined') return;
 
   // Store per-user data
@@ -522,11 +533,31 @@ export async function fetchServerPublicKey(): Promise<string> {
   return data.publicKey;
 }
 
-async function submitChallengeResponse(
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export async function buildOpaqueUsernameEnvelope(
   username: string,
+  serverPublicKey: string,
+): Promise<{ usernameHash: string; usernameCiphertext: string }> {
+  const encoder = new TextEncoder();
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    encoder.encode(username),
+  );
+  const usernameHash = bytesToHex(new Uint8Array(digest));
+  const usernameCiphertext = await encryptForServer(username, serverPublicKey);
+  return { usernameHash, usernameCiphertext };
+}
+
+async function submitChallengeResponse(
+  userId: string,
   decryptedUUID: string,
   serverPublicKey: string,
-): Promise<{ sessionId?: string; error?: string }> {
+): Promise<{ sessionId?: string; userId: string; error?: string }> {
   const encryptedResponse = await encryptForServer(
     decryptedUUID,
     serverPublicKey,
@@ -536,18 +567,19 @@ async function submitChallengeResponse(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      username,
+      userId,
       encryptedUUID: encryptedResponse,
     }),
   });
 
   if (!verifyResponse.ok) {
-    return { error: 'Challenge-response request failed' };
+    return { error: 'Challenge-response request failed', userId: '' };
   }
 
   const verifyData = await verifyResponse.json();
   return {
     sessionId: verifyData.sessionId,
+    userId: verifyData.userId || '',
     error: verifyData.error,
   };
 }
@@ -557,21 +589,27 @@ async function submitChallengeResponse(
  * if verification fails (e.g., after server key rotation).
  */
 export async function verifyChallengeResponseWithKeyRefresh(params: {
-  username: string;
+  userId: string;
   decryptedUUID: string;
   serverPublicKey: string;
-}): Promise<{ sessionId?: string; error?: string; serverPublicKey: string }> {
-  const { username, decryptedUUID } = params;
+}): Promise<{
+  sessionId?: string;
+  userId: string;
+  error?: string;
+  serverPublicKey: string;
+}> {
+  const { userId, decryptedUUID } = params;
   let currentServerPublicKey = params.serverPublicKey;
 
   const initial = await submitChallengeResponse(
-    username,
+    userId,
     decryptedUUID,
     currentServerPublicKey,
   );
   if (initial.sessionId) {
     return {
       sessionId: initial.sessionId,
+      userId: initial.userId,
       serverPublicKey: currentServerPublicKey,
     };
   }
@@ -581,19 +619,21 @@ export async function verifyChallengeResponseWithKeyRefresh(params: {
     if (refreshedServerPublicKey !== currentServerPublicKey) {
       currentServerPublicKey = refreshedServerPublicKey;
       const retried = await submitChallengeResponse(
-        username,
+        userId,
         decryptedUUID,
         currentServerPublicKey,
       );
       if (retried.sessionId) {
         return {
           sessionId: retried.sessionId,
+          userId: retried.userId,
           serverPublicKey: currentServerPublicKey,
         };
       }
 
       return {
         error: retried.error || initial.error,
+        userId: retried.userId,
         serverPublicKey: currentServerPublicKey,
       };
     }
@@ -603,6 +643,7 @@ export async function verifyChallengeResponseWithKeyRefresh(params: {
 
   return {
     error: initial.error,
+    userId: initial.userId,
     serverPublicKey: currentServerPublicKey,
   };
 }
@@ -652,11 +693,51 @@ export async function encryptForServer(
   return encrypted;
 }
 
+export async function signDetachedText(
+  text: string,
+  privateKeyArmored: string,
+): Promise<string> {
+  const privateKey = await openpgp.readPrivateKey({
+    armoredKey: privateKeyArmored,
+  });
+
+  const message = await openpgp.createMessage({ text });
+  return openpgp.sign({
+    message,
+    signingKeys: privateKey,
+    detached: true,
+  });
+}
+
+export async function verifyDetachedTextSignature(
+  text: string,
+  signatureArmored: string,
+  publicKeyArmored: string,
+): Promise<boolean> {
+  const publicKey = await openpgp.readKey({ armoredKey: publicKeyArmored });
+  const signature = await openpgp.readSignature({
+    armoredSignature: signatureArmored,
+  });
+  const message = await openpgp.createMessage({ text });
+  const result = await openpgp.verify({
+    message,
+    signature,
+    verificationKeys: publicKey,
+  });
+  const first = result.signatures[0];
+  if (!first) {
+    return false;
+  }
+  await first.verified;
+  return true;
+}
+
 /**
  * Store all user public keys
  */
 export function storeUserPublicKeys(
   userPubKeys: Record<string, UserPublicKeyInput>,
+  userPubKeysUpdatedAt?: Record<string, number>,
 ): void {
   if (typeof window === 'undefined') return;
 
@@ -666,8 +747,33 @@ export function storeUserPublicKeys(
 
   for (const [username, nextEntry] of Object.entries(incoming)) {
     const prior = existing[username];
+    const incomingUpdatedAtRaw = userPubKeysUpdatedAt?.[username];
+    const incomingUpdatedAt =
+      Number.isFinite(incomingUpdatedAtRaw) &&
+      (incomingUpdatedAtRaw as number) > 0
+        ? Math.trunc(incomingUpdatedAtRaw as number)
+        : Number.isFinite(nextEntry.updatedAt) &&
+            (nextEntry.updatedAt as number) > 0
+          ? Math.trunc(nextEntry.updatedAt as number)
+          : 0;
+    const priorUpdatedAt =
+      Number.isFinite(prior?.updatedAt) && (prior?.updatedAt as number) > 0
+        ? Math.trunc(prior?.updatedAt as number)
+        : 0;
+    const shouldReplacePublicKey =
+      !prior?.publicKey ||
+      incomingUpdatedAt === 0 ||
+      priorUpdatedAt === 0 ||
+      incomingUpdatedAt >= priorUpdatedAt;
+
     merged[username] = {
-      publicKey: nextEntry.publicKey || prior?.publicKey || '',
+      publicKey: shouldReplacePublicKey
+        ? nextEntry.publicKey || prior?.publicKey || ''
+        : prior?.publicKey || nextEntry.publicKey || '',
+      updatedAt:
+        incomingUpdatedAt > 0
+          ? Math.max(priorUpdatedAt, incomingUpdatedAt)
+          : priorUpdatedAt || undefined,
       blocked: prior?.blocked || nextEntry.blocked || false,
       blockedAt: prior?.blockedAt || nextEntry.blockedAt,
       blockedBy: Array.from(
@@ -785,7 +891,10 @@ export function importSharedAccountPackage(
   }
 
   storeUserPublicKeys(mergedPubKeys);
-  console.log('[GPG] ✓ Imported shared account package for', accountPackage.username);
+  console.log(
+    '[GPG] ✓ Imported shared account package for',
+    accountPackage.username,
+  );
 }
 
 /**
@@ -885,6 +994,34 @@ export async function decryptMessageForUser(
   }
 }
 
+export async function encryptJsonForCurrentUser(
+  value: unknown,
+): Promise<string> {
+  const keys = loadKeys();
+  if (!keys?.publicKey || !keys?.username) {
+    throw new Error('Missing local key material for at-rest encryption');
+  }
+
+  return encryptForAllUsers(
+    JSON.stringify(value),
+    { [keys.username]: keys.publicKey },
+    keys.publicKey,
+    keys.username,
+  );
+}
+
+export async function decryptJsonForCurrentUser<T>(
+  encryptedArmored: string,
+): Promise<T> {
+  const keys = loadKeys();
+  if (!keys?.privateKey) {
+    throw new Error('Missing local key material for at-rest decryption');
+  }
+
+  const raw = await decryptMessageForUser(encryptedArmored, keys.privateKey);
+  return JSON.parse(raw) as T;
+}
+
 /**
  * Automatically re-establish session using stored credentials when session becomes invalid.
  * This prevents losing the message window context when server restarts.
@@ -899,13 +1036,22 @@ export async function attemptAutoRelogin(): Promise<string | null> {
     }
 
     console.log('[GPG] Attempting auto-relogin for user:', keys.username);
+    const userId =
+      getUserIdByUsername(keys.username) ||
+      requireUserIdByUsername(keys.username);
+    const opaqueIdentity = await buildOpaqueUsernameEnvelope(
+      keys.username,
+      keys.serverPublicKey,
+    );
 
-    // Step 1: Send username and public key to server
+    // Step 1: Send userId and public key to server
     const loginResponse = await fetch(apiPath('/api/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        username: keys.username,
+        userId,
+        usernameHash: opaqueIdentity.usernameHash,
+        usernameCiphertext: opaqueIdentity.usernameCiphertext,
         publicKey: keys.publicKey,
       }),
     });
@@ -950,7 +1096,7 @@ export async function attemptAutoRelogin(): Promise<string | null> {
         );
 
         const verifyData = await verifyChallengeResponseWithKeyRefresh({
-          username: keys.username,
+          userId,
           decryptedUUID,
           serverPublicKey: keys.serverPublicKey,
         });

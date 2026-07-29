@@ -1,4 +1,4 @@
-export const DEFAULT_ROOM = '#general';
+export const DEFAULT_ROOM = 'general';
 export const VALIDATION = {
   MIN_USERNAME_LENGTH: 8,
   MIN_PASSWORD_LENGTH: 8,
@@ -29,7 +29,9 @@ export const SOCKET_EVENTS = {
   CLIENT_DELETE_MESSAGE: 'clientDeleteMessage',
   CLIENT_SEND_PUBLIC_KEY: 'clientSendPublicKey',
   CLIENT_UNBLOCK_USER_DELTA: 'clientUnblockUserDelta',
+  CLIENT_IDENTITY_DIRECTORY_REFRESH: 'clientIdentityDirectoryRefresh',
   SERVER_PUBLIC_KEY_RECEIVED: 'serverPublicKeyReceived',
+  SERVER_IDENTITY_DIRECTORY_REFRESH: 'serverIdentityDirectoryRefresh',
   SERVER_VOTE_UPDATE: 'serverVoteUpdate',
   SERVER_ACTION_RESULT: 'serverActionResult',
   INITIAL_DATA: 'initialData',
@@ -46,4 +48,11 @@ export const SYSTEM_MESSAGES = {
 
 export const FEATURES = {
   MESSAGE_VOTING: true, // Enable/disable message voting feature
+} as const;
+
+export const MESSAGE_LIMITS = {
+  WARN_TEXT_BYTES: 800,
+  MAX_TEXT_BYTES: 1000,
+  SERVER_CIPHERTEXT_RATIO: 3.3,
+  MAX_CIPHERTEXT_BYTES: 3300,
 } as const;

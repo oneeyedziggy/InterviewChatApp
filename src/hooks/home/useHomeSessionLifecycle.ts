@@ -4,12 +4,7 @@ import { type Messages } from '../../types/types';
 import { restoreSession } from '../../utils/homeSession';
 import { initializeHomeSocket } from '../../utils/homeSocketInitializer';
 import { getBlockedUsers } from '../../utils/userSettings';
-
-type JoinRequest = {
-  requestingUser: string;
-  room: string;
-  timestamp: number;
-};
+import { type JoinRequest } from '../../contexts/home/homePageTypes';
 
 type UseHomeSessionLifecycleArgs = {
   authToken: string;

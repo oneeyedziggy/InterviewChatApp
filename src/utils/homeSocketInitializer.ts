@@ -3,20 +3,32 @@ import { socketIoPath } from '@/utils/appPaths';
 import { type Message, type Messages } from '../types/types';
 import { SOCKET_EVENTS, DEFAULT_ROOM, SYSTEM_MESSAGES } from '../constants';
 import {
+  decryptJsonForCurrentUser,
   storeUserPublicKeys,
   loadUserPublicKeyEntries,
   decryptMessageForUser,
   loadKeys,
+  encryptForAllUsers,
+  verifyDetachedTextSignature,
 } from '../utils/gpg';
+import { emitSignedMutation } from '../utils/socketAuth';
+import {
+  getCurrentUserId,
+  getRoomIdByName,
+  getUsernameByUserId,
+  getRoomNameByRoomId,
+  requireRoomIdByName,
+  requireUserIdByUsername,
+  storeIdentityDirectories,
+  getRoomDirectorySnapshot,
+  getRoomDirectoryTimestampSnapshot,
+  getUserDirectorySnapshot,
+  getUserDirectoryTimestampSnapshot,
+} from '../utils/identityMap';
 import { getBlockedUsers } from '../utils/userSettings';
 import { filterRoomsForUser, isDmRoom, isUserInDmRoom } from '../utils/dmRooms';
 import type { Dispatch, SetStateAction } from 'react';
-
-type JoinRequest = {
-  requestingUser: string;
-  room: string;
-  timestamp: number;
-};
+import type { JoinRequest } from '../contexts/home/homePageTypes';
 
 function createClientMessageId(prefix = 'client'): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -41,11 +53,876 @@ type StoredRoomPrefs = {
   openRooms?: string[];
 };
 
+type EncryptedStoredRoomPrefs = {
+  version: 'enc-v1';
+  ciphertext: string;
+};
+
+type ServerSignatureEnvelope = {
+  version?: string;
+  event?: string;
+  timestamp?: number;
+  nonce?: string;
+  payloadHash?: string;
+  signature?: string;
+};
+
+const SERVER_SIGNATURE_STRICT_STORAGE_KEY = 'chat_server_signature_strict';
+
+function isServerSignatureStrictMode(): boolean {
+  if (typeof window === 'undefined') {
+    return true;
+  }
+
+  const raw = localStorage.getItem(SERVER_SIGNATURE_STRICT_STORAGE_KEY);
+  if (!raw) {
+    return true;
+  }
+
+  const value = raw.trim().toLowerCase();
+  return value !== '0' && value !== 'false' && value !== 'off';
+}
+
+function escapeGoJsonString(value: string): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+function goJsonStringify(value: unknown): string {
+  if (value === null || value === undefined) {
+    return 'null';
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'string') {
+    return escapeGoJsonString(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => goJsonStringify(item)).join(',')}]`;
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    return `{${entries
+      .map(
+        ([key, nested]) =>
+          `${escapeGoJsonString(key)}:${goJsonStringify(nested)}`,
+      )
+      .join(',')}}`;
+  }
+  return JSON.stringify(String(value));
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const data = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const bytes = Array.from(new Uint8Array(digest));
+  return bytes.map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function roomNameHash(roomName: string): Promise<string> {
+  const normalized = roomName.trim().toLowerCase();
+  return sha256Hex(normalized);
+}
+
+function buildServerSigningInput(
+  envelope: Required<ServerSignatureEnvelope>,
+): string {
+  return [
+    envelope.version,
+    envelope.event,
+    String(envelope.timestamp),
+    envelope.nonce,
+    envelope.payloadHash,
+  ].join('|');
+}
+
+async function applyEncryptedRoomDirectory(payload: unknown): Promise<number> {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return 0;
+  }
+
+  const roomNameCiphertexts = (payload as Record<string, unknown>)[
+    'roomNameCiphertexts'
+  ];
+  if (!roomNameCiphertexts || typeof roomNameCiphertexts !== 'object') {
+    return 0;
+  }
+
+  const keys = loadKeys();
+  if (!keys?.privateKey) {
+    return 0;
+  }
+
+  const decryptedRoomDirectory: Record<string, string> = {};
+  const decryptedRoomDirectoryUpdatedAt: Record<string, number> = {};
+  const updatedAtByRoomId =
+    (payload as Record<string, unknown>)['roomDirectoryUpdatedAt'] &&
+    typeof (payload as Record<string, unknown>)['roomDirectoryUpdatedAt'] ===
+      'object' &&
+    !Array.isArray(
+      (payload as Record<string, unknown>)['roomDirectoryUpdatedAt'],
+    )
+      ? ((payload as Record<string, unknown>)[
+          'roomDirectoryUpdatedAt'
+        ] as Record<string, unknown>)
+      : {};
+  for (const [roomId, ciphertext] of Object.entries(
+    roomNameCiphertexts as Record<string, unknown>,
+  )) {
+    if (typeof ciphertext !== 'string' || ciphertext.trim() === '') {
+      continue;
+    }
+    try {
+      const roomName = await decryptMessageForUser(ciphertext, keys.privateKey);
+      if (roomName && roomName.trim() !== '') {
+        decryptedRoomDirectory[roomId] = roomName;
+        const rawUpdatedAt = updatedAtByRoomId[roomId];
+        const numericUpdatedAt =
+          typeof rawUpdatedAt === 'number'
+            ? rawUpdatedAt
+            : typeof rawUpdatedAt === 'string'
+              ? Number.parseInt(rawUpdatedAt, 10)
+              : NaN;
+        if (Number.isFinite(numericUpdatedAt) && numericUpdatedAt > 0) {
+          decryptedRoomDirectoryUpdatedAt[roomId] =
+            Math.trunc(numericUpdatedAt);
+        }
+      }
+    } catch (error) {
+      console.warn('[Socket] Failed to decrypt room name for', roomId, error);
+    }
+  }
+
+  if (Object.keys(decryptedRoomDirectory).length > 0) {
+    storeIdentityDirectories({
+      roomDirectory: decryptedRoomDirectory,
+      roomDirectoryUpdatedAt: decryptedRoomDirectoryUpdatedAt,
+    });
+  }
+  return Object.keys(decryptedRoomDirectory).length;
+}
+
+async function applyEncryptedUserDirectory(payload: unknown): Promise<number> {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return 0;
+  }
+
+  const userNameCiphertexts = (payload as Record<string, unknown>)[
+    'userDirectoryCiphertexts'
+  ];
+  if (!userNameCiphertexts || typeof userNameCiphertexts !== 'object') {
+    return 0;
+  }
+
+  const keys = loadKeys();
+  if (!keys?.privateKey) {
+    return 0;
+  }
+
+  const decryptedUserDirectory: Record<string, string> = {};
+  const decryptedUserDirectoryUpdatedAt: Record<string, number> = {};
+  const updatedAtByUserId =
+    (payload as Record<string, unknown>)['userDirectoryUpdatedAt'] &&
+    typeof (payload as Record<string, unknown>)['userDirectoryUpdatedAt'] ===
+      'object' &&
+    !Array.isArray(
+      (payload as Record<string, unknown>)['userDirectoryUpdatedAt'],
+    )
+      ? ((payload as Record<string, unknown>)[
+          'userDirectoryUpdatedAt'
+        ] as Record<string, unknown>)
+      : {};
+  for (const [userId, ciphertext] of Object.entries(
+    userNameCiphertexts as Record<string, unknown>,
+  )) {
+    if (typeof ciphertext !== 'string' || ciphertext.trim() === '') {
+      continue;
+    }
+    try {
+      const username = await decryptMessageForUser(ciphertext, keys.privateKey);
+      if (username && username.trim() !== '') {
+        decryptedUserDirectory[userId] = username;
+        const rawUpdatedAt = updatedAtByUserId[userId];
+        const numericUpdatedAt =
+          typeof rawUpdatedAt === 'number'
+            ? rawUpdatedAt
+            : typeof rawUpdatedAt === 'string'
+              ? Number.parseInt(rawUpdatedAt, 10)
+              : NaN;
+        if (Number.isFinite(numericUpdatedAt) && numericUpdatedAt > 0) {
+          decryptedUserDirectoryUpdatedAt[userId] =
+            Math.trunc(numericUpdatedAt);
+        }
+      }
+    } catch (error) {
+      console.warn('[Socket] Failed to decrypt username for', userId, error);
+    }
+  }
+
+  if (Object.keys(decryptedUserDirectory).length > 0) {
+    storeIdentityDirectories({
+      userDirectory: decryptedUserDirectory,
+      userDirectoryUpdatedAt: decryptedUserDirectoryUpdatedAt,
+    });
+  }
+  return Object.keys(decryptedUserDirectory).length;
+}
+
+function parseUserIdsFromPubKeyPayload(payload: unknown): Set<string> {
+  const userIds = new Set<string>();
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return userIds;
+  }
+
+  for (const userId of Object.keys(payload as Record<string, unknown>)) {
+    const normalized = userId.trim();
+    if (normalized !== '') {
+      userIds.add(normalized);
+    }
+  }
+
+  return userIds;
+}
+
+function collectEncryptionRecipients(
+  incomingUserPubKeys: unknown,
+): Record<string, string> {
+  const entries = loadUserPublicKeyEntries() || {};
+  const recipients: Record<string, string> = {};
+  for (const [userId, entry] of Object.entries(entries)) {
+    const publicKey = entry?.publicKey;
+    if (typeof publicKey !== 'string' || publicKey.trim() === '') {
+      continue;
+    }
+    recipients[userId] = publicKey;
+  }
+
+  if (
+    incomingUserPubKeys &&
+    typeof incomingUserPubKeys === 'object' &&
+    !Array.isArray(incomingUserPubKeys)
+  ) {
+    for (const [userId, rawEntry] of Object.entries(
+      incomingUserPubKeys as Record<string, unknown>,
+    )) {
+      if (!userId) {
+        continue;
+      }
+      let publicKey = '';
+      if (typeof rawEntry === 'string') {
+        publicKey = rawEntry;
+      } else if (
+        rawEntry &&
+        typeof rawEntry === 'object' &&
+        typeof (rawEntry as { publicKey?: unknown }).publicKey === 'string'
+      ) {
+        publicKey = (rawEntry as { publicKey: string }).publicKey;
+      }
+      if (publicKey.trim() !== '') {
+        recipients[userId] = publicKey;
+      }
+    }
+  }
+
+  return recipients;
+}
+
+async function buildIdentityDirectoryRefreshPayload(
+  newUserIds: string[],
+  incomingUserPubKeys: unknown,
+): Promise<{
+  roomNameCiphertexts: Record<string, string>;
+  userDirectoryCiphertexts: Record<string, string>;
+  roomDirectoryUpdatedAt: Record<string, number>;
+  userDirectoryUpdatedAt: Record<string, number>;
+} | null> {
+  if (newUserIds.length === 0) {
+    return null;
+  }
+
+  const keys = loadKeys();
+  if (!keys?.publicKey) {
+    return null;
+  }
+
+  const recipients = collectEncryptionRecipients(incomingUserPubKeys);
+  const recipientCountBefore = Object.keys(recipients).length;
+  if (recipientCountBefore === 0) {
+    return null;
+  }
+
+  const roomDirectory = getRoomDirectorySnapshot();
+  const userDirectory = getUserDirectorySnapshot();
+  const roomDirectoryUpdatedAt = getRoomDirectoryTimestampSnapshot();
+  const userDirectoryUpdatedAt = getUserDirectoryTimestampSnapshot();
+
+  const roomNameCiphertexts: Record<string, string> = {};
+  const userDirectoryCiphertexts: Record<string, string> = {};
+
+  for (const [roomId, roomName] of Object.entries(roomDirectory)) {
+    if (!roomId || !roomName) {
+      continue;
+    }
+    try {
+      roomNameCiphertexts[roomId] = await encryptForAllUsers(
+        roomName,
+        recipients,
+        keys.publicKey,
+        keys.username,
+      );
+    } catch (error) {
+      console.warn(
+        '[Socket] Failed to refresh room name ciphertext for',
+        roomId,
+        error,
+      );
+    }
+  }
+
+  for (const [userId, username] of Object.entries(userDirectory)) {
+    if (!userId || !username) {
+      continue;
+    }
+    try {
+      userDirectoryCiphertexts[userId] = await encryptForAllUsers(
+        username,
+        recipients,
+        keys.publicKey,
+        keys.username,
+      );
+    } catch (error) {
+      console.warn(
+        '[Socket] Failed to refresh username ciphertext for',
+        userId,
+        error,
+      );
+    }
+  }
+
+  if (
+    Object.keys(roomNameCiphertexts).length === 0 &&
+    Object.keys(userDirectoryCiphertexts).length === 0
+  ) {
+    return null;
+  }
+
+  return {
+    roomNameCiphertexts,
+    userDirectoryCiphertexts,
+    roomDirectoryUpdatedAt,
+    userDirectoryUpdatedAt,
+  };
+}
+
+async function maybeSendIdentityDirectoryRefresh(args: {
+  socket: Socket;
+  authToken: string;
+  username: string;
+  incomingUserPubKeys: unknown;
+}): Promise<void> {
+  const { socket, authToken, username, incomingUserPubKeys } = args;
+  if (!authToken || !username) {
+    return;
+  }
+
+  const knownBefore = parseUserIdsFromPubKeyPayload(loadUserPublicKeyEntries());
+  const knownAfter = parseUserIdsFromPubKeyPayload(incomingUserPubKeys);
+  const newUserIds = Array.from(knownAfter).filter(
+    (userId) => !knownBefore.has(userId),
+  );
+
+  if (newUserIds.length === 0) {
+    return;
+  }
+
+  const refreshPayload = await buildIdentityDirectoryRefreshPayload(
+    newUserIds,
+    incomingUserPubKeys,
+  );
+  if (!refreshPayload) {
+    return;
+  }
+
+  const userId = requireUserIdByUsername(username);
+  await emitSignedMutation(socket, {
+    event: SOCKET_EVENTS.CLIENT_IDENTITY_DIRECTORY_REFRESH,
+    payload: {
+      userId,
+      refreshedForUserIds: newUserIds,
+      roomNameCiphertexts: refreshPayload.roomNameCiphertexts,
+      userDirectoryCiphertexts: refreshPayload.userDirectoryCiphertexts,
+      roomDirectoryUpdatedAt: refreshPayload.roomDirectoryUpdatedAt,
+      userDirectoryUpdatedAt: refreshPayload.userDirectoryUpdatedAt,
+      submittedAt: Date.now(),
+    },
+    userId,
+    sessionId: authToken,
+    claims: {
+      userId,
+      refreshedForUserIds: JSON.stringify(newUserIds),
+    },
+  });
+
+  console.log(
+    '[Socket] Submitted identity directory refresh for new users:',
+    newUserIds,
+  );
+}
+
+async function ensureDefaultRoomExists(args: {
+  socket: Socket;
+  authToken: string;
+  username: string;
+  roomIdsFromServer: unknown;
+  incomingUserPubKeys?: unknown;
+  retryAttempt?: number;
+}): Promise<void> {
+  const {
+    socket,
+    authToken,
+    username,
+    roomIdsFromServer,
+    incomingUserPubKeys,
+    retryAttempt = 0,
+  } = args;
+  if (!authToken || !username) {
+    return;
+  }
+
+  const roomIds = Array.isArray(roomIdsFromServer)
+    ? roomIdsFromServer.filter(
+        (room): room is string =>
+          typeof room === 'string' && room.trim() !== '',
+      )
+    : [];
+  const hasGeneral = roomIds.some(
+    (roomId) =>
+      roomId === DEFAULT_ROOM || getRoomNameByRoomId(roomId) === DEFAULT_ROOM,
+  );
+  console.log('[Socket] Default room bootstrap check:', {
+    roomIds,
+    hasGeneral,
+  });
+  if (hasGeneral) {
+    return;
+  }
+
+  const keys = loadKeys();
+  if (!keys?.publicKey) {
+    return;
+  }
+
+  const recipients = collectEncryptionRecipients(incomingUserPubKeys);
+  let roomNameCiphertext = '';
+  try {
+    roomNameCiphertext = await encryptForAllUsers(
+      DEFAULT_ROOM,
+      recipients,
+      keys.publicKey,
+      username,
+    );
+  } catch (error) {
+    console.warn('[Socket] Failed to bootstrap default room ciphertext', error);
+    return;
+  }
+
+  const hashedRoomName = await roomNameHash(DEFAULT_ROOM);
+  const userId = getCurrentUserId() || requireUserIdByUsername(username);
+  const roomDirectoryUpdatedAt = Date.now();
+
+  try {
+    await emitSignedMutation(socket, {
+      event: SOCKET_EVENTS.CLIENT_NEW_ROOM,
+      payload: {
+        roomNameCiphertext,
+        roomNameHash: hashedRoomName,
+        roomDirectoryUpdatedAt,
+        userId,
+        sessionId: authToken,
+      },
+      userId,
+      sessionId: authToken,
+      claims: {
+        roomNameCiphertext,
+        roomNameHash: hashedRoomName,
+        roomDirectoryUpdatedAt: String(roomDirectoryUpdatedAt),
+      },
+    });
+  } catch (error) {
+    if (retryAttempt < 1) {
+      window.setTimeout(() => {
+        void ensureDefaultRoomExists({
+          socket,
+          authToken,
+          username,
+          roomIdsFromServer,
+          incomingUserPubKeys,
+          retryAttempt: retryAttempt + 1,
+        });
+      }, 600);
+    }
+    console.warn('[Socket] Default room bootstrap attempt failed', error);
+    return;
+  }
+
+  console.log('[Socket] Bootstrapped missing default room:', DEFAULT_ROOM);
+}
+
+async function validateAndApplyIdentityRefresh(payload: unknown): Promise<{
+  roomApplied: number;
+  userApplied: number;
+}> {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { roomApplied: 0, userApplied: 0 };
+  }
+
+  const mapPayload = payload as Record<string, unknown>;
+  const senderId =
+    typeof mapPayload.refreshedByUserId === 'string'
+      ? mapPayload.refreshedByUserId.trim()
+      : '';
+  if (!senderId) {
+    console.warn('[Socket] Identity refresh missing sender id');
+    return { roomApplied: 0, userApplied: 0 };
+  }
+
+  const senderEntries = loadUserPublicKeyEntries() || {};
+  if (!senderEntries[senderId]?.publicKey) {
+    console.warn(
+      '[Socket] Ignoring identity refresh from unknown sender:',
+      senderId,
+    );
+    return { roomApplied: 0, userApplied: 0 };
+  }
+
+  const keys = loadKeys();
+  if (!keys?.privateKey) {
+    return { roomApplied: 0, userApplied: 0 };
+  }
+
+  const roomNameCiphertexts =
+    mapPayload.roomNameCiphertexts &&
+    typeof mapPayload.roomNameCiphertexts === 'object' &&
+    !Array.isArray(mapPayload.roomNameCiphertexts)
+      ? (mapPayload.roomNameCiphertexts as Record<string, unknown>)
+      : {};
+  const userDirectoryCiphertexts =
+    mapPayload.userDirectoryCiphertexts &&
+    typeof mapPayload.userDirectoryCiphertexts === 'object' &&
+    !Array.isArray(mapPayload.userDirectoryCiphertexts)
+      ? (mapPayload.userDirectoryCiphertexts as Record<string, unknown>)
+      : {};
+
+  const roomDirectoryUpdatedAtRaw =
+    mapPayload.roomDirectoryUpdatedAt &&
+    typeof mapPayload.roomDirectoryUpdatedAt === 'object' &&
+    !Array.isArray(mapPayload.roomDirectoryUpdatedAt)
+      ? (mapPayload.roomDirectoryUpdatedAt as Record<string, unknown>)
+      : {};
+  const userDirectoryUpdatedAtRaw =
+    mapPayload.userDirectoryUpdatedAt &&
+    typeof mapPayload.userDirectoryUpdatedAt === 'object' &&
+    !Array.isArray(mapPayload.userDirectoryUpdatedAt)
+      ? (mapPayload.userDirectoryUpdatedAt as Record<string, unknown>)
+      : {};
+
+  const decryptedRoomDirectory: Record<string, string> = {};
+  const decryptedUserDirectory: Record<string, string> = {};
+  const decryptedRoomDirectoryUpdatedAt: Record<string, number> = {};
+  const decryptedUserDirectoryUpdatedAt: Record<string, number> = {};
+
+  for (const [roomId, ciphertext] of Object.entries(roomNameCiphertexts)) {
+    if (typeof ciphertext !== 'string' || ciphertext.trim() === '') {
+      continue;
+    }
+    try {
+      const roomName = await decryptMessageForUser(ciphertext, keys.privateKey);
+      if (roomName && roomName.trim() !== '') {
+        decryptedRoomDirectory[roomId] = roomName;
+        const rawUpdatedAt = roomDirectoryUpdatedAtRaw[roomId];
+        const numericUpdatedAt =
+          typeof rawUpdatedAt === 'number'
+            ? rawUpdatedAt
+            : typeof rawUpdatedAt === 'string'
+              ? Number.parseInt(rawUpdatedAt, 10)
+              : NaN;
+        if (Number.isFinite(numericUpdatedAt) && numericUpdatedAt > 0) {
+          decryptedRoomDirectoryUpdatedAt[roomId] =
+            Math.trunc(numericUpdatedAt);
+        }
+      }
+    } catch {
+      // Skip non-decryptable entries to avoid poisoning local mappings.
+    }
+  }
+
+  for (const [userId, ciphertext] of Object.entries(userDirectoryCiphertexts)) {
+    if (typeof ciphertext !== 'string' || ciphertext.trim() === '') {
+      continue;
+    }
+    try {
+      const username = await decryptMessageForUser(ciphertext, keys.privateKey);
+      if (username && username.trim() !== '') {
+        decryptedUserDirectory[userId] = username;
+        const rawUpdatedAt = userDirectoryUpdatedAtRaw[userId];
+        const numericUpdatedAt =
+          typeof rawUpdatedAt === 'number'
+            ? rawUpdatedAt
+            : typeof rawUpdatedAt === 'string'
+              ? Number.parseInt(rawUpdatedAt, 10)
+              : NaN;
+        if (Number.isFinite(numericUpdatedAt) && numericUpdatedAt > 0) {
+          decryptedUserDirectoryUpdatedAt[userId] =
+            Math.trunc(numericUpdatedAt);
+        }
+      }
+    } catch {
+      // Skip non-decryptable entries to avoid poisoning local mappings.
+    }
+  }
+
+  // Require at least one successful decrypt across the refresh payload before applying.
+  if (
+    Object.keys(decryptedRoomDirectory).length === 0 &&
+    Object.keys(decryptedUserDirectory).length === 0
+  ) {
+    console.warn(
+      '[Socket] Ignoring identity refresh payload with no decryptable entries',
+    );
+    return { roomApplied: 0, userApplied: 0 };
+  }
+
+  storeIdentityDirectories({
+    roomDirectory: decryptedRoomDirectory,
+    userDirectory: decryptedUserDirectory,
+    roomDirectoryUpdatedAt: decryptedRoomDirectoryUpdatedAt,
+    userDirectoryUpdatedAt: decryptedUserDirectoryUpdatedAt,
+  });
+
+  return {
+    roomApplied: Object.keys(decryptedRoomDirectory).length,
+    userApplied: Object.keys(decryptedUserDirectory).length,
+  };
+}
+
+function maybeInjectIdentitySyncNoticeDM(args: {
+  username: string;
+  activeUsers: unknown;
+  decryptedRoomCount: number;
+  providedRoomCipherCount: number;
+  setChatValues: Dispatch<SetStateAction<Messages>>;
+  setRoomList: Dispatch<SetStateAction<string[]>>;
+}): void {
+  const {
+    username,
+    activeUsers,
+    decryptedRoomCount,
+    providedRoomCipherCount,
+    setChatValues,
+    setRoomList,
+  } = args;
+
+  const myUserId = requireUserIdByUsername(username);
+  const activeUserIds = Array.isArray(activeUsers)
+    ? activeUsers.filter((user): user is string => typeof user === 'string')
+    : [];
+  const otherUsersOnline = activeUserIds.some((userId) => userId !== myUserId);
+  const missingAnyRoomNames =
+    providedRoomCipherCount > 0 && decryptedRoomCount < providedRoomCipherCount;
+
+  if (otherUsersOnline || !missingAnyRoomNames) {
+    return;
+  }
+
+  const dmRoom = `@dmid:system:${myUserId}`;
+  const noticeMessageID = `identity-sync-notice:${myUserId}`;
+  const noticeMessage: Message = {
+    id: noticeMessageID,
+    timestamp: Date.now(),
+    username: 'system',
+    userId: 'system',
+    roomId: dmRoom,
+    content:
+      'Privacy notice: because room and user names are end-to-end encrypted and server-blind, you may need to wait for an existing user to come online before some room names or message contents become readable.',
+    edited: false,
+    visibleTo: [myUserId],
+  };
+
+  setChatValues((prev) => {
+    const roomMessages = prev[dmRoom] || [];
+    const alreadyPresent = roomMessages.some(
+      (message) => message.id === noticeMessageID,
+    );
+    if (alreadyPresent) {
+      return prev;
+    }
+    return {
+      ...prev,
+      [dmRoom]: [noticeMessage, ...roomMessages],
+    };
+  });
+
+  setRoomList((prev) => {
+    if (prev.includes(dmRoom)) {
+      return prev;
+    }
+    return [...prev, dmRoom];
+  });
+}
+
+function toDisplayUsers(users: unknown): string[] {
+  if (!Array.isArray(users)) {
+    return [];
+  }
+
+  return users
+    .map((value) => {
+      if (typeof value !== 'string') {
+        return '';
+      }
+      return getUsernameByUserId(value) || value;
+    })
+    .filter((value) => value !== '');
+}
+
+function isSyntheticSystemDmRoom(room: string): boolean {
+  return room.startsWith('@dmid:system:') || room.includes(':system:');
+}
+
+function normalizeRoomListEntries(rooms: string[]): string[] {
+  const byEffectiveName = new Map<string, string>();
+
+  for (const room of rooms) {
+    if (!room || isSyntheticSystemDmRoom(room)) {
+      continue;
+    }
+
+    const effectiveName = getRoomNameByRoomId(room) || room;
+    const existing = byEffectiveName.get(effectiveName);
+
+    if (!existing) {
+      byEffectiveName.set(effectiveName, room);
+      continue;
+    }
+
+    const existingMappedName = getRoomNameByRoomId(existing);
+    const nextMappedName = getRoomNameByRoomId(room);
+    // Prefer opaque room IDs that resolve to names over plain-name fallback entries.
+    if (!existingMappedName && nextMappedName) {
+      byEffectiveName.set(effectiveName, room);
+    }
+  }
+
+  return Array.from(byEffectiveName.values());
+}
+
+function refreshDisplayedUserLists(args: {
+  setUserList: Dispatch<SetStateAction<string[]>>;
+  setLoggedInUsers: Dispatch<SetStateAction<string[]>>;
+  setActiveUsers: Dispatch<SetStateAction<string[]>>;
+}): void {
+  const { setUserList, setLoggedInUsers, setActiveUsers } = args;
+  setUserList((prev) => prev.map((user) => getUsernameByUserId(user) || user));
+  setLoggedInUsers((prev) =>
+    prev.map((user) => getUsernameByUserId(user) || user),
+  );
+  setActiveUsers((prev) =>
+    prev.map((user) => getUsernameByUserId(user) || user),
+  );
+}
+
+async function verifyServerEventEnvelope(
+  eventName: string,
+  payload: unknown,
+): Promise<boolean> {
+  const strict = isServerSignatureStrictMode();
+
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    console.warn('[Socket] Invalid signed payload shape for event:', eventName);
+    return !strict;
+  }
+
+  const payloadMap = payload as Record<string, unknown>;
+  const envelope = payloadMap.serverAuth as ServerSignatureEnvelope | undefined;
+  if (!envelope || typeof envelope !== 'object') {
+    console.warn('[Socket] Missing serverAuth envelope for event:', eventName);
+    return !strict;
+  }
+
+  const normalizedEnvelope: Required<ServerSignatureEnvelope> = {
+    version:
+      typeof envelope.version === 'string' && envelope.version.trim() !== ''
+        ? envelope.version
+        : 'v1',
+    event: typeof envelope.event === 'string' ? envelope.event : '',
+    timestamp: typeof envelope.timestamp === 'number' ? envelope.timestamp : 0,
+    nonce: typeof envelope.nonce === 'string' ? envelope.nonce : '',
+    payloadHash:
+      typeof envelope.payloadHash === 'string' ? envelope.payloadHash : '',
+    signature: typeof envelope.signature === 'string' ? envelope.signature : '',
+  };
+
+  if (
+    normalizedEnvelope.event !== eventName ||
+    normalizedEnvelope.timestamp <= 0 ||
+    normalizedEnvelope.nonce === '' ||
+    normalizedEnvelope.payloadHash === '' ||
+    normalizedEnvelope.signature === ''
+  ) {
+    console.warn(
+      '[Socket] Invalid serverAuth envelope fields for event:',
+      eventName,
+    );
+    return !strict;
+  }
+
+  const keys = loadKeys();
+  if (!keys?.serverPublicKey) {
+    console.warn(
+      '[Socket] Missing server public key for signature verification',
+    );
+    return !strict;
+  }
+
+  const signedPayload = { ...payloadMap };
+  delete signedPayload.serverAuth;
+  const goHash = await sha256Hex(goJsonStringify(signedPayload));
+  if (goHash !== normalizedEnvelope.payloadHash) {
+    console.warn('[Socket] Payload hash mismatch for event:', eventName);
+    return !strict;
+  }
+
+  const verified = await verifyDetachedTextSignature(
+    buildServerSigningInput(normalizedEnvelope),
+    normalizedEnvelope.signature,
+    keys.serverPublicKey,
+  ).catch((error) => {
+    console.error(
+      '[Socket] Signature verification error for event',
+      eventName,
+      error,
+    );
+    return false;
+  });
+
+  if (!verified) {
+    console.warn('[Socket] Invalid server signature for event:', eventName);
+    return !strict;
+  }
+
+  return true;
+}
+
 function roomPrefsStorageKey(username: string): string {
   return `home_room_prefs_${username}`;
 }
 
-function loadRoomPrefs(username: string): StoredRoomPrefs {
+async function loadRoomPrefs(username: string): Promise<StoredRoomPrefs> {
   if (!username || typeof window === 'undefined') {
     return {};
   }
@@ -56,15 +933,30 @@ function loadRoomPrefs(username: string): StoredRoomPrefs {
   }
 
   try {
-    const parsed = JSON.parse(raw) as StoredRoomPrefs;
+    const parsed = JSON.parse(raw) as
+      | StoredRoomPrefs
+      | EncryptedStoredRoomPrefs;
+    let prefs = parsed as StoredRoomPrefs;
+
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      (parsed as EncryptedStoredRoomPrefs).version === 'enc-v1' &&
+      typeof (parsed as EncryptedStoredRoomPrefs).ciphertext === 'string'
+    ) {
+      prefs = await decryptJsonForCurrentUser<StoredRoomPrefs>(
+        (parsed as EncryptedStoredRoomPrefs).ciphertext,
+      );
+    }
+
     return {
-      leftRooms: Array.isArray(parsed.leftRooms)
-        ? parsed.leftRooms.filter((room) => typeof room === 'string')
+      leftRooms: Array.isArray(prefs.leftRooms)
+        ? prefs.leftRooms.filter((room) => typeof room === 'string')
         : [],
       currentRoom:
-        typeof parsed.currentRoom === 'string' ? parsed.currentRoom : undefined,
-      openRooms: Array.isArray(parsed.openRooms)
-        ? parsed.openRooms.filter((room) => typeof room === 'string')
+        typeof prefs.currentRoom === 'string' ? prefs.currentRoom : undefined,
+      openRooms: Array.isArray(prefs.openRooms)
+        ? prefs.openRooms.filter((room) => typeof room === 'string')
         : [],
     };
   } catch {
@@ -92,7 +984,11 @@ function normalizeMessageState(message: Message): Message {
 }
 
 function isBlockedAuthor(message: Message, blockedUsers: Set<string>): boolean {
-  return message.username !== 'system' && blockedUsers.has(message.username);
+  if (message.userId === 'system') {
+    return false;
+  }
+  const authorName = getUsernameByUserId(message.userId);
+  return !!authorName && blockedUsers.has(authorName);
 }
 
 function isEncryptedMessageWithoutReadableContent(message: Message): boolean {
@@ -136,17 +1032,17 @@ function messageIdentity(message: Pick<Message, 'id' | 'timestamp'>): string {
     return `id:${message.id}`;
   }
   const msg = message as Message;
-  const username = msg.username || 'unknown';
+  const userId = msg.userId || 'unknown';
   const replyTo = msg.replyTo ?? 'none';
   const content = (msg.content || '').slice(0, 48);
-  return `ts:${message.timestamp}:u:${username}:r:${replyTo}:c:${content}`;
+  return `ts:${message.timestamp}:u:${userId}:r:${replyTo}:c:${content}`;
 }
 
 function resolveEncryptedPayloadForUser(
   msg: Message,
-  username: string | undefined,
+  userId: string | undefined,
 ): string | null {
-  if (!username) {
+  if (!userId) {
     return null;
   }
 
@@ -159,13 +1055,13 @@ function resolveEncryptedPayloadForUser(
     if (newestVersion.encryptedMessage) {
       return newestVersion.encryptedMessage;
     }
-    if (newestVersion.encryptedFor && newestVersion.encryptedFor[username]) {
-      return newestVersion.encryptedFor[username];
+    if (newestVersion.encryptedFor && newestVersion.encryptedFor[userId]) {
+      return newestVersion.encryptedFor[userId];
     }
   }
 
-  if (msg.encryptedFor && msg.encryptedFor[username]) {
-    return msg.encryptedFor[username];
+  if (msg.encryptedFor && msg.encryptedFor[userId]) {
+    return msg.encryptedFor[userId];
   }
 
   return null;
@@ -310,6 +1206,9 @@ export async function initializeHomeSocket({
       userMessage = 'Unauthorized action.';
     } else if (code === 'not_owner') {
       userMessage = 'You can only edit or delete your own messages.';
+    } else if (code === 'room_exists') {
+      userMessage =
+        'A room with that name already exists. Please choose a different room name.';
     }
 
     alert(userMessage);
@@ -317,6 +1216,42 @@ export async function initializeHomeSocket({
   });
 
   socket.on(SOCKET_EVENTS.INITIAL_DATA, async (data) => {
+    if (!(await verifyServerEventEnvelope(SOCKET_EVENTS.INITIAL_DATA, data))) {
+      console.error(
+        '[Socket] Rejected unsigned or invalid INITIAL_DATA payload',
+      );
+      return;
+    }
+
+    console.log(
+      '[Socket] INITIAL_DATA signed payload keys:',
+      data && typeof data === 'object' && !Array.isArray(data)
+        ? Object.keys(data as Record<string, unknown>).sort()
+        : 'invalid payload shape',
+    );
+
+    const decryptedRoomCount = await applyEncryptedRoomDirectory(data);
+    const decryptedUserCount = await applyEncryptedUserDirectory(data);
+    console.log('[Socket] Decrypted identity directories from INITIAL_DATA:', {
+      roomNames: decryptedRoomCount,
+      userNames: decryptedUserCount,
+    });
+
+    if (data?.userPubKeys) {
+      await maybeSendIdentityDirectoryRefresh({
+        socket: activeSocket,
+        authToken,
+        username,
+        incomingUserPubKeys: data.userPubKeys,
+      });
+    }
+
+    if (data?.currentUserId) {
+      storeIdentityDirectories({
+        currentUserId: data.currentUserId,
+      });
+    }
+
     console.log('[Socket] ===== INITIAL_DATA RECEIVED =====');
     console.log('[Socket] Messages:', data?.messages);
     console.log('[Socket] Messages type:', typeof data?.messages);
@@ -343,13 +1278,17 @@ export async function initializeHomeSocket({
         Object.keys(data.userPubKeys).length,
         'keys',
       );
-      storeUserPublicKeys(data.userPubKeys);
+      storeUserPublicKeys(
+        data.userPubKeys,
+        (data.userPubKeysUpdatedAt as Record<string, number>) || undefined,
+      );
     } else {
       console.warn('[Socket] ✗ No userPubKeys in INITIAL_DATA');
     }
 
     if (data?.messages) {
       const keys = loadKeys();
+      const currentUserId = username ? requireUserIdByUsername(username) : '';
       const decryptedMessages: Messages = {};
       const blockedUsers = new Set(getBlockedUsers());
 
@@ -363,7 +1302,7 @@ export async function initializeHomeSocket({
             const msg = ensureMessageId(rawMsg);
             const encrypted = resolveEncryptedPayloadForUser(
               msg,
-              keys?.username,
+              currentUserId,
             );
             if (encrypted && keys) {
               try {
@@ -400,34 +1339,78 @@ export async function initializeHomeSocket({
 
     if (data?.rooms) {
       const scopedRooms = filterRoomsForUser(data.rooms, username);
-      console.log('[Socket] ✓ Setting room list:', scopedRooms);
-      setRoomList(scopedRooms);
+      const normalizedRooms = normalizeRoomListEntries(scopedRooms);
+      console.log('[Socket] ✓ Setting room list:', normalizedRooms);
+      setRoomList(normalizedRooms);
     } else {
       console.warn('[Socket] ✗ No rooms in INITIAL_DATA');
     }
 
+    refreshDisplayedUserLists({
+      setUserList,
+      setLoggedInUsers,
+      setActiveUsers,
+    });
+
     if (data?.users) {
-      console.log('[Socket] ✓ Setting user list:', data.users);
-      setUserList(data.users);
+      const displayUsers = toDisplayUsers(data.users);
+      console.log('[Socket] ✓ Setting user list:', displayUsers);
+      setUserList(displayUsers);
     } else {
       console.warn('[Socket] ✗ No users in INITIAL_DATA');
     }
 
     if (data?.loggedInUsers || data?.activeUsers) {
-      console.log('[Socket] ✓ Setting logged in users:', data.loggedInUsers);
-      console.log('[Socket] ✓ Setting active users:', data.activeUsers);
-      setLoggedInUsers(data.loggedInUsers || []);
-      setActiveUsers(data.activeUsers || []);
+      const loggedInDisplay = toDisplayUsers(data.loggedInUsers || []);
+      const activeDisplay = toDisplayUsers(data.activeUsers || []);
+      console.log('[Socket] ✓ Setting logged in users:', loggedInDisplay);
+      console.log('[Socket] ✓ Setting active users:', activeDisplay);
+      setLoggedInUsers(loggedInDisplay);
+      setActiveUsers(activeDisplay);
     } else if (data?.users) {
-      setLoggedInUsers(data.users || []);
+      setLoggedInUsers(toDisplayUsers(data.users || []));
       setActiveUsers([]);
     }
+
+    await ensureDefaultRoomExists({
+      socket: activeSocket,
+      authToken,
+      username,
+      roomIdsFromServer: data?.rooms,
+      incomingUserPubKeys: data?.userPubKeys,
+    });
 
     console.log('[Socket] ===== INITIAL_DATA PROCESSING COMPLETE =====');
   });
 
   socket.on(SOCKET_EVENTS.SERVER_MESSAGE, async (data) => {
+    if (
+      !(await verifyServerEventEnvelope(SOCKET_EVENTS.SERVER_MESSAGE, data))
+    ) {
+      console.error(
+        '[Socket] Rejected unsigned or invalid SERVER_MESSAGE payload',
+      );
+      return;
+    }
+
+    await applyEncryptedRoomDirectory(data);
+    const serverMessageUserDirectoryApplied =
+      await applyEncryptedUserDirectory(data);
+    if (serverMessageUserDirectoryApplied > 0) {
+      refreshDisplayedUserLists({
+        setUserList,
+        setLoggedInUsers,
+        setActiveUsers,
+      });
+    }
+
     console.log('[Socket] SERVER_MESSAGE received');
+
+    if (data?.currentUserId) {
+      storeIdentityDirectories({
+        currentUserId: data.currentUserId,
+      });
+    }
 
     // Update user last seen for users in messages
     if (data?.messages) {
@@ -436,8 +1419,12 @@ export async function initializeHomeSocket({
         Object.values(data.messages).forEach((roomMessages: any) => {
           if (Array.isArray(roomMessages)) {
             roomMessages.forEach((msg: Message) => {
-              if (msg.username) {
-                updated[msg.username] = Date.now();
+              const userRef =
+                (typeof msg.userId === 'string' && msg.userId) ||
+                msg.username ||
+                '';
+              if (userRef) {
+                updated[userRef] = Date.now();
               }
             });
           }
@@ -472,6 +1459,7 @@ export async function initializeHomeSocket({
           console.error('[AccessGrant] No keys available for decryption');
           return;
         }
+        const currentUserId = requireUserIdByUsername(username);
 
         const roomMessages = data.messages[originalRoom] as Message[];
 
@@ -481,7 +1469,7 @@ export async function initializeHomeSocket({
           'messages from server for room:',
           originalRoom,
           'for user:',
-          keys.username,
+          currentUserId,
         );
 
         // Log details about each message
@@ -518,7 +1506,7 @@ export async function initializeHomeSocket({
             // For all messages, try to decrypt if we have access
             const encryptedData = resolveEncryptedPayloadForUser(
               msg,
-              keys.username,
+              requireUserIdByUsername(username),
             );
 
             if (encryptedData) {
@@ -527,7 +1515,7 @@ export async function initializeHomeSocket({
                   '[AccessGrant] ===== DECRYPTING MESSAGE FOR REQUESTING USER =====',
                 );
                 console.log('[AccessGrant] Message timestamp:', msg.timestamp);
-                console.log('[AccessGrant] User:', keys.username);
+                console.log('[AccessGrant] User:', currentUserId);
                 console.log(
                   '[AccessGrant] Encrypted data length:',
                   encryptedData.length,
@@ -542,7 +1530,7 @@ export async function initializeHomeSocket({
                 );
                 console.log(
                   '[AccessGrant] ✓ Decrypted message for',
-                  keys.username,
+                  currentUserId,
                   'timestamp:',
                   msg.timestamp,
                   'content length:',
@@ -576,7 +1564,7 @@ export async function initializeHomeSocket({
                 messageTimestamp,
                 ') could not be decrypted',
               );
-              console.log('[AccessGrant] Current user:', keys.username);
+              console.log('[AccessGrant] Current user:', currentUserId);
               console.log(
                 '[AccessGrant] Encrypted payload present:',
                 !!encryptedData,
@@ -689,12 +1677,12 @@ export async function initializeHomeSocket({
                 '[AccessGrant] Message encryptedFor:',
                 targetMsg.encryptedFor,
               );
-              console.error('[AccessGrant] Current user:', keys.username);
+              console.error('[AccessGrant] Current user:', currentUserId);
               console.error(
                 '[AccessGrant] Has key in encryptedFor:',
                 !!(
                   targetMsg.encryptedFor &&
-                  targetMsg.encryptedFor[keys.username]
+                  targetMsg.encryptedFor[currentUserId]
                 ),
               );
               if (targetMsg.versions && targetMsg.versions.length > 0) {
@@ -706,7 +1694,7 @@ export async function initializeHomeSocket({
                   '[AccessGrant] Has key in newest version:',
                   !!(
                     targetMsg.versions[0].encryptedFor &&
-                    targetMsg.versions[0].encryptedFor[keys.username]
+                    targetMsg.versions[0].encryptedFor[currentUserId]
                   ),
                 );
               }
@@ -888,7 +1876,7 @@ export async function initializeHomeSocket({
 
             const encryptedData = resolveEncryptedPayloadForUser(
               msg,
-              keys?.username,
+              username ? requireUserIdByUsername(username) : '',
             );
 
             if (encryptedData) {
@@ -932,9 +1920,9 @@ export async function initializeHomeSocket({
       // Compute unread deltas from current chat snapshot before scheduling state updates.
       // This avoids races where unread logic sees an empty increment map.
       const unreadIncrements: Record<string, number> = {};
+      const currentRoom = getCurrentRoom();
       const previousChatValues = getChatValues();
       const blockedUsersForUnread = new Set(getBlockedUsers());
-      const hiddenRoomsForUnread = getLeftRooms();
 
       for (const [room, messages] of Object.entries(decryptedMessages)) {
         const scrubbed = scrubMessagesForLocalState(
@@ -944,11 +1932,7 @@ export async function initializeHomeSocket({
         const existingRoomMessages = previousChatValues[room];
 
         if (!existingRoomMessages) {
-          const shouldCountAsNewUnread =
-            hiddenRoomsForUnread.has(room) &&
-            isDmRoom(room) &&
-            isUserInDmRoom(room, username);
-          unreadIncrements[room] = shouldCountAsNewUnread ? scrubbed.length : 0;
+          unreadIncrements[room] = room === currentRoom ? 0 : scrubbed.length;
           continue;
         }
 
@@ -1014,7 +1998,6 @@ export async function initializeHomeSocket({
         return merged;
       });
 
-      const currentRoom = getCurrentRoom();
       const roomNotificationsSnapshot = getRoomNotifications();
       const nextRoomNotifications = { ...roomNotificationsSnapshot };
       for (const [room, increment] of Object.entries(unreadIncrements)) {
@@ -1082,6 +2065,9 @@ export async function initializeHomeSocket({
         const updated = [...prev];
         let changed = false;
         for (const room of Object.keys(decryptedMessages)) {
+          if (isSyntheticSystemDmRoom(room)) {
+            continue;
+          }
           if (isDmRoom(room) && !isUserInDmRoom(room, username)) {
             continue;
           }
@@ -1090,26 +2076,26 @@ export async function initializeHomeSocket({
             changed = true;
           }
         }
-        return changed ? updated : prev;
+        const normalized = normalizeRoomListEntries(updated);
+        return changed || normalized.length !== prev.length ? normalized : prev;
       });
     }
 
     // Only update user lists if they are provided and not empty (or explicitly provided)
     // Don't overwrite with empty arrays - that would clear the user list
     if (data?.users && Array.isArray(data.users) && data.users.length > 0) {
-      setUserList(data.users);
+      setUserList(toDisplayUsers(data.users));
     }
 
     // Handle new format with loggedInUsers and activeUsers
     // Only update if explicitly provided (even if empty arrays, but prefer non-empty)
     if (data?.loggedInUsers !== undefined || data?.activeUsers !== undefined) {
-      setLoggedInUsers(data.loggedInUsers || []);
-      setActiveUsers(data.activeUsers || []);
+      const loggedInDisplay = toDisplayUsers(data.loggedInUsers || []);
+      const activeDisplay = toDisplayUsers(data.activeUsers || []);
+      setLoggedInUsers(loggedInDisplay);
+      setActiveUsers(activeDisplay);
       // Also update userList for backward compatibility
-      const allUsers = [
-        ...(data.loggedInUsers || []),
-        ...(data.activeUsers || []),
-      ];
+      const allUsers = [...loggedInDisplay, ...activeDisplay];
       if (allUsers.length > 0) {
         setUserList(allUsers);
       }
@@ -1119,7 +2105,7 @@ export async function initializeHomeSocket({
       data.users.length > 0
     ) {
       // Fallback: if only old format, treat all as logged in
-      setLoggedInUsers(data.users);
+      setLoggedInUsers(toDisplayUsers(data.users));
       setActiveUsers([]);
     }
 
@@ -1141,7 +2127,7 @@ export async function initializeHomeSocket({
       // Fallback: mark all users as online if last seen not provided
       setUserLastSeen((prev) => {
         const updated = { ...prev };
-        data.users.forEach((user: string) => {
+        toDisplayUsers(data.users).forEach((user: string) => {
           updated[user] = Date.now();
         });
         return updated;
@@ -1150,13 +2136,41 @@ export async function initializeHomeSocket({
 
     // Update user public keys if provided
     if (data?.userPubKeys) {
+      await maybeSendIdentityDirectoryRefresh({
+        socket: activeSocket,
+        authToken,
+        username,
+        incomingUserPubKeys: data.userPubKeys,
+      });
       console.log('[Socket] ✓ Updating user public keys');
-      storeUserPublicKeys(data.userPubKeys);
+      storeUserPublicKeys(
+        data.userPubKeys,
+        (data.userPubKeysUpdatedAt as Record<string, number>) || undefined,
+      );
     }
   });
 
-  socket.on(SOCKET_EVENTS.SERVER_NEW_ROOM, (data) => {
+  socket.on(SOCKET_EVENTS.SERVER_NEW_ROOM, async (data) => {
+    if (
+      !(await verifyServerEventEnvelope(SOCKET_EVENTS.SERVER_NEW_ROOM, data))
+    ) {
+      console.error(
+        '[Socket] Rejected unsigned or invalid SERVER_NEW_ROOM payload',
+      );
+      return;
+    }
+
+    await applyEncryptedRoomDirectory(data);
+
     console.log('[Socket] SERVER_NEW_ROOM received');
+    const newRoomUserDirectoryApplied = await applyEncryptedUserDirectory(data);
+    if (newRoomUserDirectoryApplied > 0) {
+      refreshDisplayedUserLists({
+        setUserList,
+        setLoggedInUsers,
+        setActiveUsers,
+      });
+    }
     if (data?.messages) {
       // Merge payload into existing room history to avoid truncating previously loaded messages.
       setChatValues((prev) => {
@@ -1199,27 +2213,85 @@ export async function initializeHomeSocket({
         return merged;
       });
     }
-    if (data?.rooms) {
-      setRoomList(filterRoomsForUser(data.rooms, username));
+    if (Array.isArray(data?.rooms) && data.rooms.length > 0) {
+      const nextRooms = filterRoomsForUser(data.rooms, username);
+      console.log('[Socket] SERVER_MESSAGE room payload:', {
+        roomCount: data.rooms.length,
+        filteredCount: nextRooms.length,
+      });
+      setRoomList((prev) => {
+        const merged = [...prev];
+        let changed = false;
+        for (const room of nextRooms) {
+          if (!merged.includes(room)) {
+            merged.push(room);
+            changed = true;
+          }
+        }
+        const normalized = normalizeRoomListEntries(merged);
+        return changed || normalized.length !== prev.length ? normalized : prev;
+      });
     }
   });
 
-  socket.on(SOCKET_EVENTS.SERVER_USER_LIST_UPDATE, (data) => {
+  socket.on(SOCKET_EVENTS.SERVER_IDENTITY_DIRECTORY_REFRESH, async (data) => {
+    if (
+      !(await verifyServerEventEnvelope(
+        SOCKET_EVENTS.SERVER_IDENTITY_DIRECTORY_REFRESH,
+        data,
+      ))
+    ) {
+      console.error(
+        '[Socket] Rejected unsigned or invalid SERVER_IDENTITY_DIRECTORY_REFRESH payload',
+      );
+      return;
+    }
+
+    const applied = await validateAndApplyIdentityRefresh(data);
+    if (applied.roomApplied === 0 && applied.userApplied === 0) {
+      return;
+    }
+
+    // Force UI refresh so newly decrypted names replace ID fallbacks immediately.
+    setRoomList((prev) => [...prev]);
+    refreshDisplayedUserLists({
+      setUserList,
+      setLoggedInUsers,
+      setActiveUsers,
+    });
+
+    console.log('[Socket] Applied identity directory refresh:', applied);
+  });
+
+  socket.on(SOCKET_EVENTS.SERVER_USER_LIST_UPDATE, async (data) => {
+    if (
+      !(await verifyServerEventEnvelope(
+        SOCKET_EVENTS.SERVER_USER_LIST_UPDATE,
+        data,
+      ))
+    ) {
+      console.error(
+        '[Socket] Rejected unsigned or invalid SERVER_USER_LIST_UPDATE payload',
+      );
+      return;
+    }
+
     console.log('[Socket] SERVER_USER_LIST_UPDATE received:', data);
 
     // Handle new format with loggedInUsers and activeUsers
     if (data && typeof data === 'object' && !Array.isArray(data)) {
       if ('loggedInUsers' in data || 'activeUsers' in data) {
-        setLoggedInUsers((data as any).loggedInUsers || []);
-        setActiveUsers((data as any).activeUsers || []);
+        const loggedInDisplay = toDisplayUsers(
+          (data as any).loggedInUsers || [],
+        );
+        const activeDisplay = toDisplayUsers((data as any).activeUsers || []);
+        setLoggedInUsers(loggedInDisplay);
+        setActiveUsers(activeDisplay);
         if ((data as any).userLastSeen) {
           setUserLastSeen((data as any).userLastSeen as Record<string, number>);
         }
         // Also update userList for backward compatibility
-        const allUsers = [
-          ...((data as any).loggedInUsers || []),
-          ...((data as any).activeUsers || []),
-        ];
+        const allUsers = [...loggedInDisplay, ...activeDisplay];
         setUserList(allUsers);
         console.log(
           '[Socket] ✓ Updated user lists:',
@@ -1233,8 +2305,9 @@ export async function initializeHomeSocket({
       }
     } else if (Array.isArray(data)) {
       // Backward compatibility: treat array as logged-in users
-      setUserList(data);
-      setLoggedInUsers(data);
+      const displayUsers = toDisplayUsers(data);
+      setUserList(displayUsers);
+      setLoggedInUsers(displayUsers);
       setActiveUsers([]);
       console.log(
         '[Socket] ✓ Updated user list (legacy format):',
@@ -1247,20 +2320,42 @@ export async function initializeHomeSocket({
   });
 
   // Handle join requests
-  socket.on(SOCKET_EVENTS.SERVER_JOIN_REQUEST, (data) => {
+  socket.on(SOCKET_EVENTS.SERVER_JOIN_REQUEST, async (data) => {
+    if (
+      !(await verifyServerEventEnvelope(
+        SOCKET_EVENTS.SERVER_JOIN_REQUEST,
+        data,
+      ))
+    ) {
+      console.error(
+        '[Socket] Rejected unsigned or invalid SERVER_JOIN_REQUEST payload',
+      );
+      return;
+    }
+
     console.log('[Socket] SERVER_JOIN_REQUEST received:', data);
-    if (data?.type === 'joinRequest' && data?.requestingUser && data?.room) {
+    if (
+      data?.type === 'joinRequest' &&
+      data?.requestingUserId &&
+      data?.room &&
+      data?.roomId
+    ) {
+      const requestingUser =
+        getUsernameByUserId(data.requestingUserId) || data.requestingUserId;
+
       setActiveJoinRequests((prev) => {
         const exists = prev.some(
           (req) =>
-            req.requestingUser === data.requestingUser &&
-            req.room === data.room,
+            req.requestingUserId === data.requestingUserId &&
+            req.roomId === data.roomId,
         );
         if (!exists) {
           return [
             ...prev,
             {
-              requestingUser: data.requestingUser,
+              requestingUserId: data.requestingUserId,
+              requestingUser,
+              roomId: data.roomId,
               room: data.room,
               timestamp: data.timestamp || Date.now(),
             },
@@ -1271,39 +2366,64 @@ export async function initializeHomeSocket({
     }
   });
 
-  socket.on(SOCKET_EVENTS.SERVER_JOIN_APPROVED, (data) => {
+  socket.on(SOCKET_EVENTS.SERVER_JOIN_APPROVED, async (data) => {
+    if (
+      !(await verifyServerEventEnvelope(
+        SOCKET_EVENTS.SERVER_JOIN_APPROVED,
+        data,
+      ))
+    ) {
+      console.error(
+        '[Socket] Rejected unsigned or invalid SERVER_JOIN_APPROVED payload',
+      );
+      return;
+    }
+
     console.log('[Socket] SERVER_JOIN_APPROVED received:', data);
-    if (data?.type === 'joinApproved' && data?.requestingUser && data?.room) {
+    if (
+      data?.type === 'joinApproved' &&
+      data?.requestingUserId &&
+      data?.roomId
+    ) {
       setActiveJoinRequests((prev) =>
         prev.filter(
           (req) =>
             !(
-              req.requestingUser === data.requestingUser &&
-              req.room === data.room
+              req.requestingUserId === data.requestingUserId &&
+              req.roomId === data.roomId
             ),
         ),
       );
       // Update room members
       setRoomMembers((prev) => {
         const updated = { ...prev };
-        if (!updated[data.room]) {
-          updated[data.room] = new Set();
+        if (!updated[data.roomId]) {
+          updated[data.roomId] = new Set();
         }
-        updated[data.room].add(data.requestingUser);
+        updated[data.roomId].add(data.requestingUserId);
         return updated;
       });
     }
   });
 
-  socket.on(SOCKET_EVENTS.SERVER_JOIN_DENIED, (data) => {
+  socket.on(SOCKET_EVENTS.SERVER_JOIN_DENIED, async (data) => {
+    if (
+      !(await verifyServerEventEnvelope(SOCKET_EVENTS.SERVER_JOIN_DENIED, data))
+    ) {
+      console.error(
+        '[Socket] Rejected unsigned or invalid SERVER_JOIN_DENIED payload',
+      );
+      return;
+    }
+
     console.log('[Socket] SERVER_JOIN_DENIED received:', data);
-    if (data?.type === 'joinDenied' && data?.requestingUser && data?.room) {
+    if (data?.type === 'joinDenied' && data?.requestingUserId && data?.roomId) {
       setActiveJoinRequests((prev) =>
         prev.filter(
           (req) =>
             !(
-              req.requestingUser === data.requestingUser &&
-              req.room === data.room
+              req.requestingUserId === data.requestingUserId &&
+              req.roomId === data.roomId
             ),
         ),
       );
@@ -1311,11 +2431,36 @@ export async function initializeHomeSocket({
   });
 
   // Handle access requests - show in private room named after the other user
-  socket.on(SOCKET_EVENTS.SERVER_ACCESS_REQUEST, (data) => {
+  socket.on(SOCKET_EVENTS.SERVER_ACCESS_REQUEST, async (data) => {
+    if (
+      !(await verifyServerEventEnvelope(
+        SOCKET_EVENTS.SERVER_ACCESS_REQUEST,
+        data,
+      ))
+    ) {
+      console.error(
+        '[Socket] Rejected unsigned or invalid SERVER_ACCESS_REQUEST payload',
+      );
+      return;
+    }
+
     console.log('[Socket] SERVER_ACCESS_REQUEST received:', data);
     if (data?.requestAccess) {
-      const { requestingUser, originalRoom, messageTimestamp, originalSender } =
-        data.requestAccess;
+      const requestAccess = data.requestAccess as Record<string, unknown>;
+      const requestingUserId =
+        (typeof data.requestingUserId === 'string' && data.requestingUserId) ||
+        (typeof requestAccess.requestingUserId === 'string'
+          ? requestAccess.requestingUserId
+          : '');
+      const originalSenderId =
+        (typeof data.originalSenderId === 'string' && data.originalSenderId) ||
+        (typeof requestAccess.originalSenderId === 'string'
+          ? requestAccess.originalSenderId
+          : '');
+      const requestingUser =
+        (requestingUserId
+          ? getUsernameByUserId(requestingUserId)
+          : undefined) || requestingUserId;
       // The server sends the appropriate room name for this user:
       // - Original sender sees @requestingUser
       // - Requesting user sees @originalSender (from SERVER_MESSAGE, not this event)
@@ -1324,6 +2469,13 @@ export async function initializeHomeSocket({
       if (!dmRoom) {
         console.warn(
           '[AccessRequest] ⚠ No requestRoom provided in SERVER_ACCESS_REQUEST',
+        );
+        return;
+      }
+
+      if (!requestingUserId || !originalSenderId) {
+        console.warn(
+          '[AccessRequest] ⚠ Missing sender ids in SERVER_ACCESS_REQUEST',
         );
         return;
       }
@@ -1337,6 +2489,10 @@ export async function initializeHomeSocket({
         const userPubKeys = loadUserPublicKeyEntries() || {};
         userPubKeys[requestingUser] = {
           publicKey: data.requestingUserPubKey,
+          updatedAt:
+            typeof data.requestingUserPubKeyUpdatedAt === 'number'
+              ? data.requestingUserPubKeyUpdatedAt
+              : undefined,
           blocked: !!userPubKeys[requestingUser]?.blocked,
         };
         storeUserPublicKeys(userPubKeys);
@@ -1352,10 +2508,14 @@ export async function initializeHomeSocket({
       }
 
       // Add room if it doesn't exist (only for original sender, requesting user gets it from SERVER_MESSAGE)
-      if (username === originalSender) {
+      const currentUserId = requireUserIdByUsername(username);
+      if (originalSenderId === currentUserId) {
         setRoomList((prev) => {
+          if (isSyntheticSystemDmRoom(dmRoom)) {
+            return prev;
+          }
           if (!prev.includes(dmRoom)) {
-            return [...prev, dmRoom];
+            return normalizeRoomListEntries([...prev, dmRoom]);
           }
           return prev;
         });
@@ -1365,7 +2525,19 @@ export async function initializeHomeSocket({
   });
 
   // Handle access denied notifications
-  socket.on(SOCKET_EVENTS.SERVER_ACCESS_DENIED, (data) => {
+  socket.on(SOCKET_EVENTS.SERVER_ACCESS_DENIED, async (data) => {
+    if (
+      !(await verifyServerEventEnvelope(
+        SOCKET_EVENTS.SERVER_ACCESS_DENIED,
+        data,
+      ))
+    ) {
+      console.error(
+        '[Socket] Rejected unsigned or invalid SERVER_ACCESS_DENIED payload',
+      );
+      return;
+    }
+
     console.log('[Socket] SERVER_ACCESS_DENIED received:', data);
     if (data?.accessDenied) {
       const { originalRoom, messageTimestamp } = data.accessDenied;
@@ -1377,10 +2549,20 @@ export async function initializeHomeSocket({
 
   // Handle vote updates
   socket.on(SOCKET_EVENTS.SERVER_VOTE_UPDATE, async (data) => {
+    if (
+      !(await verifyServerEventEnvelope(SOCKET_EVENTS.SERVER_VOTE_UPDATE, data))
+    ) {
+      console.error(
+        '[Socket] Rejected unsigned or invalid SERVER_VOTE_UPDATE payload',
+      );
+      return;
+    }
+
     console.log('[Socket] SERVER_VOTE_UPDATE received');
     if (data?.messages) {
       // Update messages with new vote data
       const keys = loadKeys();
+      const currentUserId = username ? requireUserIdByUsername(username) : '';
       const decryptedMessages: Messages = {};
 
       for (const [room, messages] of Object.entries(data.messages)) {
@@ -1393,7 +2575,9 @@ export async function initializeHomeSocket({
           visibleRoomMessages.map(async (msg: Message) => {
             // If message has encryptedFor and we have keys, decrypt it
             if (msg.encryptedFor && keys) {
-              const encrypted = msg.encryptedFor[keys.username];
+              const encrypted = currentUserId
+                ? msg.encryptedFor[currentUserId]
+                : undefined;
               if (encrypted) {
                 try {
                   const decrypted = await decryptMessageForUser(
@@ -1441,11 +2625,26 @@ export async function initializeHomeSocket({
   });
 
   socket.on(SOCKET_EVENTS.DISCONNECTING, (msg) => {
-    activeSocket.emit(SOCKET_EVENTS.CLIENT_MESSAGE, {
-      username,
-      room: DEFAULT_ROOM,
-      content: SYSTEM_MESSAGES.USER_LEFT,
-    });
+    const keys = loadKeys();
+    if (keys?.sessionId) {
+      const userId = requireUserIdByUsername(username);
+      const roomId = requireRoomIdByName(DEFAULT_ROOM);
+      void emitSignedMutation(activeSocket, {
+        event: SOCKET_EVENTS.CLIENT_MESSAGE,
+        payload: {
+          userId,
+          sessionId: keys.sessionId,
+          room: DEFAULT_ROOM,
+          roomId,
+          content: SYSTEM_MESSAGES.USER_LEFT,
+        },
+        userId,
+        sessionId: keys.sessionId,
+        claims: {
+          roomId,
+        },
+      });
+    }
     activeSocket.emit(SOCKET_EVENTS.CLIENT_DISCONNECTING, authToken);
     setAuthToken('');
   });
@@ -1454,90 +2653,164 @@ export async function initializeHomeSocket({
     console.log('[Socket] STATUS received:', msg);
   });
 
-  socket.on(SOCKET_EVENTS.SERVER_PUBLIC_KEY_RECEIVED, (data) => {
-    if (data?.fromUser && data?.publicKey) {
-      if (typeof data.transferDmRoom === 'string' && data.transferDmRoom) {
-        forcedRoomPayloads.add(data.transferDmRoom);
+  socket.on(SOCKET_EVENTS.SERVER_PUBLIC_KEY_RECEIVED, async (data) => {
+    if (
+      !(await verifyServerEventEnvelope(
+        SOCKET_EVENTS.SERVER_PUBLIC_KEY_RECEIVED,
+        data,
+      ))
+    ) {
+      console.error(
+        '[Socket] Rejected unsigned or invalid SERVER_PUBLIC_KEY_RECEIVED payload',
+      );
+      return;
+    }
+
+    if (typeof data?.fromUserId === 'string' && data?.publicKey) {
+      const fromUserId = data.fromUserId;
+      const fromUser = getUsernameByUserId(fromUserId) || fromUserId;
+
+      const transferDmRoom =
+        typeof data.transferDmRoom === 'string' && data.transferDmRoom
+          ? data.transferDmRoom
+          : typeof data.transferDmRoomId === 'string'
+            ? getRoomNameByRoomId(data.transferDmRoomId)
+            : undefined;
+
+      if (transferDmRoom) {
+        forcedRoomPayloads.add(transferDmRoom);
 
         setLeftRooms((prev) => {
-          if (!prev.has(data.transferDmRoom)) {
+          if (!prev.has(transferDmRoom)) {
             return prev;
           }
           const next = new Set(prev);
-          next.delete(data.transferDmRoom);
+          next.delete(transferDmRoom);
           return next;
         });
         setHiddenDmUnreadBaseline((prev) => {
-          if (!(data.transferDmRoom in prev)) {
+          if (!(transferDmRoom in prev)) {
             return prev;
           }
           const next = { ...prev };
-          delete next[data.transferDmRoom];
+          delete next[transferDmRoom];
           return next;
         });
 
-        const hadTransferRoom = getRoomList().includes(data.transferDmRoom);
+        const hadTransferRoom = getRoomList().includes(transferDmRoom);
         setRoomList((prev) =>
-          prev.includes(data.transferDmRoom)
+          prev.includes(transferDmRoom)
             ? prev
-            : [...prev, data.transferDmRoom],
+            : normalizeRoomListEntries([...prev, transferDmRoom]),
         );
 
-        if (!hadTransferRoom && getCurrentRoom() !== data.transferDmRoom) {
+        if (!hadTransferRoom && getCurrentRoom() !== transferDmRoom) {
           setRoomNotifications((prev) => ({
             ...prev,
-            [data.transferDmRoom]: Math.max(prev[data.transferDmRoom] || 0, 1),
+            [transferDmRoom]: Math.max(prev[transferDmRoom] || 0, 1),
           }));
         }
 
         const keys = loadKeys();
         if (keys?.sessionId) {
           activeSocket.emit(SOCKET_EVENTS.CLIENT_REQUEST_ROOM_DATA, {
-            username,
+            userId: requireUserIdByUsername(username),
             sessionId: keys.sessionId,
-            room: data.transferDmRoom,
+            room: transferDmRoom,
+            roomId: requireRoomIdByName(transferDmRoom),
           });
         }
       }
 
-      const userPubKeys = loadUserPublicKeyEntries() || {};
-      userPubKeys[data.fromUser] = {
-        publicKey: data.publicKey,
-        blocked: !!userPubKeys[data.fromUser]?.blocked,
-        blockedAt: userPubKeys[data.fromUser]?.blockedAt,
-        blockedBy: userPubKeys[data.fromUser]?.blockedBy,
-      };
-      storeUserPublicKeys(userPubKeys);
-      console.log('[Socket] ✓ Stored public key from', data.fromUser);
+      if (fromUser) {
+        const userPubKeys = loadUserPublicKeyEntries() || {};
+        const hadSenderKey = !!userPubKeys[fromUserId]?.publicKey;
+        const nextUserPubKeys = {
+          ...userPubKeys,
+          [fromUserId]: {
+            publicKey: data.publicKey,
+            blocked: !!userPubKeys[fromUserId]?.blocked,
+            blockedAt: userPubKeys[fromUserId]?.blockedAt,
+            blockedBy: userPubKeys[fromUserId]?.blockedBy,
+          },
+        };
+
+        if (!hadSenderKey) {
+          await maybeSendIdentityDirectoryRefresh({
+            socket: activeSocket,
+            authToken,
+            username,
+            incomingUserPubKeys: nextUserPubKeys,
+          });
+        }
+
+        userPubKeys[fromUserId] = {
+          publicKey: data.publicKey,
+          updatedAt:
+            typeof data.publicKeyUpdatedAt === 'number'
+              ? data.publicKeyUpdatedAt
+              : undefined,
+          blocked: !!userPubKeys[fromUserId]?.blocked,
+          blockedAt: userPubKeys[fromUserId]?.blockedAt,
+          blockedBy: userPubKeys[fromUserId]?.blockedBy,
+        };
+        storeUserPublicKeys(userPubKeys, {
+          [fromUserId]:
+            typeof data.publicKeyUpdatedAt === 'number'
+              ? data.publicKeyUpdatedAt
+              : Date.now(),
+        });
+      }
+      console.log('[Socket] ✓ Stored public key from', fromUserId || fromUser);
     }
   });
 
-  socket.on(SOCKET_EVENTS.CONNECT, () => {
+  socket.on(SOCKET_EVENTS.CONNECT, async () => {
     console.log('[Socket] ===== CONNECTED =====');
     console.log('[Socket] Socket ID:', activeSocket.id);
     console.log('[Socket] Socket connected:', activeSocket.connected);
     const keys = loadKeys();
     if (keys?.publicKey && username) {
-      activeSocket.emit(SOCKET_EVENTS.CLIENT_SEND_PUBLIC_KEY, {
-        fromUser: username,
-        publicKey: keys.publicKey,
+      const fromUserId = requireUserIdByUsername(username);
+      void emitSignedMutation(activeSocket, {
+        event: SOCKET_EVENTS.CLIENT_SEND_PUBLIC_KEY,
+        payload: {
+          fromUserId,
+          sessionId: authToken,
+          publicKey: keys.publicKey,
+        },
+        userId: fromUserId,
+        sessionId: authToken,
+        claims: {
+          fromUserId,
+          publicKey: keys.publicKey,
+        },
       });
       console.log('[Socket] ✓ Announced public key for', username);
     }
 
-    const prefs = loadRoomPrefs(username);
+    const prefs = await loadRoomPrefs(username);
     const requestedCurrentRoom = prefs.currentRoom || DEFAULT_ROOM;
     const requestedOpenRooms =
       prefs.openRooms && prefs.openRooms.length > 0
         ? prefs.openRooms
         : [DEFAULT_ROOM];
+    const requestedCurrentRoomId = getRoomIdByName(requestedCurrentRoom);
+    const requestedOpenRoomIds = requestedOpenRooms
+      .map((room) => getRoomIdByName(room))
+      .filter(
+        (roomId): roomId is string =>
+          typeof roomId === 'string' && roomId.trim() !== '',
+      );
 
     activeSocket.emit(SOCKET_EVENTS.CLIENT_REQUEST_INITIAL_DATA, {
-      username,
+      userId: requireUserIdByUsername(username),
       sessionId: authToken,
       defaultRoom: DEFAULT_ROOM,
       currentRoom: requestedCurrentRoom,
+      currentRoomId: requestedCurrentRoomId || requestedCurrentRoom,
       openRooms: requestedOpenRooms,
+      openRoomIds: requestedOpenRoomIds,
     });
     console.log('[Socket] ✓ Requested filtered initial data', {
       currentRoom: requestedCurrentRoom,

@@ -30,7 +30,11 @@ export const setupSocketHandlers = (io: socketio.Server) => {
   io.on('connection', (socket: socketio.Socket) => {
     console.log('client connected');
     socket.emit(SOCKET_EVENTS.STATUS, 'Hello from Socket.io');
-    socket.emit(SOCKET_EVENTS.INITIAL_DATA, { messages, rooms, users: getUserList() });
+    socket.emit(SOCKET_EVENTS.INITIAL_DATA, {
+      messages,
+      rooms,
+      users: getUserList(),
+    });
 
     // TODO: if I ever get server talking to login api route:
     // mySessionCache.on('set', (key, value) => {
@@ -43,10 +47,25 @@ export const setupSocketHandlers = (io: socketio.Server) => {
     // });
 
     socket.on(SOCKET_EVENTS.CLIENT_MESSAGE, (msg) => {
-      messages[msg.room].unshift({
+      const room = typeof msg?.room === 'string' ? msg.room : DEFAULT_ROOM;
+      if (!messages[room]) {
+        messages[room] = [];
+        if (!rooms.includes(room)) {
+          rooms.push(room);
+        }
+      }
+
+      const username = typeof msg?.username === 'string' ? msg.username : '';
+      const userId = typeof msg?.userId === 'string' ? msg.userId : username;
+      const roomId = typeof msg?.roomId === 'string' ? msg.roomId : room;
+      const content = typeof msg?.content === 'string' ? msg.content : '';
+
+      messages[room].unshift({
         timestamp: Date.now(),
-        username: msg.username,
-        content: msg.content,
+        username,
+        userId,
+        roomId,
+        content,
       });
       // returning users here is a hack to compensate for the temporary lack of
       //   connectivity between the login endpoint and the socket server

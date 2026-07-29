@@ -1,5 +1,6 @@
 import { apiPath } from '@/utils/appPaths';
 import { attemptAutoRelogin, hasValidStoredKeys, loadKeys } from './gpg';
+import { storeIdentityDirectories } from './identityMap';
 
 type InitializeSession = (
   sessionIdToVerify: string,
@@ -57,6 +58,12 @@ export async function restoreSession({
     }
 
     if (!isCancelled()) {
+      if (data.userId && storedKeys.username) {
+        storeIdentityDirectories({
+          userDirectory: { [data.userId]: storedKeys.username },
+          currentUserId: data.userId,
+        });
+      }
       initializeSession(storedKeys.sessionId, storedKeys.username);
     }
   } catch (err) {

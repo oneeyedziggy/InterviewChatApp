@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { apiPath, withBasePath } from '@/utils/appPaths';
 import { Input } from '../components/Input';
+import { buildOpaqueUsernameEnvelope } from '../utils/gpg';
 import { VALIDATION } from '../constants';
 import { AuthCard, PageShell } from '../components/layout/PageShell';
 import { getUsernameError } from '../utils/authValidation';
@@ -23,6 +24,10 @@ import {
   verifyChallengeResponseWithKeyRefresh,
   type StoredKeys,
 } from '../utils/gpg';
+import {
+  requireUserIdByUsername,
+  storeIdentityDirectories,
+} from '../utils/identityMap';
 
 export default function LoginPage() {
   const [username, setUsername] = useState<string>('');
@@ -189,11 +194,18 @@ export default function LoginPage() {
         // - Send challenge if user exists and public key matches (for existing users)
         // - Register new user if user doesn't exist (for new users)
         // - Reject if user exists but public key doesn't match
+        const userId = requireUserIdByUsername(username);
+        const opaqueIdentity = await buildOpaqueUsernameEnvelope(
+          username,
+          keys.serverPublicKey,
+        );
         const loginResponse = await fetch(apiPath('/api/login'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            username,
+            userId,
+            usernameHash: opaqueIdentity.usernameHash,
+            usernameCiphertext: opaqueIdentity.usernameCiphertext,
             publicKey: keys.publicKey,
           }),
         });
@@ -220,7 +232,7 @@ export default function LoginPage() {
           console.log('[LoginPage] Decrypted UUID:', decryptedUUID);
 
           const verifyData = await verifyChallengeResponseWithKeyRefresh({
-            username,
+            userId,
             decryptedUUID,
             serverPublicKey: keys.serverPublicKey,
           });
@@ -232,6 +244,12 @@ export default function LoginPage() {
           }
 
           if (verifyData.sessionId) {
+            if (verifyData.userId) {
+              storeIdentityDirectories({
+                userDirectory: { [verifyData.userId]: username },
+                currentUserId: verifyData.userId,
+              });
+            }
             // Store keys with session ID
             storeKeys({
               ...keys,
@@ -252,6 +270,13 @@ export default function LoginPage() {
         } else if (loginData.sessionId) {
           // New user registration successful
           console.log('[LoginPage] New user registered successfully');
+
+          if (loginData.userId) {
+            storeIdentityDirectories({
+              userDirectory: { [loginData.userId]: username },
+              currentUserId: loginData.userId,
+            });
+          }
 
           // Store server public key if provided
           if (loginData.serverPublicKey) {
@@ -333,11 +358,18 @@ export default function LoginPage() {
         }
 
         // Perform login to get session
+        const userId = requireUserIdByUsername(usernameToDelete);
+        const opaqueIdentity = await buildOpaqueUsernameEnvelope(
+          usernameToDelete,
+          storedKeys.serverPublicKey,
+        );
         const loginResponse = await fetch(apiPath('/api/login'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            username: usernameToDelete,
+            userId,
+            usernameHash: opaqueIdentity.usernameHash,
+            usernameCiphertext: opaqueIdentity.usernameCiphertext,
             publicKey: storedKeys.publicKey,
           }),
         });
@@ -359,7 +391,7 @@ export default function LoginPage() {
             storedKeys.privateKey,
           );
           const verifyData = await verifyChallengeResponseWithKeyRefresh({
-            username: usernameToDelete,
+            userId,
             decryptedUUID,
             serverPublicKey: storedKeys.serverPublicKey,
           });
@@ -384,7 +416,7 @@ export default function LoginPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            username: usernameToDelete,
+            userId,
             sessionId: sessionId,
           }),
         });

@@ -11,7 +11,7 @@ import { useHomeRooms } from '../../contexts/home/useHomePageSelectors';
 type RoomTreeNode = {
   id: string;
   label: string;
-  roomId?: string;
+  roomId: string;
   children?: RoomTreeNode[];
 };
 
@@ -96,9 +96,6 @@ export function HomeLeftPanel() {
 
   const renderTreeNode = (node: RoomTreeNode, depth = 0) => {
     const room = node.roomId;
-    if (!room) {
-      return null;
-    }
 
     const isActive = room === currentRoom;
     const unreadCount = !isActive ? roomNotifications[room] || 0 : 0;

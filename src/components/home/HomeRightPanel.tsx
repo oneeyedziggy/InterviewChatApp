@@ -70,7 +70,7 @@ export function HomeRightPanel() {
                 .filter((req) => req.room === currentRoom)
                 .map((req) => (
                   <div
-                    key={`${req.room}:${req.requestingUser}`}
+                    key={`${req.roomId}:${req.requestingUserId}`}
                     className="mb-2 rounded-md border border-app-border bg-amber-100 p-2"
                   >
                     <div className="mb-2 text-xs text-app-fg">
@@ -80,7 +80,13 @@ export function HomeRightPanel() {
                       <PrimaryButton
                         type="button"
                         onClick={() =>
-                          handleVoteJoin(req.requestingUser, req.room, true)
+                          handleVoteJoin(
+                            req.requestingUserId,
+                            req.requestingUser,
+                            req.roomId,
+                            req.room,
+                            true,
+                          )
                         }
                         className="flex-1 bg-emerald-600 px-2 py-1 text-xs"
                       >
@@ -89,7 +95,13 @@ export function HomeRightPanel() {
                       <PrimaryButton
                         type="button"
                         onClick={() =>
-                          handleVoteJoin(req.requestingUser, req.room, false)
+                          handleVoteJoin(
+                            req.requestingUserId,
+                            req.requestingUser,
+                            req.roomId,
+                            req.room,
+                            false,
+                          )
                         }
                         className="flex-1 bg-red-500 px-2 py-1 text-xs"
                       >

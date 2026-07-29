@@ -316,6 +316,12 @@ a {
   align-items: flex-end;
 }
 
+.app-composer-input-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .app-message-thread-area {
   display: flex;
   flex-direction: column;
@@ -422,6 +428,31 @@ a {
   max-height: calc(1.35em * 10 + 16px);
   overflow-y: hidden;
   white-space: pre-wrap;
+}
+
+.app-composer-byte-counter {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  z-index: 4;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--app-surface) 92%, transparent);
+  color: #137333;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.app-composer-byte-counter--over {
+  color: #b32030;
+}
+
+.app-composer-byte-warning {
+  margin-top: 2px;
+  color: #b32030;
 }
 
 @media (min-width: 768px) {

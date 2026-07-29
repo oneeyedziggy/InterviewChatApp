@@ -3,7 +3,9 @@ import { type Socket } from 'socket.io-client';
 import { type Messages } from '../../types/types';
 
 export type JoinRequest = {
+  requestingUserId: string;
   requestingUser: string;
+  roomId: string;
   room: string;
   timestamp: number;
 };
@@ -43,15 +45,14 @@ export type HomeComposerContextValue = {
   ) => void;
   doSend: () => Promise<void>;
   handleRequestAccess: (
-    messageUsername: string,
+    messageUserId: string,
     room: string,
     messageTimestamp: number,
   ) => void;
   handleGrantAccess: (
-    requestingUser: string,
+    requestingUserId: string,
     originalRoom: string,
     messageTimestamp: number,
-    providedPlaintext?: string,
   ) => Promise<void>;
   handleSelectVersion: (
     room: string,
@@ -89,7 +90,13 @@ export type HomePresenceContextValue = {
   ) => Promise<{ success: boolean; message: string }>;
   handleBlockUser: (targetUser: string) => void;
   handleUnblockUser: (targetUser: string) => void;
-  handleVoteJoin: (requestingUser: string, room: string, vote: boolean) => void;
+  handleVoteJoin: (
+    requestingUserId: string,
+    requestingUser: string,
+    roomId: string,
+    room: string,
+    vote: boolean,
+  ) => void;
   handleLogout: () => Promise<void>;
 };
 
