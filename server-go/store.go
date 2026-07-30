@@ -108,6 +108,10 @@ func (fs *FileStore) saveWithIdentity(
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 
+	if err := os.Remove(fs.filepath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to clear existing state file: %w", err)
+	}
+
 	if err := os.Rename(tmpPath, fs.filepath); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}

@@ -1,4 +1,3 @@
-const LEGACY_BLOCKED_USERS_KEY = 'chat_blocked_users';
 const USER_PUBLIC_KEYS_KEY = 'gpg_user_public_keys';
 
 type UserPublicKeyEntry = {
@@ -29,7 +28,7 @@ function isBlockedForUser(
     return entry.blockedBy.includes(localUsername);
   }
 
-  // Legacy fallback: blocked without blockedBy applies to current local user.
+  // If no per-user list is present, use the entry-level blocked flag.
   return !!entry.blocked;
 }
 
@@ -88,43 +87,8 @@ function writeUserKeyEntries(
   localStorage.setItem(USER_PUBLIC_KEYS_KEY, JSON.stringify(entries));
 }
 
-function migrateLegacyBlockedUsers(
-  entries: Record<string, UserPublicKeyEntry>,
-): Record<string, UserPublicKeyEntry> {
-  if (typeof window === 'undefined') return entries;
-
-  const legacyRaw = localStorage.getItem(LEGACY_BLOCKED_USERS_KEY);
-  if (!legacyRaw) return entries;
-
-  try {
-    const legacy = JSON.parse(legacyRaw);
-    if (Array.isArray(legacy)) {
-      for (const username of legacy) {
-        if (typeof username !== 'string' || !username) continue;
-        const existing = entries[username] || { publicKey: '' };
-        const currentLocalUsername = getCurrentLocalUsername();
-        const blockedBy = new Set(existing.blockedBy || []);
-        if (currentLocalUsername) {
-          blockedBy.add(currentLocalUsername);
-        }
-        entries[username] = {
-          ...existing,
-          blocked: true,
-          blockedBy: Array.from(blockedBy),
-        };
-      }
-      writeUserKeyEntries(entries);
-    }
-  } catch {
-    // ignore bad legacy payload
-  }
-
-  localStorage.removeItem(LEGACY_BLOCKED_USERS_KEY);
-  return entries;
-}
-
 export function getBlockedUsers(): string[] {
-  const entries = migrateLegacyBlockedUsers(readUserKeyEntries());
+  const entries = readUserKeyEntries();
   const currentLocalUsername = getCurrentLocalUsername();
   return Object.entries(entries)
     .filter(([, entry]) => isBlockedForUser(entry, currentLocalUsername))
@@ -133,14 +97,14 @@ export function getBlockedUsers(): string[] {
 
 export function isUserBlocked(username: string): boolean {
   if (!username) return false;
-  const entries = migrateLegacyBlockedUsers(readUserKeyEntries());
+  const entries = readUserKeyEntries();
   const currentLocalUsername = getCurrentLocalUsername();
   return isBlockedForUser(entries[username], currentLocalUsername);
 }
 
 export function blockUser(username: string): void {
   if (typeof window === 'undefined' || !username) return;
-  const entries = migrateLegacyBlockedUsers(readUserKeyEntries());
+  const entries = readUserKeyEntries();
   const existing = entries[username] || { publicKey: '' };
   const currentLocalUsername = getCurrentLocalUsername();
   const blockedBy = new Set(existing.blockedBy || []);
@@ -158,7 +122,7 @@ export function blockUser(username: string): void {
 
 export function unblockUser(username: string): number | undefined {
   if (typeof window === 'undefined' || !username) return undefined;
-  const entries = migrateLegacyBlockedUsers(readUserKeyEntries());
+  const entries = readUserKeyEntries();
   if (!entries[username]) {
     return undefined;
   }
@@ -184,7 +148,7 @@ export function getBlockedUserExportsForCurrentUser(): Record<
   string,
   BlockedUserExport
 > {
-  const entries = migrateLegacyBlockedUsers(readUserKeyEntries());
+  const entries = readUserKeyEntries();
   const currentLocalUsername = getCurrentLocalUsername();
   const exported: Record<string, BlockedUserExport> = {};
 

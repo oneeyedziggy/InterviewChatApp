@@ -19,7 +19,7 @@ import {
   verifyChallengeResponseWithKeyRefresh,
   type StoredKeys,
 } from '../utils/gpg';
-import { requireUserIdByUsername } from '../utils/identityMap';
+import { requireUserIdByUsername } from '@/utils/identityMap';
 
 type LoginDialogProps = {
   username: string;
@@ -175,7 +175,7 @@ export const LoginDialog = ({
         };
       }
 
-      const userId = requireUserIdByUsername(username);
+      const userId = keys.userId || requireUserIdByUsername(username);
       const opaqueIdentity = await buildOpaqueUsernameEnvelope(
         username,
         keys.serverPublicKey,
@@ -232,6 +232,7 @@ export const LoginDialog = ({
             ...keys,
             serverPublicKey: verifyData.serverPublicKey,
             sessionId: verifyData.sessionId,
+            userId: verifyData.userId || userId,
           });
           setLoginError('');
           onSuccess(verifyData.sessionId, username);
@@ -250,6 +251,7 @@ export const LoginDialog = ({
         // Store keys with session ID
         storeKeys({
           ...keys,
+          userId: loginData.userId || userId,
           sessionId: loginData.sessionId,
         });
         setLoginError('');

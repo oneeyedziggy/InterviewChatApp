@@ -9,6 +9,7 @@ const (
 	DefaultRoom       = "general"
 	SessionTTL        = 4 * time.Hour
 	SystemUserID      = "system"
+	PresenceMsgDebounce = 4 * time.Second
 )
 
 const (

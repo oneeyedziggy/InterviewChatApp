@@ -46,10 +46,6 @@ export function canUserViewMessage(
     return true;
   }
 
-  if (viewerUsername && message.encryptedFor?.[viewerUsername]) {
-    return true;
-  }
-
   if (message.encryptedMessage) {
     return true;
   }
@@ -60,9 +56,6 @@ export function canUserViewMessage(
       return true;
     }
     if (viewerUserId && newest.encryptedFor?.[viewerUserId]) {
-      return true;
-    }
-    if (viewerUsername && newest.encryptedFor?.[viewerUsername]) {
       return true;
     }
   }

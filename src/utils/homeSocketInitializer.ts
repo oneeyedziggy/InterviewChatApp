@@ -791,14 +791,116 @@ function toDisplayUsers(users: unknown): string[] {
 }
 
 function isSyntheticSystemDmRoom(room: string): boolean {
-  return room.startsWith('@dmid:system:') || room.includes(':system:');
+  return room.startsWith('@dmid:system:');
+}
+
+const OPAQUE_ROOM_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isOpaqueRoomKey(room: string): boolean {
+  return OPAQUE_ROOM_ID_PATTERN.test(room);
+}
+
+function isAddressableRoomEntry(room: string): boolean {
+  if (!room || isSyntheticSystemDmRoom(room)) {
+    return false;
+  }
+  if (isDmRoom(room)) {
+    return true;
+  }
+  if (isOpaqueRoomKey(room)) {
+    // Opaque room IDs from the server are authoritative and must not be
+    // remapped to fallback rooms on the client.
+    return true;
+  }
+  if (getRoomNameByRoomId(room)) {
+    return true;
+  }
+  return true;
+}
+
+function resolveFallbackRoom(rooms: string[]): string {
+  const defaultRoom = rooms.find(
+    (room) =>
+      room === DEFAULT_ROOM || getRoomNameByRoomId(room) === DEFAULT_ROOM,
+  );
+  if (defaultRoom) {
+    return defaultRoom;
+  }
+
+  const firstAddressable = rooms.find((room) => isAddressableRoomEntry(room));
+  if (firstAddressable) {
+    return firstAddressable;
+  }
+
+  const roomDirectory = getRoomDirectorySnapshot();
+  for (const [roomId, roomName] of Object.entries(roomDirectory)) {
+    if (roomName === DEFAULT_ROOM) {
+      return roomId;
+    }
+  }
+
+  for (const roomId of Object.keys(roomDirectory)) {
+    if (isAddressableRoomEntry(roomId)) {
+      return roomId;
+    }
+  }
+
+  return getRoomIdByName(DEFAULT_ROOM) || DEFAULT_ROOM;
+}
+
+function normalizeIncomingRoomKey(
+  room: string,
+  candidateRooms: string[],
+  roomMessages?: Message[],
+): string {
+  const mappedRoomName = getRoomNameByRoomId(room);
+  if (mappedRoomName && isAddressableRoomEntry(mappedRoomName)) {
+    return mappedRoomName;
+  }
+
+  if (candidateRooms.includes(room)) {
+    return room;
+  }
+
+  if (isAddressableRoomEntry(room)) {
+    return room;
+  }
+
+  if (Array.isArray(roomMessages)) {
+    for (const msg of roomMessages) {
+      const hintedRoom =
+        msg && typeof msg.roomId === 'string' ? msg.roomId.trim() : '';
+      if (hintedRoom && isAddressableRoomEntry(hintedRoom)) {
+        const hintedMappedName = getRoomNameByRoomId(hintedRoom);
+        if (hintedMappedName && isAddressableRoomEntry(hintedMappedName)) {
+          return hintedMappedName;
+        }
+        return hintedRoom;
+      }
+      if (hintedRoom) {
+        const mappedName = getRoomNameByRoomId(hintedRoom);
+        if (mappedName && isAddressableRoomEntry(mappedName)) {
+          return mappedName;
+        }
+      }
+    }
+  }
+
+  console.warn(
+    '[Socket] Unmapped room key received; keeping original room key',
+    {
+      room,
+    },
+  );
+  return room;
 }
 
 function normalizeRoomListEntries(rooms: string[]): string[] {
   const byEffectiveName = new Map<string, string>();
 
   for (const room of rooms) {
-    if (!room || isSyntheticSystemDmRoom(room)) {
+    if (!isAddressableRoomEntry(room)) {
       continue;
     }
 
@@ -812,13 +914,50 @@ function normalizeRoomListEntries(rooms: string[]): string[] {
 
     const existingMappedName = getRoomNameByRoomId(existing);
     const nextMappedName = getRoomNameByRoomId(room);
-    // Prefer opaque room IDs that resolve to names over plain-name fallback entries.
+    // Prefer opaque room IDs that resolve to names over plain-name entries.
     if (!existingMappedName && nextMappedName) {
       byEffectiveName.set(effectiveName, room);
     }
   }
 
   return Array.from(byEffectiveName.values());
+}
+
+function resolvePersistedCurrentRoom(
+  normalizedRooms: string[],
+  preferredRoom: string,
+  currentRoom: string,
+): string {
+  const roomSet = new Set(normalizedRooms);
+  const normalizedPreferred = preferredRoom.trim();
+
+  if (normalizedPreferred) {
+    const mappedPreferred = getRoomNameByRoomId(normalizedPreferred);
+    if (mappedPreferred && roomSet.has(mappedPreferred)) {
+      return mappedPreferred;
+    }
+    if (roomSet.has(normalizedPreferred)) {
+      return normalizedPreferred;
+    }
+
+    const preferredId = getRoomIdByName(normalizedPreferred);
+    if (preferredId) {
+      const mappedPreferredId = getRoomNameByRoomId(preferredId);
+      if (mappedPreferredId && roomSet.has(mappedPreferredId)) {
+        return mappedPreferredId;
+      }
+      if (roomSet.has(preferredId)) {
+        return preferredId;
+      }
+    }
+  }
+
+  const normalizedCurrent = currentRoom.trim();
+  if (normalizedCurrent && roomSet.has(normalizedCurrent)) {
+    return normalizedCurrent;
+  }
+
+  return resolveFallbackRoom(normalizedRooms);
 }
 
 function refreshDisplayedUserLists(args: {
@@ -1119,6 +1258,7 @@ export async function initializeHomeSocket({
   setSocket,
 }: InitSocketArgs) {
   const forcedRoomPayloads = new Set<string>();
+  let preferredRoomFromPrefs = '';
   let socket = getSocket();
   console.log('[Socket] ===== INITIALIZING SOCKET =====');
   console.log('[Socket] Token:', authToken);
@@ -1291,13 +1431,20 @@ export async function initializeHomeSocket({
       const currentUserId = username ? requireUserIdByUsername(username) : '';
       const decryptedMessages: Messages = {};
       const blockedUsers = new Set(getBlockedUsers());
+      const scopedRoomsForFallback = Array.isArray(data.rooms)
+        ? normalizeRoomListEntries(filterRoomsForUser(data.rooms, username))
+        : normalizeRoomListEntries(getRoomList());
 
       for (const [room, messages] of Object.entries(data.messages)) {
+        const normalizedRoom = normalizeIncomingRoomKey(
+          room,
+          scopedRoomsForFallback,
+        );
         const roomMessages = messages as Message[];
         const visibleRoomMessages = roomMessages.filter(
           (msg) => !isBlockedAuthor(msg, blockedUsers),
         );
-        decryptedMessages[room] = await Promise.all(
+        const decryptedForRoom = await Promise.all(
           visibleRoomMessages.map(async (rawMsg: Message) => {
             const msg = ensureMessageId(rawMsg);
             const encrypted = resolveEncryptedPayloadForUser(
@@ -1322,8 +1469,8 @@ export async function initializeHomeSocket({
           }),
         );
 
-        decryptedMessages[room] = scrubMessagesForLocalState(
-          decryptedMessages[room],
+        decryptedMessages[normalizedRoom] = scrubMessagesForLocalState(
+          [...(decryptedMessages[normalizedRoom] || []), ...decryptedForRoom],
           blockedUsers,
         );
       }
@@ -1338,10 +1485,20 @@ export async function initializeHomeSocket({
     }
 
     if (data?.rooms) {
-      const scopedRooms = filterRoomsForUser(data.rooms, username);
+      const scopedRooms = filterRoomsForUser(data.rooms, username).map((room) =>
+        normalizeIncomingRoomKey(room, data.rooms as string[]),
+      );
       const normalizedRooms = normalizeRoomListEntries(scopedRooms);
       console.log('[Socket] ✓ Setting room list:', normalizedRooms);
       setRoomList(normalizedRooms);
+      const resolvedCurrentRoom = resolvePersistedCurrentRoom(
+        normalizedRooms,
+        preferredRoomFromPrefs,
+        getCurrentRoom(),
+      );
+      if (resolvedCurrentRoom !== getCurrentRoom()) {
+        setCurrentRoom(resolvedCurrentRoom);
+      }
     } else {
       console.warn('[Socket] ✗ No rooms in INITIAL_DATA');
     }
@@ -1829,13 +1986,23 @@ export async function initializeHomeSocket({
     if (data?.messages) {
       const keys = loadKeys();
       const decryptedMessages: Messages = {};
+      const candidateRooms = normalizeRoomListEntries([
+        ...getRoomList(),
+        ...Object.keys(getRoomDirectorySnapshot()),
+      ]);
 
       for (const [room, messages] of Object.entries(data.messages)) {
+        const normalizedRoom = normalizeIncomingRoomKey(
+          room,
+          candidateRooms,
+          messages as Message[],
+        );
         const hiddenRooms = getLeftRooms();
         const isHiddenRoom =
-          hiddenRooms.has(room) && !forcedRoomPayloads.has(room);
+          hiddenRooms.has(normalizedRoom) &&
+          !forcedRoomPayloads.has(normalizedRoom);
         // Preserve hide behavior for normal channels; DMs can force resurfacing.
-        if (isHiddenRoom && !isDmRoom(room)) continue;
+        if (isHiddenRoom && !isDmRoom(normalizedRoom)) continue;
 
         // Type assertion: messages from SERVER_MESSAGE should be Message[]
         const roomMessages = messages as Message[];
@@ -1846,12 +2013,12 @@ export async function initializeHomeSocket({
 
         // Ignore room updates with no visible messages (important for blocked-user DMs).
         if (visibleRoomMessages.length === 0) {
-          forcedRoomPayloads.delete(room);
+          forcedRoomPayloads.delete(normalizedRoom);
           continue;
         }
 
         console.log(
-          `[Socket] SERVER_MESSAGE: Received ${visibleRoomMessages.length} visible messages for room ${room}`,
+          `[Socket] SERVER_MESSAGE: Received ${visibleRoomMessages.length} visible messages for room ${normalizedRoom}`,
         );
         // Log replyTo fields
         const messagesWithReplies = visibleRoomMessages.filter(
@@ -1868,7 +2035,7 @@ export async function initializeHomeSocket({
           );
         }
 
-        decryptedMessages[room] = await Promise.all(
+        const decryptedForRoom = await Promise.all(
           visibleRoomMessages.map(async (rawMsg: Message) => {
             const msg = ensureMessageId(rawMsg);
             // Preserve replyTo field
@@ -1887,7 +2054,7 @@ export async function initializeHomeSocket({
                 console.log('[Socket] Message timestamp:', msg.timestamp);
                 console.log('[Socket] Message replyTo:', preservedReplyTo);
                 console.log('[Socket] User:', keys!.username);
-                console.log('[Socket] Room:', room);
+                console.log('[Socket] Room:', normalizedRoom);
                 const decrypted = await decryptMessageForUser(
                   encryptedData,
                   keys!.privateKey,
@@ -1914,7 +2081,12 @@ export async function initializeHomeSocket({
           }),
         );
 
-        forcedRoomPayloads.delete(room);
+        decryptedMessages[normalizedRoom] = [
+          ...(decryptedMessages[normalizedRoom] || []),
+          ...decryptedForRoom,
+        ];
+
+        forcedRoomPayloads.delete(normalizedRoom);
       }
 
       // Compute unread deltas from current chat snapshot before scheduling state updates.
@@ -2079,34 +2251,23 @@ export async function initializeHomeSocket({
         const normalized = normalizeRoomListEntries(updated);
         return changed || normalized.length !== prev.length ? normalized : prev;
       });
+      const nextVisibleRooms = normalizeRoomListEntries([
+        ...getRoomList(),
+        ...Object.keys(decryptedMessages),
+      ]);
+      if (!nextVisibleRooms.includes(getCurrentRoom())) {
+        setCurrentRoom(resolveFallbackRoom(nextVisibleRooms));
+      }
     }
 
-    // Only update user lists if they are provided and not empty (or explicitly provided)
-    // Don't overwrite with empty arrays - that would clear the user list
-    if (data?.users && Array.isArray(data.users) && data.users.length > 0) {
-      setUserList(toDisplayUsers(data.users));
-    }
-
-    // Handle new format with loggedInUsers and activeUsers
-    // Only update if explicitly provided (even if empty arrays, but prefer non-empty)
+    // Update user lists only from explicit loggedInUsers/activeUsers payloads.
     if (data?.loggedInUsers !== undefined || data?.activeUsers !== undefined) {
       const loggedInDisplay = toDisplayUsers(data.loggedInUsers || []);
       const activeDisplay = toDisplayUsers(data.activeUsers || []);
       setLoggedInUsers(loggedInDisplay);
       setActiveUsers(activeDisplay);
-      // Also update userList for backward compatibility
       const allUsers = [...loggedInDisplay, ...activeDisplay];
-      if (allUsers.length > 0) {
-        setUserList(allUsers);
-      }
-    } else if (
-      data?.users &&
-      Array.isArray(data.users) &&
-      data.users.length > 0
-    ) {
-      // Fallback: if only old format, treat all as logged in
-      setLoggedInUsers(toDisplayUsers(data.users));
-      setActiveUsers([]);
+      setUserList(allUsers);
     }
 
     // Update room members if provided
@@ -2123,15 +2284,6 @@ export async function initializeHomeSocket({
     // Update user last seen if provided
     if (data?.userLastSeen) {
       setUserLastSeen(data.userLastSeen as Record<string, number>);
-    } else if (data?.users) {
-      // Fallback: mark all users as online if last seen not provided
-      setUserLastSeen((prev) => {
-        const updated = { ...prev };
-        toDisplayUsers(data.users).forEach((user: string) => {
-          updated[user] = Date.now();
-        });
-        return updated;
-      });
     }
 
     // Update user public keys if provided
@@ -2176,19 +2328,32 @@ export async function initializeHomeSocket({
       setChatValues((prev) => {
         const merged = { ...prev };
         const blockedUsers = new Set(getBlockedUsers());
+        const candidateRooms = normalizeRoomListEntries([
+          ...Object.keys(prev),
+          ...getRoomList(),
+          ...Object.keys(getRoomDirectorySnapshot()),
+        ]);
         for (const [room, rawMessages] of Object.entries(data.messages)) {
+          const normalizedRoom = normalizeIncomingRoomKey(
+            room,
+            candidateRooms,
+            rawMessages as Message[],
+          );
           const incomingMessages = scrubMessagesForLocalState(
             (rawMessages as Message[]).map((msg) => ensureMessageId(msg)),
             blockedUsers,
           );
 
-          if (!merged[room]) {
-            merged[room] = incomingMessages;
+          if (!merged[normalizedRoom]) {
+            merged[normalizedRoom] = incomingMessages;
             continue;
           }
 
           const existingMap = new Map(
-            merged[room].map((message) => [messageIdentity(message), message]),
+            merged[normalizedRoom].map((message) => [
+              messageIdentity(message),
+              message,
+            ]),
           );
           for (const message of incomingMessages) {
             const key = messageIdentity(message);
@@ -2205,7 +2370,7 @@ export async function initializeHomeSocket({
             }
           }
 
-          merged[room] = scrubMessagesForLocalState(
+          merged[normalizedRoom] = scrubMessagesForLocalState(
             Array.from(existingMap.values()),
             blockedUsers,
           );
@@ -2214,7 +2379,9 @@ export async function initializeHomeSocket({
       });
     }
     if (Array.isArray(data?.rooms) && data.rooms.length > 0) {
-      const nextRooms = filterRoomsForUser(data.rooms, username);
+      const nextRooms = filterRoomsForUser(data.rooms, username).map((room) =>
+        normalizeIncomingRoomKey(room, data.rooms as string[]),
+      );
       console.log('[Socket] SERVER_MESSAGE room payload:', {
         roomCount: data.rooms.length,
         filteredCount: nextRooms.length,
@@ -2231,6 +2398,13 @@ export async function initializeHomeSocket({
         const normalized = normalizeRoomListEntries(merged);
         return changed || normalized.length !== prev.length ? normalized : prev;
       });
+      const nextVisibleRooms = normalizeRoomListEntries([
+        ...getRoomList(),
+        ...nextRooms,
+      ]);
+      if (!nextVisibleRooms.includes(getCurrentRoom())) {
+        setCurrentRoom(resolveFallbackRoom(nextVisibleRooms));
+      }
     }
   });
 
@@ -2253,7 +2427,7 @@ export async function initializeHomeSocket({
     }
 
     // Force UI refresh so newly decrypted names replace ID fallbacks immediately.
-    setRoomList((prev) => [...prev]);
+    setRoomList((prev) => normalizeRoomListEntries(prev));
     refreshDisplayedUserLists({
       setUserList,
       setLoggedInUsers,
@@ -2278,7 +2452,6 @@ export async function initializeHomeSocket({
 
     console.log('[Socket] SERVER_USER_LIST_UPDATE received:', data);
 
-    // Handle new format with loggedInUsers and activeUsers
     if (data && typeof data === 'object' && !Array.isArray(data)) {
       if ('loggedInUsers' in data || 'activeUsers' in data) {
         const loggedInDisplay = toDisplayUsers(
@@ -2290,7 +2463,6 @@ export async function initializeHomeSocket({
         if ((data as any).userLastSeen) {
           setUserLastSeen((data as any).userLastSeen as Record<string, number>);
         }
-        // Also update userList for backward compatibility
         const allUsers = [...loggedInDisplay, ...activeDisplay];
         setUserList(allUsers);
         console.log(
@@ -2303,17 +2475,6 @@ export async function initializeHomeSocket({
       } else {
         console.warn('[Socket] ✗ Invalid user list format:', data);
       }
-    } else if (Array.isArray(data)) {
-      // Backward compatibility: treat array as logged-in users
-      const displayUsers = toDisplayUsers(data);
-      setUserList(displayUsers);
-      setLoggedInUsers(displayUsers);
-      setActiveUsers([]);
-      console.log(
-        '[Socket] ✓ Updated user list (legacy format):',
-        data.length,
-        'users',
-      );
     } else {
       console.warn('[Socket] ✗ Invalid user list format:', data);
     }
@@ -2564,14 +2725,19 @@ export async function initializeHomeSocket({
       const keys = loadKeys();
       const currentUserId = username ? requireUserIdByUsername(username) : '';
       const decryptedMessages: Messages = {};
+      const candidateRooms = normalizeRoomListEntries([
+        ...getRoomList(),
+        ...Object.keys(getRoomDirectorySnapshot()),
+      ]);
 
       for (const [room, messages] of Object.entries(data.messages)) {
+        const normalizedRoom = normalizeIncomingRoomKey(room, candidateRooms);
         const roomMessages = messages as Message[];
         const blockedUsers = new Set(getBlockedUsers());
         const visibleRoomMessages = roomMessages.filter(
           (msg) => !isBlockedAuthor(msg, blockedUsers),
         );
-        decryptedMessages[room] = await Promise.all(
+        const decryptedForRoom = await Promise.all(
           visibleRoomMessages.map(async (msg: Message) => {
             // If message has encryptedFor and we have keys, decrypt it
             if (msg.encryptedFor && keys) {
@@ -2594,6 +2760,10 @@ export async function initializeHomeSocket({
             return msg;
           }),
         );
+        decryptedMessages[normalizedRoom] = [
+          ...(decryptedMessages[normalizedRoom] || []),
+          ...decryptedForRoom,
+        ];
       }
 
       setChatValues((prev) => {
@@ -2713,11 +2883,18 @@ export async function initializeHomeSocket({
 
         const keys = loadKeys();
         if (keys?.sessionId) {
+          let roomId: string | undefined;
+          try {
+            roomId = requireRoomIdByName(transferDmRoom);
+          } catch {
+            roomId = undefined;
+          }
+
           activeSocket.emit(SOCKET_EVENTS.CLIENT_REQUEST_ROOM_DATA, {
             userId: requireUserIdByUsername(username),
             sessionId: keys.sessionId,
             room: transferDmRoom,
-            roomId: requireRoomIdByName(transferDmRoom),
+            ...(roomId ? { roomId } : {}),
           });
         }
       }
@@ -2791,6 +2968,7 @@ export async function initializeHomeSocket({
 
     const prefs = await loadRoomPrefs(username);
     const requestedCurrentRoom = prefs.currentRoom || DEFAULT_ROOM;
+    preferredRoomFromPrefs = requestedCurrentRoom;
     const requestedOpenRooms =
       prefs.openRooms && prefs.openRooms.length > 0
         ? prefs.openRooms

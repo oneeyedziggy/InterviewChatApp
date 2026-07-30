@@ -16,11 +16,6 @@ type IdentityState = {
   currentUserId?: string;
 };
 
-const USER_ID_TO_NAME = 'identity_user_id_to_name';
-const USER_NAME_TO_ID = 'identity_user_name_to_id';
-const ROOM_ID_TO_NAME = 'identity_room_id_to_name';
-const ROOM_NAME_TO_ID = 'identity_room_name_to_id';
-const CURRENT_USER_ID = 'identity_current_user_id';
 const ENCRYPTED_IDENTITY_STATE = 'identity_state_enc_v1';
 const IDENTITY_SECRET = 'identity_secret_v1';
 
@@ -105,51 +100,12 @@ function readIdentitySecret(): string {
   return localStorage.getItem(IDENTITY_SECRET) || '';
 }
 
-function collectIdentityKeyCandidates(): string[] {
-  if (typeof window === 'undefined') return [];
-
-  const candidates = new Set<string>();
-
-  const legacyPublicKey = localStorage.getItem('gpg_public_key') || '';
-  const legacyPrivateKey = localStorage.getItem('gpg_private_key') || '';
-  if (legacyPublicKey || legacyPrivateKey) {
-    candidates.add(`${legacyPublicKey}|${legacyPrivateKey}`);
-  }
-
-  for (let i = 0; i < localStorage.length; i += 1) {
-    const key = localStorage.key(i);
-    if (!key || !key.startsWith('gpg_user_') || !key.endsWith('_privateKey')) {
-      continue;
-    }
-
-    const match = key.match(/^gpg_user_(.+)_privateKey$/);
-    if (!match || !match[1]) {
-      continue;
-    }
-
-    const username = match[1];
-    const privateKey = localStorage.getItem(key) || '';
-    const publicKey =
-      localStorage.getItem(`gpg_user_${username}_publicKey`) || '';
-    if (privateKey || publicKey) {
-      candidates.add(`${publicKey}|${privateKey}`);
-    }
-  }
-
-  return Array.from(candidates).filter((value) => value.trim() !== '');
-}
-
 function deriveKeyMaterial(): string {
   if (typeof window === 'undefined') return '';
 
   const secret = readIdentitySecret();
   if (secret.trim() !== '') {
     return secret;
-  }
-
-  const fallback = collectIdentityKeyCandidates();
-  if (fallback.length > 0) {
-    return fallback[0];
   }
 
   return getOrCreateIdentitySecret();
@@ -228,26 +184,6 @@ function saveState(state: IdentityState) {
   }
 }
 
-function loadLegacyIdentityState(): IdentityState {
-  if (typeof window === 'undefined') return emptyIdentityState();
-  const legacy = emptyIdentityState();
-  legacy.userIdToName = safeParseMap(localStorage.getItem(USER_ID_TO_NAME));
-  legacy.userNameToId = safeParseMap(localStorage.getItem(USER_NAME_TO_ID));
-  legacy.roomIdToName = safeParseMap(localStorage.getItem(ROOM_ID_TO_NAME));
-  legacy.roomNameToId = safeParseMap(localStorage.getItem(ROOM_NAME_TO_ID));
-  legacy.currentUserId = localStorage.getItem(CURRENT_USER_ID) || undefined;
-  return legacy;
-}
-
-function clearLegacyIdentityStorage() {
-  if (typeof window === 'undefined') return;
-  localStorage.removeItem(USER_ID_TO_NAME);
-  localStorage.removeItem(USER_NAME_TO_ID);
-  localStorage.removeItem(ROOM_ID_TO_NAME);
-  localStorage.removeItem(ROOM_NAME_TO_ID);
-  localStorage.removeItem(CURRENT_USER_ID);
-}
-
 function loadState(): IdentityState {
   if (typeof window === 'undefined') return emptyIdentityState();
   if (identityCache) {
@@ -256,27 +192,6 @@ function loadState(): IdentityState {
 
   const encrypted = localStorage.getItem(ENCRYPTED_IDENTITY_STATE);
   if (encrypted) {
-    const candidates = [
-      readIdentitySecret(),
-      ...collectIdentityKeyCandidates(),
-    ].filter((value) => value.trim() !== '');
-
-    for (const keyMaterial of candidates) {
-      try {
-        const plaintext = xorDecipher(encrypted, keyMaterial);
-        identityCache = sanitizeState(
-          JSON.parse(plaintext) as Partial<IdentityState>,
-        );
-        if (!readIdentitySecret()) {
-          getOrCreateIdentitySecret();
-          saveState(identityCache);
-        }
-        return identityCache;
-      } catch {
-        // Try next candidate.
-      }
-    }
-
     try {
       const plaintext = xorDecipher(encrypted, deriveKeyMaterial());
       identityCache = sanitizeState(
@@ -288,15 +203,16 @@ function loadState(): IdentityState {
       }
       return identityCache;
     } catch {
-      // Fall through to legacy migration.
+      identityCache = emptyIdentityState();
+      getOrCreateIdentitySecret();
+      saveState(identityCache);
+      return identityCache;
     }
   }
 
-  const legacy = loadLegacyIdentityState();
-  identityCache = sanitizeState(legacy);
+  identityCache = emptyIdentityState();
   getOrCreateIdentitySecret();
   saveState(identityCache);
-  clearLegacyIdentityStorage();
   return identityCache;
 }
 
@@ -390,7 +306,6 @@ export function storeIdentityDirectories(data: IdentityDirectories) {
 
   identityCache = state;
   saveState(state);
-  clearLegacyIdentityStorage();
 }
 
 export function getUserIdByUsername(username: string): string | undefined {
@@ -463,7 +378,6 @@ export function requireUserIdByUsername(username: string): string {
   state.userIdUpdatedAt[userId] = Date.now();
   identityCache = state;
   saveState(state);
-  clearLegacyIdentityStorage();
   return userId;
 }
 
@@ -472,12 +386,7 @@ export function requireRoomIdByName(roomName: string): string {
     throw new Error(`Missing roomId mapping for room: ${roomName}`);
   }
 
-  // If caller already passed an opaque room ID, use it directly.
-  if (
-    roomName.startsWith('@dmid:') ||
-    roomName.startsWith('room:') ||
-    roomName.startsWith('room_')
-  ) {
+  if (roomName.startsWith('@dmid:')) {
     return roomName;
   }
 

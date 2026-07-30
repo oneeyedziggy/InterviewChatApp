@@ -6,10 +6,11 @@ import {
   getUserIdByUsername,
   requireUserIdByUsername,
   storeIdentityDirectories,
-} from './identityMap';
+} from '@/utils/identityMap';
 
 const STORAGE_KEYS = {
   USERNAME: 'gpg_username',
+  USER_ID: 'gpg_user_id',
   PRIVATE_KEY: 'gpg_private_key',
   PUBLIC_KEY: 'gpg_public_key',
   SERVER_PUBLIC_KEY: 'gpg_server_public_key',
@@ -25,6 +26,7 @@ const getUserStorageKey = (username: string, key: string): string => {
 
 export interface StoredKeys {
   username: string;
+  userId?: string;
   privateKey: string;
   publicKey: string;
   serverPublicKey: string;
@@ -183,6 +185,12 @@ export function storeKeysForUser(
     getUserStorageKey(keys.username, 'serverPublicKey'),
     keys.serverPublicKey,
   );
+  if (keys.userId) {
+    localStorage.setItem(
+      getUserStorageKey(keys.username, 'userId'),
+      keys.userId,
+    );
+  }
   if (keys.sessionId) {
     localStorage.setItem(
       getUserStorageKey(keys.username, 'sessionId'),
@@ -191,8 +199,11 @@ export function storeKeysForUser(
   }
 
   if (setAsCurrent) {
-    // Store current user (for backward compatibility)
+    // Store current session user pointers.
     localStorage.setItem(STORAGE_KEYS.USERNAME, keys.username);
+    if (keys.userId) {
+      localStorage.setItem(STORAGE_KEYS.USER_ID, keys.userId);
+    }
     localStorage.setItem(STORAGE_KEYS.PRIVATE_KEY, keys.privateKey);
     localStorage.setItem(STORAGE_KEYS.PUBLIC_KEY, keys.publicKey);
     localStorage.setItem(STORAGE_KEYS.SERVER_PUBLIC_KEY, keys.serverPublicKey);
@@ -231,12 +242,6 @@ export function getAllLocalUsers(): string[] {
     }
   }
 
-  // Also check for legacy single user
-  const legacyUser = localStorage.getItem(STORAGE_KEYS.USERNAME);
-  if (legacyUser) {
-    usersSet.add(legacyUser);
-  }
-
   // Scan all localStorage keys to find users with stored private keys
   // This ensures we don't miss any users even if ALL_USERS list is out of sync
   for (let i = 0; i < localStorage.length; i++) {
@@ -256,12 +261,7 @@ export function getAllLocalUsers(): string[] {
     const privateKey = localStorage.getItem(
       getUserStorageKey(user, 'privateKey'),
     );
-    const legacyPrivateKey =
-      user === legacyUser
-        ? localStorage.getItem(STORAGE_KEYS.PRIVATE_KEY)
-        : null;
-
-    if (privateKey || legacyPrivateKey) {
+    if (privateKey) {
       verifiedUsers.push(user);
     }
   });
@@ -310,16 +310,7 @@ export function isLocalUser(username: string): boolean {
   const privateKey = localStorage.getItem(
     getUserStorageKey(username, 'privateKey'),
   );
-  if (privateKey) return true;
-
-  // Check legacy storage
-  const legacyUser = localStorage.getItem(STORAGE_KEYS.USERNAME);
-  if (legacyUser === username) {
-    const legacyPrivateKey = localStorage.getItem(STORAGE_KEYS.PRIVATE_KEY);
-    return !!legacyPrivateKey;
-  }
-
-  return false;
+  return !!privateKey;
 }
 
 /**
@@ -337,6 +328,7 @@ export function loadKeysForUser(username: string): StoredKeys | null {
   const serverPublicKey = localStorage.getItem(
     getUserStorageKey(username, 'serverPublicKey'),
   );
+  const userId = localStorage.getItem(getUserStorageKey(username, 'userId'));
   const sessionId = localStorage.getItem(
     getUserStorageKey(username, 'sessionId'),
   );
@@ -347,6 +339,7 @@ export function loadKeysForUser(username: string): StoredKeys | null {
 
   return {
     username,
+    userId: userId || undefined,
     privateKey,
     publicKey,
     serverPublicKey,
@@ -361,6 +354,7 @@ export function loadKeys(): StoredKeys | null {
   if (typeof window === 'undefined') return null;
 
   const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
+  const userId = localStorage.getItem(STORAGE_KEYS.USER_ID);
   const privateKey = localStorage.getItem(STORAGE_KEYS.PRIVATE_KEY);
   const publicKey = localStorage.getItem(STORAGE_KEYS.PUBLIC_KEY);
   const serverPublicKey = localStorage.getItem(STORAGE_KEYS.SERVER_PUBLIC_KEY);
@@ -374,6 +368,7 @@ export function loadKeys(): StoredKeys | null {
   console.log('[GPG] ✓ Keys loaded from localStorage');
   return {
     username,
+    userId: userId || undefined,
     privateKey,
     publicKey,
     serverPublicKey,
@@ -447,8 +442,9 @@ export function clearSession(): void {
 
   const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
 
-  // Clear current session data (legacy storage)
+  // Clear current session data
   localStorage.removeItem(STORAGE_KEYS.USERNAME);
+  localStorage.removeItem(STORAGE_KEYS.USER_ID);
   localStorage.removeItem(STORAGE_KEYS.PRIVATE_KEY);
   localStorage.removeItem(STORAGE_KEYS.PUBLIC_KEY);
   localStorage.removeItem(STORAGE_KEYS.SERVER_PUBLIC_KEY);
@@ -475,6 +471,7 @@ export function clearKeys(): void {
 
   // Clear current user data
   localStorage.removeItem(STORAGE_KEYS.USERNAME);
+  localStorage.removeItem(STORAGE_KEYS.USER_ID);
   localStorage.removeItem(STORAGE_KEYS.PRIVATE_KEY);
   localStorage.removeItem(STORAGE_KEYS.PUBLIC_KEY);
   localStorage.removeItem(STORAGE_KEYS.SERVER_PUBLIC_KEY);
@@ -501,6 +498,7 @@ export function deleteUserKeys(username: string): void {
   localStorage.removeItem(getUserStorageKey(username, 'privateKey'));
   localStorage.removeItem(getUserStorageKey(username, 'publicKey'));
   localStorage.removeItem(getUserStorageKey(username, 'serverPublicKey'));
+  localStorage.removeItem(getUserStorageKey(username, 'userId'));
   localStorage.removeItem(getUserStorageKey(username, 'sessionId'));
 
   // Remove from all users list

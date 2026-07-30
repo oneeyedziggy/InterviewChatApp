@@ -15,6 +15,7 @@ import {
   loadKeys,
 } from '../../utils/gpg';
 import {
+  getRoomNameByRoomId,
   getUsernameByUserId,
   requireRoomIdByName,
   requireUserIdByUsername,
@@ -60,6 +61,13 @@ function normalizeRoomNotifications(raw: unknown): Record<string, number> {
   }
 
   return normalized;
+}
+
+function normalizeStoredRoomKey(room: string): string {
+  if (!room) {
+    return room;
+  }
+  return getRoomNameByRoomId(room) || room;
 }
 
 export function useHomePageState(): HomePageState {
@@ -247,10 +255,14 @@ export function useHomePageState(): HomePageState {
         const restoredLeftRooms = Array.isArray(prefs.leftRooms)
           ? prefs.leftRooms.filter((room) => typeof room === 'string')
           : [];
-        setLeftRoomsState(new Set(restoredLeftRooms));
+        setLeftRoomsState(
+          new Set(
+            restoredLeftRooms.map((room) => normalizeStoredRoomKey(room)),
+          ),
+        );
 
         if (prefs.currentRoom && typeof prefs.currentRoom === 'string') {
-          setCurrentRoomState(prefs.currentRoom);
+          setCurrentRoomState(normalizeStoredRoomKey(prefs.currentRoom));
         }
       } catch (error) {
         console.warn('[RoomPrefs] Failed to restore room preferences', error);
@@ -320,10 +332,18 @@ export function useHomePageState(): HomePageState {
     if (!username || typeof window === 'undefined' || !roomPrefsHydrated)
       return;
 
-    const openRooms = roomList.filter((room) => !leftRooms.has(room));
+    const normalizedRoomList = roomList.map((room) =>
+      normalizeStoredRoomKey(room),
+    );
+    const normalizedLeftRooms = new Set(
+      Array.from(leftRooms).map((room) => normalizeStoredRoomKey(room)),
+    );
+    const openRooms = normalizedRoomList.filter(
+      (room) => !normalizedLeftRooms.has(room),
+    );
     const payload: StoredRoomPrefs = {
-      leftRooms: Array.from(leftRooms),
-      currentRoom: currentRoomState || undefined,
+      leftRooms: Array.from(normalizedLeftRooms),
+      currentRoom: normalizeStoredRoomKey(currentRoomState) || undefined,
       openRooms,
     };
     void (async () => {
@@ -464,12 +484,19 @@ export function useHomePageState(): HomePageState {
         return;
       }
 
+      let roomId: string | undefined;
+      try {
+        roomId = requireRoomIdByName(room);
+      } catch {
+        roomId = undefined;
+      }
+
       socket.emit(SOCKET_EVENTS.CLIENT_REQUEST_ROOM_DATA, {
         username,
         userId: requireUserIdByUsername(username),
         sessionId: keys.sessionId,
         room,
-        roomId: requireRoomIdByName(room),
+        ...(roomId ? { roomId } : {}),
       });
     },
     setNewRoomName: (roomName: string) => setNewRoomNameState(roomName),

@@ -109,6 +109,17 @@ function resolveDisplayUsername(message: Message): string {
   return message.userId || 'unknown';
 }
 
+function resolveSystemUserRefs(content: string): string {
+  if (!content || content.trim() === '') {
+    return content;
+  }
+
+  return content.replace(/userId:([A-Za-z0-9:_-]+)/g, (full, userID) => {
+    const mapped = getUsernameByUserId(userID);
+    return mapped || full;
+  });
+}
+
 function isSameMessageRun(
   previous: Message | undefined,
   current: Message,
@@ -416,6 +427,11 @@ const MessageWithReplies = ({
   }
 
   const renderMessageContent = () => {
+    const renderableContent =
+      message.userId === 'system'
+        ? resolveSystemUserRefs(message.content || '')
+        : message.content || '';
+
     if (message.deleted || message.content === 'Message deleted') {
       return (
         <div
@@ -449,7 +465,7 @@ const MessageWithReplies = ({
             color: 'var(--app-fg)',
           }}
         >
-          {mdStringToReact(message.content)}
+          {mdStringToReact(renderableContent)}
           <div style={{ marginTop: '8px' }}>
             <button
               type="button"
@@ -527,22 +543,22 @@ const MessageWithReplies = ({
 
     const canDecrypt =
       hasAccess &&
-      message.content &&
-      message.content.trim() !== '' &&
-      !message.content.includes('🔒') &&
-      !message.content.includes('[Encrypted message]');
+      renderableContent &&
+      renderableContent.trim() !== '' &&
+      !renderableContent.includes('🔒') &&
+      !renderableContent.includes('[Encrypted message]');
 
     const isAccessRequest =
-      message.content &&
-      (message.content.includes('requests access') ||
-        message.content.includes('Requests access'));
+      renderableContent &&
+      (renderableContent.includes('requests access') ||
+        renderableContent.includes('Requests access'));
     const isAccessStatus =
-      message.content &&
-      (message.content.includes('You requested access') ||
-        message.content.includes('you requested access'));
+      renderableContent &&
+      (renderableContent.includes('You requested access') ||
+        renderableContent.includes('you requested access'));
 
     if (isAccessStatus) {
-      const statusMatch = message.content.match(
+      const statusMatch = renderableContent.match(
         /You requested access to (.+?)'s message in (.+?) \(timestamp: (\d+)\) \[(.+?)\]/i,
       );
       if (statusMatch) {
@@ -568,7 +584,7 @@ const MessageWithReplies = ({
               margin: '4px 0',
             }}
           >
-            {mdStringToReact(message.content)}
+            {mdStringToReact(renderableContent)}
             <div
               style={{
                 marginTop: '8px',
@@ -588,15 +604,15 @@ const MessageWithReplies = ({
     }
 
     if (isAccessRequest && onGrantAccess && username) {
-      const match = message.content.match(
+      const match = renderableContent.match(
         /(?:User\s+\w+\s+)?requests access to your message in (.+?) \(timestamp: (\d+)\)/i,
       );
       if (match) {
         const originalRoom = match[1];
         const messageTimestamp = parseInt(match[2], 10);
         const requestingUserId = message.userId;
-        const isDenied = message.content.includes('[Access Denied]');
-        const isGranted = message.content.includes('[Access Granted]');
+        const isDenied = renderableContent.includes('[Access Denied]');
+        const isGranted = renderableContent.includes('[Access Granted]');
 
         return (
           <div
@@ -607,7 +623,7 @@ const MessageWithReplies = ({
             }}
           >
             {mdStringToReact(
-              message.content.replace(
+              renderableContent.replace(
                 /\[Grant Access\]|\[Deny Access\]|\[Access Granted\]|\[Access Denied\]/g,
                 '',
               ),
@@ -748,7 +764,7 @@ const MessageWithReplies = ({
           return (
             <span>
               {!isCompactMessage && <>{renderAuthorLine()}: </>}
-              {mdStringToReact(message.content || '[No content]')}
+              {mdStringToReact(renderableContent || '[No content]')}
               {message.edited && (
                 <span
                   style={{

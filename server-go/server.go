@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -47,18 +48,37 @@ type ChatServer struct {
 	usernameCiphertexts    map[string]string
 	userDirectoryUpdatedAt map[string]int64
 	roomDirectoryUpdatedAt map[string]int64
+	pendingLeaveByUser     map[string]int64
+}
+
+func formatSystemUserRef(userID string) string {
+	trimmed := strings.TrimSpace(userID)
+	if trimmed == "" {
+		return ""
+	}
+	return "userId:" + trimmed
+}
+
+func parseSystemUserRef(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(trimmed, "userId:") {
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "userId:"))
+	}
+	return trimmed
+}
+
+func resolveStateFilePath() string {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		return "chat-state.json"
+	}
+	return filepath.Join(filepath.Dir(thisFile), "chat-state.json")
 }
 
 func NewChatServer() *ChatServer {
-	storePath := "chat-state.json"
-	absPath, err := filepath.Abs(storePath)
-	if err != nil {
-		log.Printf("[NewChatServer] ✗ Failed to get absolute path, using relative: %v", err)
-		absPath = storePath
-	}
-
-	log.Printf("[NewChatServer] Using state file: %s", absPath)
-	store := NewFileStore(absPath)
+	storePath := resolveStateFilePath()
+	log.Printf("[NewChatServer] Using state file: %s", storePath)
+	store := NewFileStore(storePath)
 
 	messages, rooms, users, userPubKeys, userPubKeysUpdatedAt, _, roomIDs, roomNameHashes, roomNameCiphertexts, usernameCiphertexts, userDirectoryUpdatedAt, roomDirectoryUpdatedAt, err := store.Load()
 	if err != nil {
@@ -161,6 +181,7 @@ func NewChatServer() *ChatServer {
 		roomNameCiphertexts:    roomNameCiphertexts,
 		userDirectoryUpdatedAt: userDirectoryUpdatedAt,
 		roomDirectoryUpdatedAt: roomDirectoryUpdatedAt,
+		pendingLeaveByUser:     make(map[string]int64),
 	}
 
 	for room, roomID := range cs.roomIDs {
@@ -180,7 +201,7 @@ func NewChatServer() *ChatServer {
 	if msgs, ok := messages[DefaultRoom]; ok {
 		for _, m := range msgs {
 			if m.Username == "system" && strings.HasSuffix(m.Content, UserJoined) {
-				uname := strings.TrimSuffix(m.Content, " "+UserJoined)
+				uname := parseSystemUserRef(strings.TrimSuffix(m.Content, " "+UserJoined))
 				if uname != "" {
 					cs.hasSentJoinMsg[uname] = true
 				}
@@ -214,6 +235,14 @@ func (cs *ChatServer) ensureRoomIDLocked(room string) string {
 		return ""
 	}
 
+	if strings.HasPrefix(room, "@dmid:") {
+		// DM rooms are canonical and self-identifying; using the room name as the
+		// room ID avoids opaque-ID mapping drift across reconnects/reloads.
+		cs.roomIDs[room] = room
+		cs.roomsByID[room] = room
+		return room
+	}
+
 	if roomID, ok := cs.roomIDs[room]; ok && roomID != "" {
 		cs.roomsByID[roomID] = room
 		return roomID
@@ -229,6 +258,114 @@ func (cs *ChatServer) ensureRoomID(room string) string {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	return cs.ensureRoomIDLocked(room)
+}
+
+func (cs *ChatServer) roomNameForIDLocked(roomID string) string {
+	if roomID == "" {
+		return ""
+	}
+	if roomName := cs.roomsByID[roomID]; roomName != "" {
+		return roomName
+	}
+	for roomName, candidateRoomID := range cs.roomIDs {
+		if candidateRoomID == roomID {
+			return roomName
+		}
+	}
+	return ""
+}
+
+func (cs *ChatServer) oldestExtantRoomIDLocked() string {
+	var oldestRoomID string
+	var oldestUpdatedAt int64
+
+	for _, room := range cs.rooms {
+		roomID := cs.roomIDs[room]
+		if roomID == "" {
+			continue
+		}
+		updatedAt := cs.roomDirectoryUpdatedAt[roomID]
+		if oldestRoomID == "" || (updatedAt > 0 && (oldestUpdatedAt == 0 || updatedAt < oldestUpdatedAt)) {
+			oldestRoomID = roomID
+			oldestUpdatedAt = updatedAt
+		}
+	}
+
+	if oldestRoomID != "" {
+		return oldestRoomID
+	}
+
+	for roomID, updatedAt := range cs.roomDirectoryUpdatedAt {
+		if roomID == "" {
+			continue
+		}
+		if oldestRoomID == "" || (updatedAt > 0 && (oldestUpdatedAt == 0 || updatedAt < oldestUpdatedAt)) {
+			oldestRoomID = roomID
+			oldestUpdatedAt = updatedAt
+		}
+	}
+
+	if oldestRoomID != "" {
+		return oldestRoomID
+	}
+
+	for _, roomID := range cs.roomIDs {
+		if roomID != "" {
+			return roomID
+		}
+	}
+	return ""
+}
+
+func (cs *ChatServer) roomIsAddressableLocked(room string) bool {
+	room = strings.TrimSpace(room)
+	if room == "" {
+		return false
+	}
+	if strings.HasPrefix(room, "@dmid:") {
+		return true
+	}
+	if roomID := cs.roomIDs[room]; roomID != "" {
+		if _, err := uuid.Parse(room); err == nil {
+			return cs.roomNameCiphertexts[roomID] != ""
+		}
+	}
+	if _, err := uuid.Parse(room); err == nil {
+		return false
+	}
+	return true
+}
+
+func (cs *ChatServer) systemMessageRoomLocked(preferredRoom string) (string, string) {
+	preferredRoom = strings.TrimSpace(preferredRoom)
+	if preferredRoom != "" {
+		if roomID := cs.roomIDs[preferredRoom]; roomID != "" && cs.roomIsAddressableLocked(preferredRoom) {
+			return preferredRoom, roomID
+		}
+	}
+
+	for _, room := range cs.rooms {
+		if roomID := cs.roomIDs[room]; roomID != "" && cs.roomIsAddressableLocked(room) {
+			return room, roomID
+		}
+	}
+
+	for room, roomID := range cs.roomIDs {
+		if room != "" && roomID != "" && cs.roomIsAddressableLocked(room) {
+			return room, roomID
+		}
+	}
+
+	if preferredRoom != "" {
+		return preferredRoom, cs.ensureRoomIDLocked(preferredRoom)
+	}
+
+	return DefaultRoom, cs.ensureRoomIDLocked(DefaultRoom)
+}
+
+func (cs *ChatServer) systemMessageRoomIDLocked(preferredRoom string) string {
+	_, roomID := cs.systemMessageRoomLocked(preferredRoom)
+	return roomID
 }
 
 func (cs *ChatServer) getIdentityMapsForSave() map[string]string {
@@ -364,6 +501,10 @@ func (cs *ChatServer) setUser(userID, sessionID string) {
 	log.Printf("[setUser] ✓ Lock acquired")
 	oldSessionID, wasLoggedIn := cs.users[userID]
 	cs.users[userID] = sessionID
+	if _, pending := cs.pendingLeaveByUser[userID]; pending {
+		delete(cs.pendingLeaveByUser, userID)
+		log.Printf("[setUser] ✓ Canceled pending leave message for %s", userID)
+	}
 	if !wasLoggedIn || oldSessionID != sessionID {
 		needsJoinMsg := !cs.hasSentJoinMsg[userID]
 		if needsJoinMsg {
@@ -448,17 +589,21 @@ func (cs *ChatServer) sendJoinMessage(userID string) {
 		return
 	}
 
-	if cs.messages[DefaultRoom] == nil {
-		cs.messages[DefaultRoom] = []Message{}
+	targetRoomID := cs.oldestExtantRoomIDLocked()
+	targetRoom := cs.roomNameForIDLocked(targetRoomID)
+	if targetRoom == "" || targetRoomID == "" {
+		targetRoom, targetRoomID = cs.systemMessageRoomLocked(DefaultRoom)
 	}
-	defaultRoomID := cs.ensureRoomIDLocked(DefaultRoom)
-	if cs.roomMembers[defaultRoomID] == nil {
-		cs.roomMembers[defaultRoomID] = make(map[string]bool)
+	if cs.messages[targetRoom] == nil {
+		cs.messages[targetRoom] = []Message{}
 	}
-	if !cs.roomMembers[defaultRoomID][userID] {
-		cs.roomMembers[defaultRoomID][userID] = true
-		if len(cs.roomMembers[defaultRoomID]) == 1 {
-			cs.roomCreators[defaultRoomID] = userID
+	if cs.roomMembers[targetRoomID] == nil {
+		cs.roomMembers[targetRoomID] = make(map[string]bool)
+	}
+	if !cs.roomMembers[targetRoomID][userID] {
+		cs.roomMembers[targetRoomID][userID] = true
+		if len(cs.roomMembers[targetRoomID]) == 1 {
+			cs.roomCreators[targetRoomID] = userID
 			log.Printf("[sendJoinMessage] Set %s as creator of %s", userID, DefaultRoom)
 		}
 	}
@@ -468,20 +613,20 @@ func (cs *ChatServer) sendJoinMessage(userID string) {
 		Timestamp: time.Now().Unix(),
 		Username:  "system",
 		UserID:    SystemUserID,
-		RoomID:    cs.ensureRoomIDLocked(DefaultRoom),
-		Content:   fmt.Sprintf("%s %s", userID, UserJoined),
+		RoomID:    targetRoomID,
+		Content:   fmt.Sprintf("%s %s", formatSystemUserRef(userID), UserJoined),
 		Edited:    false,
 	}
-	cs.messages[DefaultRoom] = append([]Message{joinMsg}, cs.messages[DefaultRoom]...)
+	cs.messages[targetRoom] = append([]Message{joinMsg}, cs.messages[targetRoom]...)
 	cs.hasSentJoinMsg[userID] = true
 	// Clear scheduled marker now that the join message has been sent.
 	delete(cs.joinScheduled, userID)
-	log.Printf("[sendJoinMessage] ✓ Sent join message for %s to %s", userID, DefaultRoom)
+	log.Printf("[sendJoinMessage] ✓ Sent join message for %s to %s", userID, targetRoom)
 
 	if cs.defaultNsp != nil {
 		messagesCopy := make(Messages)
-		messagesCopy[DefaultRoom] = make([]Message, len(cs.messages[DefaultRoom]))
-		copy(messagesCopy[DefaultRoom], cs.messages[DefaultRoom])
+		messagesCopy[targetRoom] = make([]Message, len(cs.messages[targetRoom]))
+		copy(messagesCopy[targetRoom], cs.messages[targetRoom])
 		response := map[string]interface{}{
 			"messages": messagesCopy,
 		}

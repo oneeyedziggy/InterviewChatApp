@@ -182,22 +182,70 @@ func (cs *ChatServer) withServerSignature(event string, data interface{}) interf
 	return payload
 }
 
+func sanitizeMessageForWire(message Message) Message {
+	if message.UserID != SystemUserID {
+		message.Content = ""
+	}
+	return message
+}
+
+func sanitizeMessageSliceForWire(messages []Message) []Message {
+	sanitized := make([]Message, len(messages))
+	for index, message := range messages {
+		sanitized[index] = sanitizeMessageForWire(message)
+	}
+	return sanitized
+}
+
+func sanitizeMessagesForWire(messages Messages) Messages {
+	sanitized := make(Messages, len(messages))
+	for room, roomMessages := range messages {
+		sanitized[room] = sanitizeMessageSliceForWire(roomMessages)
+	}
+	return sanitized
+}
+
+func sanitizeServerPayloadForWire(data interface{}) interface{} {
+	switch typed := data.(type) {
+	case Messages:
+		return sanitizeMessagesForWire(typed)
+	case map[string][]Message:
+		sanitized := make(map[string][]Message, len(typed))
+		for room, roomMessages := range typed {
+			sanitized[room] = sanitizeMessageSliceForWire(roomMessages)
+		}
+		return sanitized
+	case map[string]interface{}:
+		sanitized := make(map[string]interface{}, len(typed))
+		for key, value := range typed {
+			if key == "messages" {
+				sanitized[key] = sanitizeServerPayloadForWire(value)
+				continue
+			}
+			sanitized[key] = value
+		}
+		return sanitized
+	default:
+		return data
+	}
+}
+
 func (cs *ChatServer) emitNamespaceSigned(defaultNsp *socketio.Namespace, event string, data interface{}) {
 	if defaultNsp == nil {
 		return
 	}
-	defaultNsp.Emit(event, cs.withServerSignature(event, data))
+	defaultNsp.Emit(event, cs.withServerSignature(event, sanitizeServerPayloadForWire(data)))
 }
 
 func (cs *ChatServer) emitNamespaceRoomSigned(defaultNsp *socketio.Namespace, room socketio.Room, event string, data interface{}) {
 	if defaultNsp == nil {
 		return
 	}
-	defaultNsp.To(room).Emit(event, cs.withServerSignature(event, data))
+	defaultNsp.To(room).Emit(event, cs.withServerSignature(event, sanitizeServerPayloadForWire(data)))
 }
 
 func (cs *ChatServer) emitSocketSigned(socket socketio.ServerSocket, event string, data interface{}) {
-	socket.Emit(event, cs.withServerSignature(event, data))
+	socket.Emit(event, cs.withServerSignature(event, sanitizeServerPayloadForWire(data)))
 }
 func contains(slice []string, item string) bool {
 	for _, s := range slice {

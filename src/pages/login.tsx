@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { apiPath, withBasePath } from '@/utils/appPaths';
 import { Input } from '../components/Input';
 import { buildOpaqueUsernameEnvelope } from '../utils/gpg';
+import { styled } from 'styled-components';
 import { VALIDATION } from '../constants';
 import { AuthCard, PageShell } from '../components/layout/PageShell';
 import { getUsernameError } from '../utils/authValidation';
@@ -27,7 +28,49 @@ import {
 import {
   requireUserIdByUsername,
   storeIdentityDirectories,
-} from '../utils/identityMap';
+} from '@/utils/identityMap';
+
+const DeleteAccountDialog = styled.dialog`
+  width: min(92vw, 440px);
+  border: 1px solid var(--app-border);
+  border-radius: 14px;
+  padding: 0;
+  background: color-mix(in srgb, var(--app-surface) 96%, var(--app-panel));
+  color: var(--app-fg);
+  box-shadow: 0 20px 60px rgba(5, 18, 34, 0.32);
+
+  &::backdrop {
+    background: rgba(8, 16, 28, 0.48);
+    backdrop-filter: blur(2px);
+  }
+`;
+
+const DeleteAccountDialogBody = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+`;
+
+const DeleteAccountDialogTitle = styled.h2`
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+`;
+
+const DeleteAccountDialogText = styled.p`
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--app-muted);
+`;
+
+const DeleteAccountDialogActions = styled.div`
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+`;
 
 export default function LoginPage() {
   const [username, setUsername] = useState<string>('');
@@ -38,6 +81,8 @@ export default function LoginPage() {
   const [isSubmitDisabled, setIsSubmitDisabled] = useState<boolean>(true);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [serverPublicKey, setServerPublicKey] = useState<string>('');
+  const [deleteDialogUsername, setDeleteDialogUsername] = useState<string>('');
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState<boolean>(false);
 
   const showUserSelect = localUsers.length > 1;
 
@@ -151,14 +196,7 @@ export default function LoginPage() {
 
       try {
         // Check if we have stored keys for this username
-        let storedKeys = loadKeysForUser(username);
-        if (!storedKeys) {
-          // Fallback to legacy loadKeys
-          const legacyKeys = loadKeys();
-          if (legacyKeys && legacyKeys.username === username) {
-            storedKeys = legacyKeys;
-          }
-        }
+        const storedKeys = loadKeysForUser(username);
 
         let keys: StoredKeys;
         const hasLocalKeys = storedKeys && storedKeys.username === username;
@@ -194,7 +232,7 @@ export default function LoginPage() {
         // - Send challenge if user exists and public key matches (for existing users)
         // - Register new user if user doesn't exist (for new users)
         // - Reject if user exists but public key doesn't match
-        const userId = requireUserIdByUsername(username);
+        const userId = storedKeys?.userId || requireUserIdByUsername(username);
         const opaqueIdentity = await buildOpaqueUsernameEnvelope(
           username,
           keys.serverPublicKey,
@@ -255,6 +293,7 @@ export default function LoginPage() {
               ...keys,
               serverPublicKey: verifyData.serverPublicKey,
               sessionId: verifyData.sessionId,
+              userId: verifyData.userId || userId,
             });
 
             // Refresh user list to include this user in dropdown
@@ -286,6 +325,7 @@ export default function LoginPage() {
           // Store keys with session ID (this will add user to ALL_USERS list)
           storeKeys({
             ...keys,
+            userId: loginData.userId || userId,
             sessionId: loginData.sessionId,
           });
 
@@ -320,138 +360,141 @@ export default function LoginPage() {
     [isSubmitDisabled, isLoading, username, onSubmit],
   );
 
-  const handleDeleteAccount = useCallback(
-    async (usernameToDelete: string) => {
-      if (
-        !confirm(
-          `Are you sure you want to delete the account "${usernameToDelete}"? This action cannot be undone.`,
-        )
-      ) {
+  const handleDeleteAccount = useCallback((usernameToDelete: string) => {
+    setDeleteDialogUsername(usernameToDelete);
+    setIsDeleteDialogOpen(true);
+  }, []);
+
+  const closeDeleteDialog = useCallback(() => {
+    if (isLoading) {
+      return;
+    }
+    setIsDeleteDialogOpen(false);
+    setDeleteDialogUsername('');
+  }, [isLoading]);
+
+  const confirmDeleteAccount = useCallback(async () => {
+    const usernameToDelete = deleteDialogUsername;
+    if (!usernameToDelete) {
+      closeDeleteDialog();
+      return;
+    }
+
+    setIsLoading(true);
+    setLoginError('');
+
+    try {
+      // First, login to authenticate
+      console.log('[DeleteAccount] Logging in to authenticate...');
+
+      // Load keys for the user to delete
+      const storedKeys = loadKeysForUser(usernameToDelete);
+
+      if (!storedKeys || storedKeys.username !== usernameToDelete) {
+        setLoginError('Cannot find keys for this user');
+        setIsLoading(false);
         return;
       }
 
-      setIsLoading(true);
-      setLoginError('');
-
-      try {
-        // First, login to authenticate
-        console.log('[DeleteAccount] Logging in to authenticate...');
-
-        // Load keys for the user to delete
-        let storedKeys = loadKeysForUser(usernameToDelete);
-        if (!storedKeys) {
-          const legacyKeys = loadKeys();
-          if (legacyKeys && legacyKeys.username === usernameToDelete) {
-            storedKeys = legacyKeys;
-          }
-        }
-
-        if (!storedKeys || storedKeys.username !== usernameToDelete) {
-          setLoginError('Cannot find keys for this user');
-          setIsLoading(false);
-          return;
-        }
-
-        // Get server public key if needed
-        if (!storedKeys.serverPublicKey) {
-          storedKeys.serverPublicKey = await fetchServerPublicKey();
-        }
-
-        // Perform login to get session
-        const userId = requireUserIdByUsername(usernameToDelete);
-        const opaqueIdentity = await buildOpaqueUsernameEnvelope(
-          usernameToDelete,
-          storedKeys.serverPublicKey,
-        );
-        const loginResponse = await fetch(apiPath('/api/login'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userId,
-            usernameHash: opaqueIdentity.usernameHash,
-            usernameCiphertext: opaqueIdentity.usernameCiphertext,
-            publicKey: storedKeys.publicKey,
-          }),
-        });
-
-        const loginData = await loginResponse.json();
-
-        if (loginData.error) {
-          setLoginError(loginData.error);
-          setIsLoading(false);
-          return;
-        }
-
-        let sessionId: string;
-
-        // Handle challenge-response if needed
-        if (loginData.challenge) {
-          const decryptedUUID = await decryptMessage(
-            loginData.challenge,
-            storedKeys.privateKey,
-          );
-          const verifyData = await verifyChallengeResponseWithKeyRefresh({
-            userId,
-            decryptedUUID,
-            serverPublicKey: storedKeys.serverPublicKey,
-          });
-          if (verifyData.error || !verifyData.sessionId) {
-            setLoginError(verifyData.error || 'Authentication failed');
-            setIsLoading(false);
-            return;
-          }
-          storedKeys.serverPublicKey = verifyData.serverPublicKey;
-          sessionId = verifyData.sessionId;
-        } else if (loginData.sessionId) {
-          sessionId = loginData.sessionId;
-        } else {
-          setLoginError('Failed to get session');
-          setIsLoading(false);
-          return;
-        }
-
-        // Now delete the user account
-        console.log('[DeleteAccount] Deleting user account...');
-        const deleteResponse = await fetch(apiPath('/api/delete-user'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userId,
-            sessionId: sessionId,
-          }),
-        });
-
-        const deleteData = await deleteResponse.json();
-
-        if (deleteData.error || !deleteData.success) {
-          setLoginError(deleteData.error || 'Failed to delete account');
-          setIsLoading(false);
-          return;
-        }
-
-        // Delete local keys
-        console.log('[DeleteAccount] Deleting local keys...');
-        deleteUserKeys(usernameToDelete);
-
-        // Clear any current session
-        clearKeys();
-
-        // Refresh user list
-        refreshUserList();
-        setSelectedUser('');
-        setUsername('');
-
-        // Redirect to login page (refresh)
-        console.log('[DeleteAccount] ✓ Account deleted, redirecting...');
-        window.location.href = withBasePath('/login/');
-      } catch (err) {
-        console.error('[DeleteAccount] Error:', err);
-        setLoginError('Failed to delete account. Please try again.');
-        setIsLoading(false);
+      // Get server public key if needed
+      if (!storedKeys.serverPublicKey) {
+        storedKeys.serverPublicKey = await fetchServerPublicKey();
       }
-    },
-    [refreshUserList],
-  );
+
+      // Perform login to get session
+      const userId = requireUserIdByUsername(usernameToDelete);
+      const opaqueIdentity = await buildOpaqueUsernameEnvelope(
+        usernameToDelete,
+        storedKeys.serverPublicKey,
+      );
+      const loginResponse = await fetch(apiPath('/api/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          usernameHash: opaqueIdentity.usernameHash,
+          usernameCiphertext: opaqueIdentity.usernameCiphertext,
+          publicKey: storedKeys.publicKey,
+        }),
+      });
+
+      const loginData = await loginResponse.json();
+
+      if (loginData.error) {
+        setLoginError(loginData.error);
+        setIsLoading(false);
+        return;
+      }
+
+      let sessionId: string;
+
+      // Handle challenge-response if needed
+      if (loginData.challenge) {
+        const decryptedUUID = await decryptMessage(
+          loginData.challenge,
+          storedKeys.privateKey,
+        );
+        const verifyData = await verifyChallengeResponseWithKeyRefresh({
+          userId,
+          decryptedUUID,
+          serverPublicKey: storedKeys.serverPublicKey,
+        });
+        if (verifyData.error || !verifyData.sessionId) {
+          setLoginError(verifyData.error || 'Authentication failed');
+          setIsLoading(false);
+          return;
+        }
+        storedKeys.serverPublicKey = verifyData.serverPublicKey;
+        sessionId = verifyData.sessionId;
+      } else if (loginData.sessionId) {
+        sessionId = loginData.sessionId;
+      } else {
+        setLoginError('Failed to get session');
+        setIsLoading(false);
+        return;
+      }
+
+      // Now delete the user account
+      console.log('[DeleteAccount] Deleting user account...');
+      const deleteResponse = await fetch(apiPath('/api/delete-user'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          sessionId: sessionId,
+        }),
+      });
+
+      const deleteData = await deleteResponse.json();
+
+      if (deleteData.error || !deleteData.success) {
+        setLoginError(deleteData.error || 'Failed to delete account');
+        setIsLoading(false);
+        return;
+      }
+
+      // Delete local keys
+      console.log('[DeleteAccount] Deleting local keys...');
+      deleteUserKeys(usernameToDelete);
+
+      // Clear any current session
+      clearKeys();
+
+      // Refresh user list
+      refreshUserList();
+      setSelectedUser('');
+      setUsername('');
+
+      // Redirect to login page (refresh)
+      console.log('[DeleteAccount] ✓ Account deleted, redirecting...');
+      window.location.href = withBasePath('/login/');
+    } catch (err) {
+      console.error('[DeleteAccount] Error:', err);
+      setLoginError('Failed to delete account. Please try again.');
+      setIsLoading(false);
+      closeDeleteDialog();
+    }
+  }, [closeDeleteDialog, deleteDialogUsername, refreshUserList]);
 
   return (
     <PageShell className="app-auth-shell">
@@ -541,6 +584,44 @@ export default function LoginPage() {
             ? 'Logging in with existing keys for ' + username
             : 'GPG keys will be generated automatically for new users'}
         </div>
+
+        <DeleteAccountDialog
+          open={isDeleteDialogOpen}
+          aria-labelledby="delete-account-title"
+          aria-describedby="delete-account-description"
+          onCancel={(event) => {
+            event.preventDefault();
+            closeDeleteDialog();
+          }}
+        >
+          <DeleteAccountDialogBody>
+            <DeleteAccountDialogTitle id="delete-account-title">
+              Delete account?
+            </DeleteAccountDialogTitle>
+            <DeleteAccountDialogText id="delete-account-description">
+              Are you sure you want to delete the account &quot;
+              {deleteDialogUsername}&quot;? This action cannot be undone.
+            </DeleteAccountDialogText>
+            <DeleteAccountDialogActions>
+              <button
+                type="button"
+                className="app-primary-button"
+                onClick={closeDeleteDialog}
+                disabled={isLoading}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="app-primary-button app-auth-danger-button"
+                onClick={() => void confirmDeleteAccount()}
+                disabled={isLoading}
+              >
+                {isLoading ? 'Deleting...' : 'Delete Account'}
+              </button>
+            </DeleteAccountDialogActions>
+          </DeleteAccountDialogBody>
+        </DeleteAccountDialog>
       </AuthCard>
     </PageShell>
   );

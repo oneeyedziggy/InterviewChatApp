@@ -10,6 +10,7 @@ This is an alternative server implementation in Go that serves the built Next.js
 ## Installation
 
 1. Install Go dependencies:
+
 ```bash
 cd server-go
 go mod download
@@ -30,6 +31,7 @@ go build -o chat-server-go .
 ```
 
 Or explicitly include all files:
+
 ```bash
 go build -o chat-server-go main.go gpg_auth.go
 ```
@@ -48,11 +50,13 @@ cd server-go
 ```
 
 Or with a custom port:
+
 ```bash
 PORT=3000 ./start.sh
 ```
 
 The script will:
+
 - Find processes on the specified port
 - Kill only Go server processes (ignores browsers and other applications)
 - Restart the server
@@ -68,23 +72,27 @@ cd server-go && lsof -ti:${PORT:-3001} -sTCP:LISTEN | while read pid; do cmd=$(p
 ### Manual Steps
 
 1. First, build the Next.js client:
+
 ```bash
 cd ..
 npm run build
 ```
 
 2. Run the Go server:
+
 ```bash
 cd server-go
 go run .
 ```
 
 Or explicitly:
+
 ```bash
 go run main.go gpg_auth.go
 ```
 
 Or if built:
+
 ```bash
 ./chat-server-go
 ```
@@ -106,6 +114,7 @@ The `start.sh` script safely kills only Go server processes:
 **Warning**: These commands may kill browsers or other processes using the port.
 
 **Linux/macOS:**
+
 ```bash
 # Kill ALL processes on port 3001 (including browsers!)
 kill -9 $(lsof -ti:3001) 2>/dev/null
@@ -115,6 +124,7 @@ lsof -ti:3001 | xargs kill -9 2>/dev/null
 ```
 
 **Alternative:**
+
 ```bash
 fuser -k 3001/tcp
 ```
@@ -123,7 +133,7 @@ fuser -k 3001/tcp
 
 ```bash
 # Kill only Go processes and restart
-lsof -ti:${PORT:-3001} -sTCP:LISTEN | while read pid; do 
+lsof -ti:${PORT:-3001} -sTCP:LISTEN | while read pid; do
   cmd=$(ps -p $pid -o comm= 2>/dev/null)
   cmd_full=$(ps -p $pid -o args= 2>/dev/null)
   if [[ "$cmd" == "go" ]] || [[ "$cmd" == "chat-server-go" ]] || [[ "$cmd_full" == *"go run"* ]] || [[ "$cmd_full" == *"chat-server-go"* ]]; then
@@ -146,7 +156,7 @@ PORT=${PORT:-3001} go run .
 ## Architecture
 
 - **Cache**: In-memory cache with TTL support for sessions (4 hours) and permanent storage for users
-- **Socket.IO**: Uses `googollee/go-socket.io` library for Socket.IO protocol compatibility
+- **Socket.IO**: Uses `googollee/go-socket.io` library for the Socket.IO protocol
 - **GPG Authentication**: Uses `github.com/ProtonMail/gopenpgp/v2` for GPG key generation and challenge-response authentication
 - **File Persistence**: Messages, rooms, users, and user public keys are persisted to `chat-state.json`
 - **Static Serving**: Serves built Next.js files from `.next` directory
@@ -161,6 +171,7 @@ cd server-go
 ```
 
 The script will:
+
 - Show the current state file size
 - Ask for confirmation before deletion
 - Create a timestamped backup of the state file
@@ -168,15 +179,18 @@ The script will:
 - Display a summary of what was reset
 
 **What gets reset:**
+
 - ✅ All messages
 - ✅ All rooms (server will recreate default rooms on next start)
 - ✅ All users
 - ✅ All user public keys
 
 **What does NOT get reset:**
+
 - ❌ Server GPG keys (`server-private-key.asc`, `server-public-key.asc`)
 
 To also reset server GPG keys, manually delete:
+
 ```bash
 rm server-go/server-private-key.asc server-go/server-public-key.asc
 ```
@@ -209,4 +223,3 @@ PORT=3002 npm start
 ```
 
 Each server will serve the same client but maintain separate in-memory state.
-

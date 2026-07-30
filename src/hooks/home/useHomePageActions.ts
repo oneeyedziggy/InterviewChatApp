@@ -27,10 +27,12 @@ import {
 import { getUtf8ByteLength } from '../../utils/messages';
 import {
   getUserIdByUsername,
+  getUsernameByUserId,
   requireRoomIdByName,
   requireUserIdByUsername,
 } from '../../utils/identityMap';
 import { emitSignedMutation } from '../../utils/socketAuth';
+import { showInPageConfirm } from '../../utils/inPageDialog';
 
 async function roomNameHash(roomName: string): Promise<string> {
   const normalized = roomName.trim().toLowerCase();
@@ -304,8 +306,12 @@ export function useHomePageActions(state: HomePageState) {
       const activeSocket = (window as any).__socket || state.getSocket();
       if (!keys?.publicKey || !activeSocket || !state.username) return;
 
+      const targetUserId = getUsernameByUserId(targetUser)
+        ? targetUser
+        : requireUserIdByUsername(targetUser);
+
       const userPubKeys = loadUserPublicKeyEntries() || {};
-      const targetPublicKey = userPubKeys[targetUser]?.publicKey;
+      const targetPublicKey = userPubKeys[targetUserId]?.publicKey;
       if (!targetPublicKey) {
         alert(
           `Missing public key for ${targetUser}. Ask them to reconnect first.`,
@@ -334,7 +340,6 @@ export function useHomePageActions(state: HomePageState) {
         return;
       }
 
-      const targetUserId = requireUserIdByUsername(targetUser);
       const fromUserId = requireUserIdByUsername(state.username);
       void emitSignedMutation(activeSocket, {
         event: SOCKET_EVENTS.CLIENT_SEND_PUBLIC_KEY,
@@ -353,7 +358,7 @@ export function useHomePageActions(state: HomePageState) {
           publicKey: keys.publicKey,
         },
       });
-      console.log('[UserList] Sent encrypted account package to', targetUser);
+      console.log('[UserList] Sent encrypted account package to', targetUserId);
     })().catch((error) => {
       console.error(
         '[UserList] Failed to send encrypted account package:',
@@ -474,7 +479,7 @@ export function useHomePageActions(state: HomePageState) {
     focusDraftInput();
   };
 
-  const handleDeleteMessage = (
+  const handleDeleteMessage = async (
     messageTimestamp: number,
     messageId?: string,
   ) => {
@@ -486,11 +491,11 @@ export function useHomePageActions(state: HomePageState) {
       return;
     }
 
-    if (
-      !window.confirm(
-        'Delete this message? It will be replaced with a deleted placeholder and replies will remain.',
-      )
-    ) {
+    const confirmed = await showInPageConfirm(
+      'Delete this message? It will be replaced with a deleted placeholder and replies will remain.',
+      'Delete Message?',
+    );
+    if (!confirmed) {
       return;
     }
 

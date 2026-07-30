@@ -6,6 +6,7 @@ import { HomeLeftPanel } from '../components/home/HomeLeftPanel';
 import { HomeRightPanel } from '../components/home/HomeRightPanel';
 import { useHomeAuth } from '../contexts/home/useHomePageSelectors';
 import { PageShell } from '../components/layout/PageShell';
+import { InPageDialogHost } from '../components/InPageDialogHost';
 
 const HomeContent = () => {
   const { authToken } = useHomeAuth();
@@ -16,6 +17,7 @@ const HomeContent = () => {
 
   return (
     <PageShell>
+      <InPageDialogHost />
       <AppLayoutRow>
         <HomeLeftPanel />
         <HomeCenterPanel />

@@ -421,6 +421,50 @@ a {
   cursor: not-allowed;
 }
 
+.app-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(5, 18, 34, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+
+.app-dialog-card {
+  width: min(92vw, 520px);
+  max-height: min(80vh, 560px);
+  overflow: auto;
+  border: 1px solid var(--app-border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--app-surface) 96%, var(--app-panel));
+  color: var(--app-fg);
+  box-shadow: 0 20px 60px rgba(5, 18, 34, 0.32);
+}
+
+.app-dialog-content {
+  padding: 16px 18px 14px;
+}
+
+.app-dialog-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.app-dialog-message {
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
+.app-dialog-actions {
+  margin-top: 16px;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .app-composer-textarea {
   resize: none;
   line-height: 1.35;
@@ -567,5 +611,29 @@ a {
     height: auto;
     min-height: 0;
     flex: 1 1 auto;
+  }
+
+  .app-dialog-overlay {
+    padding: 10px;
+    place-items: center;
+  }
+
+  .app-dialog-card {
+    width: min(96vw, 520px);
+    max-height: min(88vh, 600px);
+    border-radius: 12px;
+  }
+
+  .app-dialog-content {
+    padding: 14px;
+  }
+
+  .app-dialog-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .app-dialog-actions .app-primary-button {
+    width: 100%;
   }
 }
