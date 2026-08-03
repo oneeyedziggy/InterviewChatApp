@@ -42,6 +42,8 @@ next-env.d.ts
 # Go
 server-go/chat-server-go
 server-go/*.exe
+server-go/coverage.out
+server-go/cover
 /dist
 /bin
 

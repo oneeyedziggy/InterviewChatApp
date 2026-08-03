@@ -67,13 +67,17 @@ func (c *Cache) cleanup() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
-		c.mu.Lock()
-		now := time.Now()
-		for key, entry := range c.items {
-			if now.After(entry.ExpiresAt) {
-				delete(c.items, key)
-			}
+		c.purgeExpiredLocked()
+	}
+}
+
+func (c *Cache) purgeExpiredLocked() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	for key, entry := range c.items {
+		if now.After(entry.ExpiresAt) {
+			delete(c.items, key)
 		}
-		c.mu.Unlock()
 	}
 }

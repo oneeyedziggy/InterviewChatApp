@@ -1,6 +1,12 @@
-# Second Challenge: Real-Time Chat Application
+# InterviewChatApp
 
-## Create a real-time chat application with the following features:
+This repo started with the below prompt as an interview take-home assignment to be completed within a week, and started as a pure node/react/nextjs app. At the time LLMs were not in wide usage or availability, therefor I used absolutely no AI for the commits before initial submission in late 2023.
+
+Since then I've picked it back up and done some fairly heavy refactors and feature addition with various LLMs to both explore various AI tooling, and as a learning project got Go, to which I (or rather AI) ported the existing server component. I also added end-to-end encryption, a better (if not gorgrous) theme/styling, build/deploy tooling, and finished up some originally intended features where I had to cut corners to get a whole chat app done in a week.
+
+## Second Challenge: Real-Time Chat Application
+
+### Create a real-time chat application with the following features:
 
 1. User authentication: Users can sign in with a username and password.
 2. Multiple chat rooms: Users can join or create chat rooms.
@@ -10,7 +16,7 @@
 6. User presence: Show a list of users currently online in a chat room.
 7. Notifications: Notify users when they receive a new message while not active in the chat room.
 
-### Implementation Notes:
+#### Implementation Notes:
 
 1. Given time constraint, no concession was provided for logOUT, and registration was joined with login so that previously unknown users are autimatically registered, but prevent impresonating existing users.
 
@@ -29,7 +35,7 @@
 6. User presence: Recent changes in Next.js 13 have broken the usual way of communicating between the custom server and app routes, so what's presented is a compromise... a list of all active users, but not well maintained on expirey and disconnect, and part of the compromise is new users are pushed to clients only when someone sends a message, so I also have all clients post a "joined the server" message as a hack to force an update to all clients' user lists
 7. Notifications: while functional, this is a bit of a client-side hack as-implemented, but in that individual rooms don't trigger distinct socket events, and the room list is a basic string list rather than the more flexible list of react nodes that would
 
-### Known Issues/Concessions to Time Constraint:
+#### Known Issues/Concessions to Time Constraint:
 
 - would add a lot more handling of edge cases and better messaging to the user of what's happening
 - would back the with an actual persistent database for users/chat and shared cache for sessions
@@ -42,20 +48,28 @@
 
 ### to start
 
-npm install && npm run dev
+npm install
+cd server-go
+./start.sh
 
 ## Operations
 
-### Build Modes (Local vs Deploy)
+### Local build / dev
 
-- Local artifact test (root path):
-  - `npm run build`
-  - Run the Go server and load from `http://localhost:3001/`
-- Deploy artifact build (`/chatApp` base path):
-  - `./buildDeployArtifact.sh`
-  - This script builds with `APP_BASE_PATH=/chatApp` and packages `out` + `bin` into `dist/deploy.tar.gz`
+- Install client dependencies: `npm install`
+- Build the deployable client + server bundle: `./buildDeployArtifact.sh`
+- Start the Go server locally from `server-go/` with `./start.sh`
+- Open the app at `http://localhost:3001/`
 
-Note: `out` reflects the most recent build mode. If you switch modes, rebuild before testing.
+### Deploy build and publish
+
+- Build the deployable client + server bundle: `./buildDeployArtifact.sh`
+  - This creates `out/` for the React client and `bin/server` for the Go server
+  - The deploy build uses `APP_BASE_PATH=/chatApp`
+- Deploy the packaged artifact to the VPS: `./deploy.sh`
+  - This uploads `dist/deploy.tar.gz` and starts the remote Go server
+
+Note: `out` reflects the most recent build mode. Rebuild with the mode you plan to test or deploy.
 
 ### Server Key Rotation
 
