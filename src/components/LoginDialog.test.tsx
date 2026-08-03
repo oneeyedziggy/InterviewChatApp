@@ -4,6 +4,41 @@ import userEvent from '@testing-library/user-event';
 import { apiPath } from '@/utils/appPaths';
 import { LoginDialog } from './LoginDialog';
 
+vi.mock('../utils/gpg', () => ({
+  buildOpaqueUsernameEnvelope: vi.fn(async () => ({
+    usernameHash: 'hash',
+    usernameCiphertext: 'ciphertext',
+  })),
+  decryptMessage: vi.fn(async () => 'decrypted-challenge'),
+  deleteUserKeys: vi.fn(),
+  fetchServerPublicKey: vi.fn(async () => 'server-pub'),
+  forceReauthToLogin: vi.fn(),
+  generateKeyPair: vi.fn(async () => ({
+    privateKey: 'priv',
+    publicKey: 'pub',
+  })),
+  getAllLocalUsers: vi.fn(() => []),
+  getAllUsersWithPublicKeys: vi.fn(() => []),
+  hasValidStoredKeys: vi.fn(async () => true),
+  isLocalUser: vi.fn(() => false),
+  loadKeys: vi.fn(() => null),
+  loadKeysForUser: vi.fn(() => null),
+  loadUserPublicKeys: vi.fn(() => null),
+  storeKeys: vi.fn(),
+  storeIdentityDirectories: vi.fn(),
+  verifyChallengeResponseWithKeyRefresh: vi.fn(async () => ({
+    sessionId: 'verified-session',
+    serverPublicKey: 'server-pub',
+    userId: 'user-1',
+  })),
+  clearKeys: vi.fn(),
+  clearSession: vi.fn(),
+}));
+
+vi.mock('@/utils/identityMap', () => ({
+  requireUserIdByUsername: vi.fn(() => 'user-1'),
+}));
+
 // Mock fetch globally
 global.fetch = vi.fn();
 
@@ -30,7 +65,6 @@ describe('LoginDialog component', () => {
     );
 
     expect(screen.getByLabelText(/username/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /login/i })).toBeInTheDocument();
   });
 
@@ -71,26 +105,6 @@ describe('LoginDialog component', () => {
     });
   });
 
-  it('displays password error when password is too short', async () => {
-    render(
-      <LoginDialog
-        username="validusername"
-        setUsername={mockSetUsername}
-        open={true}
-        onSuccess={mockOnSuccess}
-      />,
-    );
-
-    const passwordInput = screen.getByLabelText(/password/i);
-    await userEvent.type(passwordInput, 'short');
-
-    await waitFor(() => {
-      expect(
-        screen.getByText(/password must be at least/i),
-      ).toBeInTheDocument();
-    });
-  });
-
   it('disables submit button when validation fails', async () => {
     render(
       <LoginDialog
@@ -106,6 +120,7 @@ describe('LoginDialog component', () => {
   });
 
   it('enables submit button when validation passes', async () => {
+    const user = userEvent.setup();
     render(
       <LoginDialog
         username="validusername"
@@ -115,8 +130,8 @@ describe('LoginDialog component', () => {
       />,
     );
 
-    const passwordInput = screen.getByLabelText(/password/i);
-    await userEvent.type(passwordInput, 'validpassword123');
+    const usernameInput = screen.getByLabelText(/username/i);
+    await user.type(usernameInput, 'a');
 
     await waitFor(() => {
       const submitButton = screen.getByRole('button', { name: /login/i });
@@ -125,6 +140,7 @@ describe('LoginDialog component', () => {
   });
 
   it('calls onSuccess with sessionId on successful login', async () => {
+    const user = userEvent.setup();
     const mockResponse = { sessionId: 'test-session-id' };
     (global.fetch as any).mockResolvedValueOnce({
       ok: true,
@@ -140,22 +156,26 @@ describe('LoginDialog component', () => {
       />,
     );
 
-    const passwordInput = screen.getByLabelText(/password/i);
-    await userEvent.type(passwordInput, 'validpassword123');
+    const usernameInput = screen.getByLabelText(/username/i);
+    await user.type(usernameInput, 'validusername');
     const submitButton = screen.getByRole('button', { name: /login/i });
 
     await waitFor(() => {
       expect(submitButton).not.toBeDisabled();
     });
 
-    await userEvent.click(submitButton);
+    await user.click(submitButton);
 
     await waitFor(() => {
-      expect(mockOnSuccess).toHaveBeenCalledWith('test-session-id');
+      expect(mockOnSuccess).toHaveBeenCalledWith(
+        'test-session-id',
+        'validusername',
+      );
     });
   });
 
   it('displays error message on failed login', async () => {
+    const user = userEvent.setup();
     const mockResponse = { error: 'Invalid credentials' };
     (global.fetch as any).mockResolvedValueOnce({
       ok: true,
@@ -171,15 +191,15 @@ describe('LoginDialog component', () => {
       />,
     );
 
-    const passwordInput = screen.getByLabelText(/password/i);
-    await userEvent.type(passwordInput, 'validpassword123');
+    const usernameInput = screen.getByLabelText(/username/i);
+    await user.type(usernameInput, 'validusername');
     const submitButton = screen.getByRole('button', { name: /login/i });
 
     await waitFor(() => {
       expect(submitButton).not.toBeDisabled();
     });
 
-    await userEvent.click(submitButton);
+    await user.click(submitButton);
 
     await waitFor(() => {
       expect(screen.getByText('Invalid credentials')).toBeInTheDocument();
@@ -189,6 +209,7 @@ describe('LoginDialog component', () => {
   });
 
   it('displays fallback error on network failure', async () => {
+    const user = userEvent.setup();
     (global.fetch as any).mockRejectedValueOnce(new Error('Network error'));
 
     render(
@@ -200,15 +221,15 @@ describe('LoginDialog component', () => {
       />,
     );
 
-    const passwordInput = screen.getByLabelText(/password/i);
-    await userEvent.type(passwordInput, 'validpassword123');
+    const usernameInput = screen.getByLabelText(/username/i);
+    await user.type(usernameInput, 'validusername');
     const submitButton = screen.getByRole('button', { name: /login/i });
 
     await waitFor(() => {
       expect(submitButton).not.toBeDisabled();
     });
 
-    await userEvent.click(submitButton);
+    await user.click(submitButton);
 
     await waitFor(() => {
       expect(screen.getByText(/something went wrong/i)).toBeInTheDocument();
@@ -216,6 +237,7 @@ describe('LoginDialog component', () => {
   });
 
   it('displays fallback error when response has no error or sessionId', async () => {
+    const user = userEvent.setup();
     const mockResponse = {};
     (global.fetch as any).mockResolvedValueOnce({
       ok: true,
@@ -231,15 +253,15 @@ describe('LoginDialog component', () => {
       />,
     );
 
-    const passwordInput = screen.getByLabelText(/password/i);
-    await userEvent.type(passwordInput, 'validpassword123');
+    const usernameInput = screen.getByLabelText(/username/i);
+    await user.type(usernameInput, 'validusername');
     const submitButton = screen.getByRole('button', { name: /login/i });
 
     await waitFor(() => {
       expect(submitButton).not.toBeDisabled();
     });
 
-    await userEvent.click(submitButton);
+    await user.click(submitButton);
 
     await waitFor(() => {
       expect(screen.getByText(/something went wrong/i)).toBeInTheDocument();
@@ -247,6 +269,7 @@ describe('LoginDialog component', () => {
   });
 
   it('calls setUsername when username input changes', async () => {
+    const user = userEvent.setup();
     render(
       <LoginDialog
         username=""
@@ -257,12 +280,13 @@ describe('LoginDialog component', () => {
     );
 
     const usernameInput = screen.getByLabelText(/username/i);
-    await userEvent.type(usernameInput, 'newuser');
+    await user.type(usernameInput, 'newuser');
 
     expect(mockSetUsername).toHaveBeenCalled();
   });
 
   it('sends correct request body to login endpoint', async () => {
+    const user = userEvent.setup();
     const mockResponse = { sessionId: 'test-session' };
     (global.fetch as any).mockResolvedValueOnce({
       ok: true,
@@ -278,21 +302,26 @@ describe('LoginDialog component', () => {
       />,
     );
 
-    const passwordInput = screen.getByLabelText(/password/i);
-    await userEvent.type(passwordInput, 'testpass123');
+    const usernameInput = screen.getByLabelText(/username/i);
+    await user.type(usernameInput, 'testuser');
     const submitButton = screen.getByRole('button', { name: /login/i });
 
     await waitFor(() => {
       expect(submitButton).not.toBeDisabled();
     });
 
-    await userEvent.click(submitButton);
+    await user.click(submitButton);
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(apiPath('/api/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: 'testuser', password: 'testpass123' }),
+        body: JSON.stringify({
+          userId: 'user-1',
+          usernameHash: 'hash',
+          usernameCiphertext: 'ciphertext',
+          publicKey: 'pub',
+        }),
       });
     });
   });
