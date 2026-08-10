@@ -1,10 +1,13 @@
-import React, { type HTMLInputTypeAttribute } from 'react';
+import React, { type HTMLInputTypeAttribute, type ReactNode } from 'react';
 
 type InputProps = {
   id: string;
   name?: string;
   label: string;
   type?: HTMLInputTypeAttribute;
+  autoComplete?: string;
+  rightSlot?: ReactNode;
+  inlineRightSlot?: ReactNode;
   minLength?: number;
   error?: string;
   value?: string;
@@ -19,6 +22,9 @@ export const Input = ({
   name,
   label,
   type = 'text',
+  autoComplete,
+  rightSlot,
+  inlineRightSlot,
   minLength = -1,
   error = '',
   value = '',
@@ -37,18 +43,27 @@ export const Input = ({
         {label}
       </label>
       <div className="app-auth-input-field-wrap">
-        <input
-          className="app-text-input"
-          id={id}
-          name={name ?? id}
-          type={type}
-          value={value}
-          minLength={minLength}
-          required={required}
-          onChange={changeHandeler}
-          onKeyDown={onKeyDown}
-          autoFocus={autoFocus}
-        />
+        <div className="app-auth-input-inline">
+          <div className="app-auth-input-control">
+            <input
+              className={`app-text-input${rightSlot ? ' app-text-input--with-right-slot' : ''}`}
+              id={id}
+              name={name ?? id}
+              type={type}
+              autoComplete={autoComplete}
+              value={value}
+              minLength={minLength}
+              required={required}
+              onChange={changeHandeler}
+              onKeyDown={onKeyDown}
+              autoFocus={autoFocus}
+            />
+            {rightSlot && (
+              <div className="app-auth-input-overlay-right">{rightSlot}</div>
+            )}
+          </div>
+          {inlineRightSlot}
+        </div>
         {error && <span className="app-auth-input-error">{error}</span>}
       </div>
     </div>

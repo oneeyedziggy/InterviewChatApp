@@ -270,6 +270,19 @@ func newHTTPHandler(chatServer *ChatServer, sio *socketio.Server) http.Handler {
 			path = "/"
 		}
 
+		// Serve direct static asset files (e.g. /private-key-broker-sw.js) before
+		// attempting HTML export route resolution.
+		if ext := filepath.Ext(path); ext != "" {
+			assetPath := filepath.Clean(filepath.Join(outDir, path))
+			if info, err := os.Stat(assetPath); err == nil && !info.IsDir() {
+				if contentType := mime.TypeByExtension(ext); contentType != "" {
+					w.Header().Set("Content-Type", contentType)
+				}
+				http.ServeFile(w, r, assetPath)
+				return
+			}
+		}
+
 		candidates := make([]string, 0, 3)
 		switch {
 		case path == "/":

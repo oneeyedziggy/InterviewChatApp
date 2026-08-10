@@ -128,6 +128,30 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	userPubKey, userExists := cs.userPubKeys[req.UserID]
 	cs.mu.RUnlock()
 
+	// Recover from stale/corrupted persisted identity records. If a stored
+	// public key is missing or unparsable, treat this user as unregistered so
+	// the normal first-time registration flow can repair server state.
+	if userExists {
+		trimmedStoredKey := strings.TrimSpace(userPubKey)
+		if trimmedStoredKey == "" {
+			log.Printf("[handleLogin] ⚠ Empty stored public key for userId=%s, resetting stale identity", req.UserID)
+			cs.mu.Lock()
+			delete(cs.userPubKeys, req.UserID)
+			delete(cs.userPubKeysUpdatedAt, req.UserID)
+			cs.mu.Unlock()
+			userExists = false
+			userPubKey = ""
+		} else if _, err := crypto.NewKeyFromArmored(trimmedStoredKey); err != nil {
+			log.Printf("[handleLogin] ⚠ Corrupted stored public key for userId=%s: %v; resetting stale identity", req.UserID, err)
+			cs.mu.Lock()
+			delete(cs.userPubKeys, req.UserID)
+			delete(cs.userPubKeysUpdatedAt, req.UserID)
+			cs.mu.Unlock()
+			userExists = false
+			userPubKey = ""
+		}
+	}
+
 	// If user exists and they're sending a public key, check if it matches
 	if req.PublicKey != "" && userExists {
 		// Check if the public key matches the stored one

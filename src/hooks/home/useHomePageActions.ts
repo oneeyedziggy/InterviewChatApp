@@ -14,7 +14,8 @@ import {
   encryptSharedAccountPackageForRecipient,
   filterPubKeysForEncryption,
   importSharedAccountPackage,
-  loadKeys,
+  loadKeysAsync,
+  loadStoredKeyMetadataForUser,
   loadUserPublicKeyEntries,
   redirectToLogout,
 } from '../../utils/gpg';
@@ -139,7 +140,7 @@ export function useHomePageActions(state: HomePageState) {
   const makeNewRoom = async () => {
     const socket = state.getSocket();
     const roomName = state.newRoomName.trim();
-    const keys = loadKeys();
+    const keys = await loadKeysAsync();
     if (!socket || roomName === '' || !state.username || !keys?.sessionId)
       return;
 
@@ -266,7 +267,7 @@ export function useHomePageActions(state: HomePageState) {
     fromUser: string,
     encryptedPackage: string,
   ): Promise<{ success: boolean; message: string }> => {
-    const keys = loadKeys();
+    const keys = await loadKeysAsync();
     if (!keys?.privateKey) {
       return {
         success: false,
@@ -302,9 +303,15 @@ export function useHomePageActions(state: HomePageState) {
 
   const handleSendPublicKeyToUser = (targetUser: string) => {
     void (async () => {
-      const keys = loadKeys();
+      const keys = await loadKeysAsync();
       const activeSocket = (window as any).__socket || state.getSocket();
       if (!keys?.publicKey || !activeSocket || !state.username) return;
+
+      const storedMetadata = loadStoredKeyMetadataForUser(state.username);
+      if (!storedMetadata?.privateKeyEncrypted) {
+        alert('Missing encrypted private key for this account.');
+        return;
+      }
 
       const targetUserId = getUsernameByUserId(targetUser)
         ? targetUser
@@ -322,7 +329,7 @@ export function useHomePageActions(state: HomePageState) {
       const blockedUsers = getBlockedUserExportsForCurrentUser();
       const accountPackage = {
         username: state.username,
-        privateKey: keys.privateKey,
+        privateKey: storedMetadata.privateKeyEncrypted,
         publicKey: keys.publicKey,
         serverPublicKey: keys.serverPublicKey,
         userPubKeys,
@@ -379,30 +386,32 @@ export function useHomePageActions(state: HomePageState) {
     state.setBlockedUsersState(getBlockedUsers());
     console.log('[UserList] Unblocked user', targetUser);
 
-    const activeSocket = (window as any).__socket || state.getSocket();
-    const keys = loadKeys();
-    if (!activeSocket || !state.username || !keys?.sessionId) {
-      return;
-    }
+    void (async () => {
+      const activeSocket = (window as any).__socket || state.getSocket();
+      const keys = await loadKeysAsync();
+      if (!activeSocket || !state.username || !keys?.sessionId) {
+        return;
+      }
 
-    const userId = requireUserIdByUsername(state.username);
-    const targetUserId = requireUserIdByUsername(targetUser);
-    void emitSignedMutation(activeSocket, {
-      event: SOCKET_EVENTS.CLIENT_UNBLOCK_USER_DELTA,
-      payload: {
+      const userId = requireUserIdByUsername(state.username);
+      const targetUserId = requireUserIdByUsername(targetUser);
+      void emitSignedMutation(activeSocket, {
+        event: SOCKET_EVENTS.CLIENT_UNBLOCK_USER_DELTA,
+        payload: {
+          userId,
+          sessionId: keys.sessionId,
+          targetUserId,
+          blockedSince: blockedAt ?? 0,
+        },
         userId,
         sessionId: keys.sessionId,
-        targetUserId,
-        blockedSince: blockedAt ?? 0,
-      },
-      userId,
-      sessionId: keys.sessionId,
-      claims: {
-        userId,
-        targetUserId,
-        blockedSince: blockedAt ?? 0,
-      },
-    });
+        claims: {
+          userId,
+          targetUserId,
+          blockedSince: blockedAt ?? 0,
+        },
+      });
+    })();
   };
 
   const handleRequestAccess = (
@@ -484,7 +493,7 @@ export function useHomePageActions(state: HomePageState) {
     messageId?: string,
   ) => {
     const socket = state.getSocket();
-    const keys = loadKeys();
+    const keys = await loadKeysAsync();
 
     if (!socket || !state.username || !keys?.sessionId || !state.currentRoom) {
       alert('Unable to delete message: missing active session.');
@@ -535,9 +544,12 @@ export function useHomePageActions(state: HomePageState) {
     messageTimestamp: number,
     voteType: 'up' | 'down',
   ) => {
-    const socket = state.getSocket();
-    const keys = loadKeys();
-    if (socket && state.username && keys?.sessionId) {
+    void (async () => {
+      const socket = state.getSocket();
+      const keys = await loadKeysAsync();
+      if (!(socket && state.username && keys?.sessionId)) {
+        return;
+      }
       console.log(
         '[onVote] Voting',
         voteType,
@@ -566,7 +578,7 @@ export function useHomePageActions(state: HomePageState) {
           voteType,
         },
       });
-    }
+    })();
   };
 
   const handleCancelReplyOrEdit = () => {
@@ -582,9 +594,12 @@ export function useHomePageActions(state: HomePageState) {
     room: string,
     vote: boolean,
   ) => {
-    const socket = state.getSocket();
-    const keys = loadKeys();
-    if (socket && state.username && keys?.sessionId) {
+    void (async () => {
+      const socket = state.getSocket();
+      const keys = await loadKeysAsync();
+      if (!(socket && state.username && keys?.sessionId)) {
+        return;
+      }
       const voterUserId = requireUserIdByUsername(state.username);
       void emitSignedMutation(socket, {
         event: SOCKET_EVENTS.CLIENT_VOTE_JOIN,
@@ -605,7 +620,7 @@ export function useHomePageActions(state: HomePageState) {
           vote,
         },
       });
-    }
+    })();
   };
 
   const handleLogout = async () => {

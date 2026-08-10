@@ -7,7 +7,7 @@ import {
   storeUserPublicKeys,
   loadUserPublicKeyEntries,
   decryptMessageForUser,
-  loadKeys,
+  loadKeysAsync,
   encryptForAllUsers,
   verifyDetachedTextSignature,
 } from '../utils/gpg';
@@ -34,7 +34,15 @@ function createClientMessageId(prefix = 'client'): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return `${prefix}:${crypto.randomUUID()}`;
   }
-  return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    const suffix = Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    return `${prefix}:${Date.now()}:${suffix}`;
+  }
+  throw new Error('Secure randomness unavailable for client message IDs');
 }
 
 function ensureMessageId(message: Message): Message {
@@ -153,7 +161,7 @@ async function applyEncryptedRoomDirectory(payload: unknown): Promise<number> {
     return 0;
   }
 
-  const keys = loadKeys();
+  const keys = await loadKeysAsync();
   if (!keys?.privateKey) {
     return 0;
   }
@@ -178,7 +186,11 @@ async function applyEncryptedRoomDirectory(payload: unknown): Promise<number> {
       continue;
     }
     try {
-      const roomName = await decryptMessageForUser(ciphertext, keys.privateKey);
+      const roomName = await decryptMessageForUser(
+        ciphertext,
+        keys.privateKey,
+        { suppressErrorLog: true },
+      );
       if (roomName && roomName.trim() !== '') {
         decryptedRoomDirectory[roomId] = roomName;
         const rawUpdatedAt = updatedAtByRoomId[roomId];
@@ -193,8 +205,8 @@ async function applyEncryptedRoomDirectory(payload: unknown): Promise<number> {
             Math.trunc(numericUpdatedAt);
         }
       }
-    } catch (error) {
-      console.warn('[Socket] Failed to decrypt room name for', roomId, error);
+    } catch {
+      // Non-decryptable entries are expected when payload includes rooms this user cannot access.
     }
   }
 
@@ -219,7 +231,7 @@ async function applyEncryptedUserDirectory(payload: unknown): Promise<number> {
     return 0;
   }
 
-  const keys = loadKeys();
+  const keys = await loadKeysAsync();
   if (!keys?.privateKey) {
     return 0;
   }
@@ -244,7 +256,11 @@ async function applyEncryptedUserDirectory(payload: unknown): Promise<number> {
       continue;
     }
     try {
-      const username = await decryptMessageForUser(ciphertext, keys.privateKey);
+      const username = await decryptMessageForUser(
+        ciphertext,
+        keys.privateKey,
+        { suppressErrorLog: true },
+      );
       if (username && username.trim() !== '') {
         decryptedUserDirectory[userId] = username;
         const rawUpdatedAt = updatedAtByUserId[userId];
@@ -259,8 +275,8 @@ async function applyEncryptedUserDirectory(payload: unknown): Promise<number> {
             Math.trunc(numericUpdatedAt);
         }
       }
-    } catch (error) {
-      console.warn('[Socket] Failed to decrypt username for', userId, error);
+    } catch {
+      // Non-decryptable entries are expected when payload includes users this client cannot decrypt for.
     }
   }
 
@@ -345,7 +361,7 @@ async function buildIdentityDirectoryRefreshPayload(
     return null;
   }
 
-  const keys = loadKeys();
+  const keys = await loadKeysAsync();
   if (!keys?.publicKey) {
     return null;
   }
@@ -512,7 +528,7 @@ async function ensureDefaultRoomExists(args: {
     return;
   }
 
-  const keys = loadKeys();
+  const keys = await loadKeysAsync();
   if (!keys?.publicKey) {
     return;
   }
@@ -600,7 +616,7 @@ async function validateAndApplyIdentityRefresh(payload: unknown): Promise<{
     return { roomApplied: 0, userApplied: 0 };
   }
 
-  const keys = loadKeys();
+  const keys = await loadKeysAsync();
   if (!keys?.privateKey) {
     return { roomApplied: 0, userApplied: 0 };
   }
@@ -641,7 +657,11 @@ async function validateAndApplyIdentityRefresh(payload: unknown): Promise<{
       continue;
     }
     try {
-      const roomName = await decryptMessageForUser(ciphertext, keys.privateKey);
+      const roomName = await decryptMessageForUser(
+        ciphertext,
+        keys.privateKey,
+        { suppressErrorLog: true },
+      );
       if (roomName && roomName.trim() !== '') {
         decryptedRoomDirectory[roomId] = roomName;
         const rawUpdatedAt = roomDirectoryUpdatedAtRaw[roomId];
@@ -666,7 +686,11 @@ async function validateAndApplyIdentityRefresh(payload: unknown): Promise<{
       continue;
     }
     try {
-      const username = await decryptMessageForUser(ciphertext, keys.privateKey);
+      const username = await decryptMessageForUser(
+        ciphertext,
+        keys.privateKey,
+        { suppressErrorLog: true },
+      );
       if (username && username.trim() !== '') {
         decryptedUserDirectory[userId] = username;
         const rawUpdatedAt = userDirectoryUpdatedAtRaw[userId];
@@ -1020,7 +1044,7 @@ async function verifyServerEventEnvelope(
     return !strict;
   }
 
-  const keys = loadKeys();
+  const keys = await loadKeysAsync();
   if (!keys?.serverPublicKey) {
     console.warn(
       '[Socket] Missing server public key for signature verification',
@@ -1427,7 +1451,7 @@ export async function initializeHomeSocket({
     }
 
     if (data?.messages) {
-      const keys = loadKeys();
+      const keys = await loadKeysAsync();
       const currentUserId = username ? requireUserIdByUsername(username) : '';
       const decryptedMessages: Messages = {};
       const blockedUsers = new Set(getBlockedUsers());
@@ -1611,7 +1635,7 @@ export async function initializeHomeSocket({
 
       // If server sent updated messages, use those (they include the new version)
       if (data?.messages && data.messages[originalRoom]) {
-        const keys = loadKeys();
+        const keys = await loadKeysAsync();
         if (!keys) {
           console.error('[AccessGrant] No keys available for decryption');
           return;
@@ -1924,7 +1948,7 @@ export async function initializeHomeSocket({
 
         // Decrypt the newly granted message if we have access
         if (username && encryptedPacket) {
-          const keys = loadKeys();
+          const keys = await loadKeysAsync();
           if (keys) {
             try {
               console.log(
@@ -1984,7 +2008,7 @@ export async function initializeHomeSocket({
 
     // Decrypt messages if needed
     if (data?.messages) {
-      const keys = loadKeys();
+      const keys = await loadKeysAsync();
       const decryptedMessages: Messages = {};
       const candidateRooms = normalizeRoomListEntries([
         ...getRoomList(),
@@ -2722,7 +2746,7 @@ export async function initializeHomeSocket({
     console.log('[Socket] SERVER_VOTE_UPDATE received');
     if (data?.messages) {
       // Update messages with new vote data
-      const keys = loadKeys();
+      const keys = await loadKeysAsync();
       const currentUserId = username ? requireUserIdByUsername(username) : '';
       const decryptedMessages: Messages = {};
       const candidateRooms = normalizeRoomListEntries([
@@ -2794,8 +2818,8 @@ export async function initializeHomeSocket({
     }
   });
 
-  socket.on(SOCKET_EVENTS.DISCONNECTING, (msg) => {
-    const keys = loadKeys();
+  socket.on(SOCKET_EVENTS.DISCONNECTING, async (msg) => {
+    const keys = await loadKeysAsync();
     if (keys?.sessionId) {
       const userId = requireUserIdByUsername(username);
       const roomId = requireRoomIdByName(DEFAULT_ROOM);
@@ -2881,7 +2905,7 @@ export async function initializeHomeSocket({
           }));
         }
 
-        const keys = loadKeys();
+        const keys = await loadKeysAsync();
         if (keys?.sessionId) {
           let roomId: string | undefined;
           try {
@@ -2946,7 +2970,7 @@ export async function initializeHomeSocket({
     console.log('[Socket] ===== CONNECTED =====');
     console.log('[Socket] Socket ID:', activeSocket.id);
     console.log('[Socket] Socket connected:', activeSocket.connected);
-    const keys = loadKeys();
+    const keys = await loadKeysAsync();
     if (keys?.publicKey && username) {
       const fromUserId = requireUserIdByUsername(username);
       void emitSignedMutation(activeSocket, {

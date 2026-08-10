@@ -1,7 +1,8 @@
 export const DEFAULT_ROOM = 'general';
 export const VALIDATION = {
   MIN_USERNAME_LENGTH: 8,
-  MIN_PASSWORD_LENGTH: 8,
+  MIN_PASSWORD_LENGTH: 10,
+  MAX_PASSWORD_LENGTH_EXCLUSIVE: 256,
 } as const;
 
 export const SOCKET_EVENTS = {

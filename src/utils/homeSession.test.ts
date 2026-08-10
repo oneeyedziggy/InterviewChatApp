@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const gpgMock = vi.hoisted(() => ({
   attemptAutoRelogin: vi.fn(),
   hasValidStoredKeys: vi.fn(),
-  loadKeys: vi.fn(),
+  loadKeysAsync: vi.fn(),
 }));
 
 const identityMapMock = vi.hoisted(() => ({
@@ -18,6 +18,8 @@ import { restoreSession } from './homeSession';
 
 describe('homeSession', () => {
   beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.clearAllMocks();
   });
 
@@ -26,7 +28,7 @@ describe('homeSession', () => {
   });
 
   it('forces reauth when stored keys are invalid', async () => {
-    gpgMock.loadKeys.mockReturnValue({ sessionId: 'session-a' });
+    gpgMock.loadKeysAsync.mockResolvedValue({ sessionId: 'session-a' });
     gpgMock.hasValidStoredKeys.mockResolvedValue(false);
     const onForceReauth = vi.fn();
 
@@ -40,7 +42,7 @@ describe('homeSession', () => {
   });
 
   it('restores the session after a successful verification', async () => {
-    gpgMock.loadKeys.mockReturnValue({
+    gpgMock.loadKeysAsync.mockResolvedValue({
       sessionId: 'session-a',
       username: 'alice',
     });
@@ -71,7 +73,7 @@ describe('homeSession', () => {
   });
 
   it('falls back to auto relogin when server verification fails', async () => {
-    gpgMock.loadKeys.mockReturnValue({
+    gpgMock.loadKeysAsync.mockResolvedValue({
       sessionId: 'session-a',
       username: 'alice',
     });
@@ -95,7 +97,7 @@ describe('homeSession', () => {
   });
 
   it('forces reauth when the server response is not ok and auto relogin does not recover', async () => {
-    gpgMock.loadKeys.mockReturnValue({
+    gpgMock.loadKeysAsync.mockResolvedValue({
       sessionId: 'session-a',
       username: 'alice',
     });
@@ -114,7 +116,7 @@ describe('homeSession', () => {
   });
 
   it('forces reauth when invalid payloads cannot be recovered', async () => {
-    gpgMock.loadKeys.mockReturnValue({
+    gpgMock.loadKeysAsync.mockResolvedValue({
       sessionId: 'session-a',
       username: 'alice',
     });
@@ -136,7 +138,7 @@ describe('homeSession', () => {
   });
 
   it('falls back to auto relogin from the catch path when verification throws', async () => {
-    gpgMock.loadKeys.mockReturnValue({
+    gpgMock.loadKeysAsync.mockResolvedValue({
       sessionId: 'session-a',
       username: 'alice',
     });
@@ -156,7 +158,7 @@ describe('homeSession', () => {
   });
 
   it('skips initialization when the restore operation is cancelled', async () => {
-    gpgMock.loadKeys.mockReturnValue({
+    gpgMock.loadKeysAsync.mockResolvedValue({
       sessionId: 'session-a',
       username: 'alice',
     });
@@ -180,7 +182,7 @@ describe('homeSession', () => {
   });
 
   it('handles invalid server payloads without crashing', async () => {
-    gpgMock.loadKeys.mockReturnValue({
+    gpgMock.loadKeysAsync.mockResolvedValue({
       sessionId: 'session-a',
       username: 'alice',
     });
@@ -203,7 +205,7 @@ describe('homeSession', () => {
   });
 
   it('uses the stored session id when the response has no user id', async () => {
-    gpgMock.loadKeys.mockReturnValue({
+    gpgMock.loadKeysAsync.mockResolvedValue({
       sessionId: 'session-a',
       username: 'alice',
     });

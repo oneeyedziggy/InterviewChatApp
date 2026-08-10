@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 import { useEffect, useState, useCallback } from 'react';
 import { apiPath, withBasePath } from '@/utils/appPaths';
 import { Input } from '../components/Input';
@@ -6,29 +6,34 @@ import { buildOpaqueUsernameEnvelope } from '../utils/gpg';
 import { styled } from 'styled-components';
 import { VALIDATION } from '../constants';
 import { AuthCard, PageShell } from '../components/layout/PageShell';
-import { getUsernameError } from '../utils/authValidation';
+import {
+  getPasswordError,
+  getPasswordRequirementStatus,
+  getUsernameError,
+} from '../utils/authValidation';
 import {
   generateKeyPair,
   storeKeys,
-  loadKeys,
-  loadKeysForUser,
+  loadKeysAsync,
+  loadKeysForUserAsync,
+  loadStoredKeyMetadataForUser,
   hasValidStoredKeys,
   forceReauthToLogin,
   getAllLocalUsers,
-  getAllUsersWithPublicKeys,
-  isLocalUser,
   clearKeys,
   deleteUserKeys,
-  loadUserPublicKeys,
   fetchServerPublicKey,
   decryptMessage,
   verifyChallengeResponseWithKeyRefresh,
+  unlockStoredPrivateKeyForUser,
+  updateStoredSessionForUser,
   type StoredKeys,
 } from '../utils/gpg';
 import {
   requireUserIdByUsername,
   storeIdentityDirectories,
 } from '@/utils/identityMap';
+import PasswordVisibilityToggle from '@/components/PasswordVisibilityToggle';
 
 const DeleteAccountDialog = styled.dialog`
   width: min(92vw, 440px);
@@ -77,6 +82,12 @@ export default function LoginPage() {
   const [selectedUser, setSelectedUser] = useState<string>('');
   const [localUsers, setLocalUsers] = useState<string[]>([]);
   const [usernameError, setUsernameError] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
+  const [confirmPassword, setConfirmPassword] = useState<string>('');
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState<boolean>(false);
+  const [passwordError, setPasswordError] = useState<string>('');
+  const [confirmPasswordError, setConfirmPasswordError] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
   const [isSubmitDisabled, setIsSubmitDisabled] = useState<boolean>(true);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -85,6 +96,8 @@ export default function LoginPage() {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState<boolean>(false);
 
   const showUserSelect = localUsers.length > 1;
+  const isExistingLocalUser = !!username && localUsers.includes(username);
+  const requiresPasswordConfirmation = !!username && !isExistingLocalUser;
 
   const applyLocalUsers = useCallback(
     (users: string[], preselectSingle = false) => {
@@ -108,7 +121,7 @@ export default function LoginPage() {
         applyLocalUsers(users, true);
       }
 
-      const storedKeys = loadKeys();
+      const storedKeys = await loadKeysAsync();
       const keysValid = await hasValidStoredKeys();
 
       if (!keysValid) {
@@ -182,12 +195,56 @@ export default function LoginPage() {
 
   useEffect(() => {
     const localUsernameError = getUsernameError(username);
+    const localPasswordError = getPasswordError(password);
+    const localConfirmPasswordError =
+      confirmPassword && confirmPassword !== password
+        ? 'Passwords must match'
+        : '';
     setUsernameError(localUsernameError);
-    setIsSubmitDisabled(!username || !!localUsernameError);
-  }, [username]);
+    setPasswordError(localPasswordError);
+    setConfirmPasswordError(localConfirmPasswordError);
+    setIsSubmitDisabled(
+      !username ||
+        !password ||
+        !!localUsernameError ||
+        !!localPasswordError ||
+        !!localConfirmPasswordError,
+    );
+  }, [username, password, confirmPassword]);
+
+  const generateStrongPassword = useCallback(() => {
+    const length = 32;
+    const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const lower = 'abcdefghijklmnopqrstuvwxyz';
+    const numbers = '0123456789';
+    const special = '!@#$%^&*()-_=+[]{};:,.?/';
+    const all = `${upper}${lower}${numbers}${special}`;
+
+    const randomInt = (maxExclusive: number): number => {
+      const bytes = new Uint32Array(1);
+      crypto.getRandomValues(bytes);
+      return bytes[0] % maxExclusive;
+    };
+
+    const pick = (source: string): string => source[randomInt(source.length)];
+
+    const chars = [pick(upper), pick(lower), pick(numbers), pick(special)];
+    while (chars.length < length) {
+      chars.push(pick(all));
+    }
+
+    for (let i = chars.length - 1; i > 0; i -= 1) {
+      const j = randomInt(i + 1);
+      [chars[i], chars[j]] = [chars[j], chars[i]];
+    }
+
+    const generated = chars.join('');
+    setPassword(generated);
+    setConfirmPassword(generated);
+  }, []);
 
   const onSubmit = useCallback(
-    async (username: string) => {
+    async (username: string, password: string) => {
       setIsLoading(true);
       setLoginError('');
 
@@ -195,27 +252,37 @@ export default function LoginPage() {
         "Something went wrong at login, go grab a cup of tea, maybe we'll figure it out while you're gone";
 
       try {
-        // Check if we have stored keys for this username
-        const storedKeys = loadKeysForUser(username);
+        const storedMetadata = loadStoredKeyMetadataForUser(username);
 
         let keys: StoredKeys;
-        const hasLocalKeys = storedKeys && storedKeys.username === username;
+        const hasLocalKeys = !!storedMetadata;
 
-        if (hasLocalKeys && storedKeys) {
-          // Use existing keys - this is an existing user with stored keys
+        if (hasLocalKeys) {
           console.log('[LoginPage] Using existing keys for:', username);
-          keys = storedKeys;
+          const unlocked = await unlockStoredPrivateKeyForUser(
+            username,
+            password,
+          );
+          if (!unlocked) {
+            setLoginError('Incorrect password for this local user');
+            setIsLoading(false);
+            return;
+          }
 
-          // Get server public key if we don't have it
+          const unlockedKeys = await loadKeysForUserAsync(username);
+          if (!unlockedKeys) {
+            setLoginError('Failed to load unlocked key material');
+            setIsLoading(false);
+            return;
+          }
+
+          keys = unlockedKeys;
           if (!keys.serverPublicKey) {
             keys.serverPublicKey = await fetchServerPublicKey();
           }
         } else {
-          // Generate new keys for new user
           console.log('[LoginPage] Generating new keys for:', username);
           const keyPair = await generateKeyPair(username);
-
-          // Get server public key
           const serverPubKey =
             serverPublicKey || (await fetchServerPublicKey());
 
@@ -232,7 +299,8 @@ export default function LoginPage() {
         // - Send challenge if user exists and public key matches (for existing users)
         // - Register new user if user doesn't exist (for new users)
         // - Reject if user exists but public key doesn't match
-        const userId = storedKeys?.userId || requireUserIdByUsername(username);
+        const userId =
+          storedMetadata?.userId || keys.userId || requireUserIdByUsername(username);
         const opaqueIdentity = await buildOpaqueUsernameEnvelope(
           username,
           keys.serverPublicKey,
@@ -289,11 +357,11 @@ export default function LoginPage() {
               });
             }
             // Store keys with session ID
-            storeKeys({
-              ...keys,
-              serverPublicKey: verifyData.serverPublicKey,
+            await updateStoredSessionForUser({
+              username,
               sessionId: verifyData.sessionId,
               userId: verifyData.userId || userId,
+              serverPublicKey: verifyData.serverPublicKey,
             });
 
             // Refresh user list to include this user in dropdown
@@ -323,11 +391,14 @@ export default function LoginPage() {
           }
 
           // Store keys with session ID (this will add user to ALL_USERS list)
-          storeKeys({
-            ...keys,
-            userId: loginData.userId || userId,
-            sessionId: loginData.sessionId,
-          });
+          await storeKeys(
+            {
+              ...keys,
+              userId: loginData.userId || userId,
+              sessionId: loginData.sessionId,
+            },
+            password,
+          );
 
           // Refresh user list to include this new user in dropdown
           const updatedUsers = getAllLocalUsers();
@@ -354,10 +425,10 @@ export default function LoginPage() {
     (event: React.KeyboardEvent<HTMLInputElement>) => {
       if (event.key === 'Enter' && !isSubmitDisabled && !isLoading) {
         event.preventDefault();
-        onSubmit(username);
+        void onSubmit(username, password);
       }
     },
-    [isSubmitDisabled, isLoading, username, onSubmit],
+    [isSubmitDisabled, isLoading, username, password, onSubmit],
   );
 
   const handleDeleteAccount = useCallback((usernameToDelete: string) => {
@@ -388,7 +459,7 @@ export default function LoginPage() {
       console.log('[DeleteAccount] Logging in to authenticate...');
 
       // Load keys for the user to delete
-      const storedKeys = loadKeysForUser(usernameToDelete);
+      const storedKeys = await loadKeysForUserAsync(usernameToDelete);
 
       if (!storedKeys || storedKeys.username !== usernameToDelete) {
         setLoginError('Cannot find keys for this user');
@@ -486,7 +557,7 @@ export default function LoginPage() {
       setUsername('');
 
       // Redirect to login page (refresh)
-      console.log('[DeleteAccount] ✓ Account deleted, redirecting...');
+      console.log('[DeleteAccount] Γ£ô Account deleted, redirecting...');
       window.location.href = withBasePath('/login/');
     } catch (err) {
       console.error('[DeleteAccount] Error:', err);
@@ -506,7 +577,7 @@ export default function LoginPage() {
           onSubmit={(e) => {
             e.preventDefault();
             if (!isSubmitDisabled && !isLoading) {
-              onSubmit(username);
+              void onSubmit(username, password);
             }
           }}
         >
@@ -557,6 +628,60 @@ export default function LoginPage() {
             required={true}
             autoFocus={localUsers.length === 0}
           />
+          <Input
+            id="password"
+            label="password:"
+            type={showPassword ? 'text' : 'password'}
+            autoComplete="current-password"
+            error={passwordError}
+            minLength={VALIDATION.MIN_PASSWORD_LENGTH}
+            value={password}
+            onChange={setPassword}
+            onKeyDown={handleKeyDown}
+            required={true}
+            inlineRightSlot={
+              requiresPasswordConfirmation && password.length === 0 ? (
+                <button
+                  type="button"
+                  className="app-primary-button app-auth-input-inline-button"
+                  onClick={generateStrongPassword}
+                  disabled={isLoading}
+                >
+                  Generate
+                </button>
+              ) : undefined
+            }
+            rightSlot={
+              <PasswordVisibilityToggle
+                showing={showPassword}
+                onToggle={() => setShowPassword((current) => !current)}
+                disabled={isLoading}
+              />
+            }
+          />
+          {requiresPasswordConfirmation && (
+            <Input
+              id="confirmPassword"
+              label="confirm password:"
+              type={showConfirmPassword ? 'text' : 'password'}
+              autoComplete="new-password"
+              error={confirmPasswordError}
+              minLength={VALIDATION.MIN_PASSWORD_LENGTH}
+              value={confirmPassword}
+              onChange={setConfirmPassword}
+              onKeyDown={handleKeyDown}
+              required={true}
+              rightSlot={
+                <PasswordVisibilityToggle
+                  showing={showConfirmPassword}
+                  onToggle={() =>
+                    setShowConfirmPassword((current) => !current)
+                  }
+                  disabled={isLoading}
+                />
+              }
+            />
+          )}
           <button
             type="submit"
             disabled={isSubmitDisabled || isLoading}

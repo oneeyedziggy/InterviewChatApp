@@ -3,6 +3,7 @@
 // obscurity helps, but defence in depth does...
 import React, { useCallback, useEffect, useState } from 'react';
 import { Input } from './Input';
+import PasswordVisibilityToggle from './PasswordVisibilityToggle';
 import { styled } from 'styled-components';
 import { VALIDATION } from '../constants';
 import { apiPath } from '@/utils/appPaths';
@@ -10,7 +11,7 @@ import {
   buildOpaqueUsernameEnvelope,
   generateKeyPair,
   storeKeys,
-  loadKeys,
+  loadKeysAsync,
   clearKeys,
   hasValidStoredKeys,
   forceReauthToLogin,
@@ -38,6 +39,31 @@ const getUsernameError = (username: string): string => {
   }
   if (/\s/.test(username)) {
     return 'Username cannot contain whitespace';
+  }
+  return '';
+};
+
+const getPasswordError = (password: string): string => {
+  if (!password.length) {
+    return '';
+  }
+  if (password.length < 10) {
+    return 'Password must be at least 10 characters';
+  }
+  if (password.length >= 256) {
+    return 'Password must be shorter than 256 characters';
+  }
+  if (!/\p{Lu}/u.test(password)) {
+    return 'Password must include at least one uppercase letter';
+  }
+  if (!/\p{Ll}/u.test(password)) {
+    return 'Password must include at least one lowercase letter';
+  }
+  if (!/\p{Nd}/u.test(password)) {
+    return 'Password must include at least one number';
+  }
+  if (!/[^\p{L}\p{Nd}\s]/u.test(password) && !/[_]/u.test(password)) {
+    return 'Password must include at least one special character';
   }
   return '';
 };
@@ -79,13 +105,17 @@ export const LoginDialog = ({
   onLogout,
 }: LoginDialogProps) => {
   const [usernameError, setUsernameError] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [passwordError, setPasswordError] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
   const [isSubmitDisabled, setIsSubmitDisabled] = useState<boolean>(true);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [serverPublicKey, setServerPublicKey] = useState<string>('');
+  const [loggedInUser, setLoggedInUser] = useState<StoredKeys | null>(null);
 
   const checkAutoLogin = useCallback(async () => {
-    const storedKeys = loadKeys();
+    const storedKeys = await loadKeysAsync();
     const keysValid = await hasValidStoredKeys();
 
     if (!keysValid) {
@@ -97,6 +127,7 @@ export const LoginDialog = ({
 
     if (storedKeys?.sessionId) {
       console.log('[LoginDialog] Auto-login with stored keys');
+      setLoggedInUser(storedKeys);
       setUsername(storedKeys.username);
       onSuccess(storedKeys.sessionId, storedKeys.username);
     }
@@ -106,6 +137,7 @@ export const LoginDialog = ({
   useEffect(() => {
     if (open) {
       checkAutoLogin();
+      void loadKeysAsync().then(setLoggedInUser);
       fetchServerPublicKey()
         .then(setServerPublicKey)
         .catch((err) => {
@@ -119,12 +151,17 @@ export const LoginDialog = ({
 
   useEffect(() => {
     const localUsernameError = getUsernameError(username);
+    const localPasswordError = getPasswordError(password);
     setUsernameError(localUsernameError);
-    setIsSubmitDisabled(!username || !!localUsernameError);
-  }, [username]);
+    setPasswordError(localPasswordError);
+    setIsSubmitDisabled(
+      !username || !password || !!localUsernameError || !!localPasswordError,
+    );
+  }, [username, password]);
 
   const handleLogout = () => {
     clearKeys();
+    setLoggedInUser(null);
     setUsername('');
     if (onLogout) {
       onLogout();
@@ -147,7 +184,7 @@ export const LoginDialog = ({
 
     try {
       // Check if we have stored keys for this username
-      const storedKeys = loadKeys();
+      const storedKeys = await loadKeysAsync();
       let keys: StoredKeys;
 
       if (storedKeys && storedKeys.username === username) {
@@ -228,7 +265,16 @@ export const LoginDialog = ({
 
         if (verifyData.sessionId) {
           // Store keys with session ID
-          storeKeys({
+          await storeKeys(
+            {
+              ...keys,
+              serverPublicKey: verifyData.serverPublicKey,
+              sessionId: verifyData.sessionId,
+              userId: verifyData.userId || userId,
+            },
+            password,
+          );
+          setLoggedInUser({
             ...keys,
             serverPublicKey: verifyData.serverPublicKey,
             sessionId: verifyData.sessionId,
@@ -249,7 +295,15 @@ export const LoginDialog = ({
         }
 
         // Store keys with session ID
-        storeKeys({
+        await storeKeys(
+          {
+            ...keys,
+            userId: loginData.userId || userId,
+            sessionId: loginData.sessionId,
+          },
+          password,
+        );
+        setLoggedInUser({
           ...keys,
           userId: loginData.userId || userId,
           sessionId: loginData.sessionId,
@@ -267,16 +321,14 @@ export const LoginDialog = ({
     }
   };
 
-  // Check if user is already logged in
-  const storedKeys = loadKeys();
-  const isLoggedIn = storedKeys && storedKeys.sessionId;
+  const isLoggedIn = !!loggedInUser?.sessionId;
 
   return (
     <BigDialog id="successModal" open={open}>
       {loginError && <InputError>{loginError}</InputError>}
       {isLoggedIn ? (
         <>
-          <div>Logged in as: {storedKeys!.username}</div>
+          <div>Logged in as: {loggedInUser!.username}</div>
           <LogoutButton onClick={handleLogout} type="button">
             Logout
           </LogoutButton>
@@ -287,12 +339,32 @@ export const LoginDialog = ({
             id="username"
             label="username:"
             type="text"
+            autoComplete="username"
             error={usernameError}
             minLength={VALIDATION.MIN_USERNAME_LENGTH}
             value={username}
             onChange={setUsername}
             onKeyDown={handleKeyDown}
             required={true}
+          />
+          <Input
+            id="password"
+            label="password:"
+            type={showPassword ? 'text' : 'password'}
+            autoComplete="current-password"
+            error={passwordError}
+            minLength={10}
+            value={password}
+            onChange={setPassword}
+            onKeyDown={handleKeyDown}
+            required={true}
+            rightSlot={
+              <PasswordVisibilityToggle
+                showing={showPassword}
+                onToggle={() => setShowPassword((current) => !current)}
+                disabled={isLoading}
+              />
+            }
           />
           <LoginButton
             onClick={() => onSubmit(username)}

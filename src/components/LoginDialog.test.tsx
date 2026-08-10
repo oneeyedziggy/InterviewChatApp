@@ -22,6 +22,7 @@ vi.mock('../utils/gpg', () => ({
   hasValidStoredKeys: vi.fn(async () => true),
   isLocalUser: vi.fn(() => false),
   loadKeys: vi.fn(() => null),
+  loadKeysAsync: vi.fn(async () => null),
   loadKeysForUser: vi.fn(() => null),
   loadUserPublicKeys: vi.fn(() => null),
   storeKeys: vi.fn(),
@@ -47,12 +48,24 @@ describe('LoginDialog component', () => {
   const mockOnSuccess = vi.fn();
 
   beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.clearAllMocks();
   });
 
   afterEach(() => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
+
+  const fillValidCredentials = async (
+    user: ReturnType<typeof userEvent.setup>,
+  ) => {
+    const usernameInput = screen.getByLabelText(/username/i);
+    const passwordInput = screen.getByLabelText(/password/i);
+    await user.type(usernameInput, 'validusername');
+    await user.type(passwordInput, 'StrongPass1!');
+  };
 
   it('renders when open is true', () => {
     render(
@@ -130,8 +143,8 @@ describe('LoginDialog component', () => {
       />,
     );
 
-    const usernameInput = screen.getByLabelText(/username/i);
-    await user.type(usernameInput, 'a');
+    const passwordInput = screen.getByLabelText(/password/i);
+    await user.type(passwordInput, 'StrongPass1!');
 
     await waitFor(() => {
       const submitButton = screen.getByRole('button', { name: /login/i });
@@ -156,8 +169,7 @@ describe('LoginDialog component', () => {
       />,
     );
 
-    const usernameInput = screen.getByLabelText(/username/i);
-    await user.type(usernameInput, 'validusername');
+    await fillValidCredentials(user);
     const submitButton = screen.getByRole('button', { name: /login/i });
 
     await waitFor(() => {
@@ -191,8 +203,7 @@ describe('LoginDialog component', () => {
       />,
     );
 
-    const usernameInput = screen.getByLabelText(/username/i);
-    await user.type(usernameInput, 'validusername');
+    await fillValidCredentials(user);
     const submitButton = screen.getByRole('button', { name: /login/i });
 
     await waitFor(() => {
@@ -221,8 +232,7 @@ describe('LoginDialog component', () => {
       />,
     );
 
-    const usernameInput = screen.getByLabelText(/username/i);
-    await user.type(usernameInput, 'validusername');
+    await fillValidCredentials(user);
     const submitButton = screen.getByRole('button', { name: /login/i });
 
     await waitFor(() => {
@@ -253,8 +263,7 @@ describe('LoginDialog component', () => {
       />,
     );
 
-    const usernameInput = screen.getByLabelText(/username/i);
-    await user.type(usernameInput, 'validusername');
+    await fillValidCredentials(user);
     const submitButton = screen.getByRole('button', { name: /login/i });
 
     await waitFor(() => {
@@ -303,7 +312,9 @@ describe('LoginDialog component', () => {
     );
 
     const usernameInput = screen.getByLabelText(/username/i);
+    const passwordInput = screen.getByLabelText(/password/i);
     await user.type(usernameInput, 'testuser');
+    await user.type(passwordInput, 'StrongPass1!');
     const submitButton = screen.getByRole('button', { name: /login/i });
 
     await waitFor(() => {

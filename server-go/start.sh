@@ -94,8 +94,20 @@ APP_BASE_PATH="${APP_BASE_PATH:-}"
 
 # If APP_BASE_PATH is not explicitly set, infer it from the built export.
 # This keeps local server routing aligned with whatever base path out/ was built with.
-if [ -z "$APP_BASE_PATH" ] && [ -f "$OUT_DIR/index.html" ]; then
-    DETECTED_PREFIX=$(grep -oE '"/[^" ]*/_next/static/' "$OUT_DIR/index.html" | head -n1 | sed -E 's#"/##; s#/_next/static/##')
+# We intentionally scan root-level HTML files (including conflict-renamed files)
+# because synced folders sometimes rewrite index.html to names like
+# "index [conflicted].html".
+if [ -z "$APP_BASE_PATH" ] && [ -d "$OUT_DIR" ]; then
+    DETECTED_PREFIX=""
+
+    for html_file in "$OUT_DIR"/*.html; do
+        [ -f "$html_file" ] || continue
+        DETECTED_PREFIX=$(grep -oE '"/[^" ]*/_next/static/' "$html_file" | head -n1 | sed -E 's#"/##; s#/_next/static/##')
+        if [ -n "$DETECTED_PREFIX" ]; then
+            break
+        fi
+    done
+
     if [ -n "$DETECTED_PREFIX" ]; then
         APP_BASE_PATH="/$DETECTED_PREFIX"
         echo "Detected APP_BASE_PATH from export: $APP_BASE_PATH"

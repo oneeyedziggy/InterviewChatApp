@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -76,6 +77,8 @@ func (fs *FileStore) saveWithIdentity(
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
+	const maxSaveAttempts = 3
+
 	state := PersistedState{
 		Messages:               messages,
 		Rooms:                  rooms,
@@ -96,6 +99,31 @@ func (fs *FileStore) saveWithIdentity(
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
+	var lastErr error
+	for attempt := 1; attempt <= maxSaveAttempts; attempt++ {
+		if err := fs.writeStateFile(data); err != nil {
+			lastErr = err
+			log.Printf("[FileStore] ✗ Save attempt %d/%d failed for %s: %v", attempt, maxSaveAttempts, fs.filepath, err)
+			if attempt < maxSaveAttempts {
+				time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+				continue
+			}
+			panic(fmt.Sprintf("failed to persist state after %d attempts: %v", maxSaveAttempts, err))
+		}
+
+		log.Printf("[FileStore] ✓ State saved to %s", fs.filepath)
+		return nil
+	}
+
+	if lastErr != nil {
+		panic(fmt.Sprintf("failed to persist state after %d attempts: %v", maxSaveAttempts, lastErr))
+	}
+
+	return nil
+}
+
+func (fs *FileStore) writeStateFile(data []byte) (err error) {
+
 	dir := filepath.Dir(fs.filepath)
 	if dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -103,20 +131,23 @@ func (fs *FileStore) saveWithIdentity(
 		}
 	}
 
-	tmpPath := fs.filepath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	file, err := os.OpenFile(fs.filepath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open state file: %w", err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("failed to close state file: %w", closeErr)
+		}
+	}()
+
+	if _, err = file.Write(data); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 
-	if err := os.Remove(fs.filepath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to clear existing state file: %w", err)
+	if err = file.Sync(); err != nil {
+		return fmt.Errorf("failed to sync state file: %w", err)
 	}
-
-	if err := os.Rename(tmpPath, fs.filepath); err != nil {
-		return fmt.Errorf("failed to rename temp file: %w", err)
-	}
-
-	log.Printf("[FileStore] ✓ State saved to %s", fs.filepath)
 	return nil
 }
 

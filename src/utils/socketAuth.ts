@@ -1,4 +1,4 @@
-import { signDetachedText, loadKeys } from './gpg';
+import { signDetachedText, loadKeysAsync } from './gpg';
 
 export type SignedMutationAuth = {
   version: 'v1';
@@ -15,7 +15,17 @@ function createNonce(): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
   }
-  return `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    const suffix = Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    return `${Date.now()}:${suffix}`;
+  }
+
+  throw new Error('Secure randomness unavailable for nonce generation');
 }
 
 function base64UrlEncodeUtf8(value: string): string {
@@ -64,7 +74,7 @@ export async function buildSignedMutationAuth(args: {
   sessionId: string;
   claims: Record<string, unknown>;
 }): Promise<SignedMutationAuth> {
-  const keys = loadKeys();
+  const keys = await loadKeysAsync();
   if (!keys?.privateKey) {
     throw new Error('Missing private key for signed mutation auth');
   }

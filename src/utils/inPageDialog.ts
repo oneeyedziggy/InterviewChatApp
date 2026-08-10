@@ -11,11 +11,22 @@ type DialogRequestDetail = {
 
 const confirmResolvers = new Map<string, (value: boolean) => void>();
 
+function randomHex(bytes = 16): string {
+  if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
+    throw new Error('Secure randomness unavailable');
+  }
+  const out = new Uint8Array(bytes);
+  crypto.getRandomValues(out);
+  return Array.from(out)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 function createDialogID(): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
   }
-  return `dialog:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  return `dialog:${Date.now()}:${randomHex(16)}`;
 }
 
 function dispatchDialog(detail: DialogRequestDetail): void {

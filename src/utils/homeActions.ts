@@ -7,7 +7,7 @@ import {
   encryptForAllUsers,
   filterPubKeysForEncryption,
   decryptMessageForUser,
-  loadKeys,
+  loadKeysAsync,
   loadUserPublicKeyEntries,
 } from '../utils/gpg';
 import { emitSignedMutation } from '../utils/socketAuth';
@@ -99,7 +99,7 @@ export async function doSendAction({
 
   // Encrypt message with all user public keys (including sender's own key)
   const userPubKeys = loadUserPublicKeyEntries();
-  const keys = loadKeys();
+  const keys = await loadKeysAsync();
   let userId: string;
   let roomId: string;
   try {
@@ -266,7 +266,7 @@ export async function doSendAction({
   setUserDraftMessage('');
 }
 
-export function requestAccessAction({
+export async function requestAccessAction({
   socket,
   username,
   chatValues,
@@ -398,7 +398,7 @@ export function requestAccessAction({
     ...requestMessage,
     requestAccess: requestMessage.requestAccess,
   });
-  const keys = loadKeys();
+  const keys = await loadKeysAsync();
   if (!keys?.sessionId) {
     alert('Session expired. Please log in again.');
     return;
@@ -545,7 +545,7 @@ export async function grantAccessAction({
     console.log('[GrantAccess] ✓ Socket reconnected successfully');
   }
 
-  const keys = loadKeys();
+  const keys = await loadKeysAsync();
   if (!keys) {
     console.error('[GrantAccess] ✗ No keys available');
     return;
@@ -887,7 +887,7 @@ export async function grantAccessAction({
     });
 
     // Helper function to proceed with emit (using arrow function to avoid ES5 strict mode issues)
-    const proceedWithEmit = () => {
+    const proceedWithEmit = async () => {
       try {
         // Double-check connection before emitting
         if (!activeSocket.connected) {
@@ -932,7 +932,7 @@ export async function grantAccessAction({
         // Emit the event - socket.emit returns the socket instance
         console.log('[GrantAccess] Calling emit now...');
         try {
-          const keysForSign = loadKeys();
+          const keysForSign = await loadKeysAsync();
           if (!keysForSign?.sessionId) {
             alert('Session expired. Please log in again.');
             return;
@@ -1008,14 +1008,14 @@ export async function grantAccessAction({
           clearTimeout(timeout);
           console.log('[GrantAccess] ✓ Socket connected, proceeding with emit');
           // Continue with emit below
-          proceedWithEmit();
+          void proceedWithEmit();
           resolve();
         });
       });
     }
 
     // Proceed with emit
-    proceedWithEmit();
+    void proceedWithEmit();
   } catch (error) {
     console.error('[GrantAccess] ✗ Failed to grant access:', error);
     console.error('[GrantAccess] Error details:', error);
@@ -1159,7 +1159,7 @@ export async function selectVersionAction({
 
   // If we have access to this version, decrypt it
   if (selectedVersionEncrypted) {
-    const keys = loadKeys();
+    const keys = await loadKeysAsync();
     if (keys) {
       try {
         const decrypted = await decryptMessageForUser(

@@ -12,7 +12,7 @@ import {
   decryptJsonForCurrentUser,
   encryptJsonForCurrentUser,
   forceReauthToLogin,
-  loadKeys,
+  loadKeysAsync,
 } from '../../utils/gpg';
 import {
   getRoomNameByRoomId,
@@ -478,26 +478,28 @@ export function useHomePageState(): HomePageState {
         return;
       }
 
-      const socket = getSocket() || (window as any).__socket;
-      const keys = loadKeys();
-      if (!socket || !username || !keys?.sessionId) {
-        return;
-      }
+      void (async () => {
+        const socket = getSocket() || (window as any).__socket;
+        const keys = await loadKeysAsync();
+        if (!socket || !username || !keys?.sessionId) {
+          return;
+        }
 
-      let roomId: string | undefined;
-      try {
-        roomId = requireRoomIdByName(room);
-      } catch {
-        roomId = undefined;
-      }
+        let roomId: string | undefined;
+        try {
+          roomId = requireRoomIdByName(room);
+        } catch {
+          roomId = undefined;
+        }
 
-      socket.emit(SOCKET_EVENTS.CLIENT_REQUEST_ROOM_DATA, {
-        username,
-        userId: requireUserIdByUsername(username),
-        sessionId: keys.sessionId,
-        room,
-        ...(roomId ? { roomId } : {}),
-      });
+        socket.emit(SOCKET_EVENTS.CLIENT_REQUEST_ROOM_DATA, {
+          username,
+          userId: requireUserIdByUsername(username),
+          sessionId: keys.sessionId,
+          room,
+          ...(roomId ? { roomId } : {}),
+        });
+      })();
     },
     setNewRoomName: (roomName: string) => setNewRoomNameState(roomName),
     setUserDraftMessage: (message: string) => setUserDraftMessageState(message),

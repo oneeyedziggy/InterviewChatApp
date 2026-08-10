@@ -79,6 +79,17 @@ function base64ToBytes(value: string): Uint8Array {
   return bytes;
 }
 
+function randomHex(bytes = 16): string {
+  if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
+    throw new Error('Secure randomness unavailable');
+  }
+  const out = new Uint8Array(bytes);
+  crypto.getRandomValues(out);
+  return Array.from(out)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 function getOrCreateIdentitySecret(): string {
   if (typeof window === 'undefined') return '';
 
@@ -90,7 +101,7 @@ function getOrCreateIdentitySecret(): string {
   const secret =
     typeof crypto !== 'undefined' && crypto.randomUUID
       ? crypto.randomUUID()
-      : `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+      : `${Date.now()}:${randomHex(16)}`;
   localStorage.setItem(IDENTITY_SECRET, secret);
   return secret;
 }
@@ -220,7 +231,7 @@ function createLocalId(prefix: string): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return `${prefix}:${crypto.randomUUID()}`;
   }
-  return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  return `${prefix}:${Date.now()}:${randomHex(16)}`;
 }
 
 export function storeIdentityDirectories(data: IdentityDirectories) {

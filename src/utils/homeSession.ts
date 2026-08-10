@@ -1,5 +1,5 @@
 import { apiPath } from '@/utils/appPaths';
-import { attemptAutoRelogin, hasValidStoredKeys, loadKeys } from './gpg';
+import { attemptAutoRelogin, hasValidStoredKeys, loadKeysAsync } from './gpg';
 import { storeIdentityDirectories } from './identityMap';
 
 type InitializeSession = (
@@ -18,7 +18,7 @@ export async function restoreSession({
   initializeSession,
   onForceReauth,
 }: RestoreSessionOptions): Promise<void> {
-  const storedKeys = loadKeys();
+  const storedKeys = await loadKeysAsync();
   const keysValid = await hasValidStoredKeys();
 
   if (!keysValid || !storedKeys?.sessionId) {

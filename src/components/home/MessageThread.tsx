@@ -8,7 +8,7 @@ import { ContextMenuItem, ContextMenuSurface } from '../styled/ContextMenu';
 import { SOCKET_EVENTS, FEATURES } from '../../constants';
 import { type Messages, type Message } from '../../types/types';
 import { canUserViewMessage } from '../../utils/messages';
-import { loadKeys } from '../../utils/gpg';
+import { loadKeysAsync } from '../../utils/gpg';
 import { emitSignedMutation } from '../../utils/socketAuth';
 import {
   CONTEXT_MENU_CLOSE_EVENT,
@@ -1517,26 +1517,28 @@ function MessageThreadCard({
               originalRoom: string,
               messageTimestamp: number,
             ) => {
-              const keys = loadKeys();
-              if (!socket || !username || !keys?.sessionId) return;
-              const voterUserId = requireUserIdByUsername(username);
-              const originalRoomId = requireRoomIdByName(originalRoom);
-              void emitSignedMutation(socket, {
-                event: SOCKET_EVENTS.CLIENT_DENY_ACCESS,
-                payload: {
-                  requestingUserId,
-                  originalRoomId,
-                  messageTimestamp,
+              void (async () => {
+                const keys = await loadKeysAsync();
+                if (!socket || !username || !keys?.sessionId) return;
+                const voterUserId = requireUserIdByUsername(username);
+                const originalRoomId = requireRoomIdByName(originalRoom);
+                void emitSignedMutation(socket, {
+                  event: SOCKET_EVENTS.CLIENT_DENY_ACCESS,
+                  payload: {
+                    requestingUserId,
+                    originalRoomId,
+                    messageTimestamp,
+                    sessionId: keys.sessionId,
+                  },
+                  userId: voterUserId,
                   sessionId: keys.sessionId,
-                },
-                userId: voterUserId,
-                sessionId: keys.sessionId,
-                claims: {
-                  requestingUserId,
-                  originalRoomId,
-                  messageTimestamp,
-                },
-              });
+                  claims: {
+                    requestingUserId,
+                    originalRoomId,
+                    messageTimestamp,
+                  },
+                });
+              })();
             }}
             onSelectVersion={onSelectVersion}
             onReply={onReply}

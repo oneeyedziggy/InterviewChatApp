@@ -212,6 +212,78 @@ a {
   width: 100%;
 }
 
+.app-auth-input-inline {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-auth-input-control {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.app-auth-input-inline .app-text-input {
+  width: 100%;
+}
+
+.app-auth-input-inline-button {
+  margin: 0;
+  white-space: nowrap;
+  padding: 10px 12px;
+}
+
+.app-auth-input-overlay-right {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.app-auth-input-overlay-right > * {
+  pointer-events: auto;
+}
+
+.app-text-input--with-right-slot {
+  padding-right: 42px;
+}
+
+.app-auth-password-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: color-mix(in srgb, var(--app-muted) 84%, var(--app-fg));
+  opacity: 0.78;
+  cursor: pointer;
+}
+
+.app-auth-password-toggle:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--app-panel) 72%, transparent);
+  color: var(--app-fg);
+  opacity: 1;
+}
+
+.app-auth-password-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.app-auth-password-toggle-icon {
+  width: 18px;
+  height: 18px;
+}
+
 .app-auth-input-error {
   display: block;
   margin-top: 6px;
@@ -243,6 +315,10 @@ a {
   color: var(--app-muted);
   font-size: 0.78rem;
   font-weight: 700;
+}
+
+.app-auth-helper-error {
+  color: #b32030;
 }
 
 .app-layout-row {

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const gpgMock = vi.hoisted(() => ({
-  loadKeys: vi.fn(),
+  loadKeysAsync: vi.fn(),
   signDetachedText: vi.fn(),
 }));
 
@@ -12,7 +12,7 @@ import { buildSignedMutationAuth, emitSignedMutation } from './socketAuth';
 describe('socketAuth', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    gpgMock.loadKeys.mockReset();
+    gpgMock.loadKeysAsync.mockReset();
     gpgMock.signDetachedText.mockReset();
     vi.spyOn(Date, 'now').mockReturnValue(1234567890);
     vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'nonce-id') });
@@ -23,7 +23,7 @@ describe('socketAuth', () => {
   });
 
   it('builds a signed auth payload with normalized claims', async () => {
-    gpgMock.loadKeys.mockReturnValue({ privateKey: 'private-key' });
+    gpgMock.loadKeysAsync.mockResolvedValue({ privateKey: 'private-key' });
     gpgMock.signDetachedText.mockResolvedValue('signature-value');
 
     const auth = await buildSignedMutationAuth({
@@ -58,7 +58,7 @@ describe('socketAuth', () => {
   });
 
   it('throws when private key is missing', async () => {
-    gpgMock.loadKeys.mockReturnValue(null);
+    gpgMock.loadKeysAsync.mockResolvedValue(null);
 
     await expect(
       buildSignedMutationAuth({
@@ -71,7 +71,7 @@ describe('socketAuth', () => {
   });
 
   it('emits signed payloads through the socket', async () => {
-    gpgMock.loadKeys.mockReturnValue({ privateKey: 'private-key' });
+    gpgMock.loadKeysAsync.mockResolvedValue({ privateKey: 'private-key' });
     gpgMock.signDetachedText.mockResolvedValue('signature-value');
 
     const emit = vi.fn();
