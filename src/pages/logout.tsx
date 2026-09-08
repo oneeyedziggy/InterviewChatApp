@@ -1,14 +1,16 @@
 'use client';
 
 import { useEffect } from 'react';
-import { withBasePath } from '@/utils/appPaths';
+import { withBasePath, withServerQuery } from '@/utils/appPaths';
 import { AuthCard, PageShell } from '../components/layout/PageShell';
 import { clearSession } from '../utils/gpg';
 
-export default function Logout() {
+const Logout = () => {
   useEffect(() => {
+    const serverId =
+      new URLSearchParams(window.location.search).get('server')?.trim() || '';
     clearSession();
-    window.location.replace(withBasePath('/login/'));
+    window.location.replace(withServerQuery(withBasePath('/login/'), serverId));
   }, []);
 
   return (
@@ -21,4 +23,5 @@ export default function Logout() {
       </AuthCard>
     </PageShell>
   );
-}
+};
+export default Logout;

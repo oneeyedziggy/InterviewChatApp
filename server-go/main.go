@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 
-	socketio "github.com/karagenc/socket.io-go"
+	wsrt "chat-server-go/websocket"
 )
 
 func main() {
@@ -35,18 +35,27 @@ func main() {
 	}
 	log.Printf("Using port: %s", port)
 
-	chatServer := NewChatServer()
+	chatServer := NewChatServer("")
 	log.Println("Chat server initialized")
 
-	log.Println("Creating Socket.IO server...")
-	sio := socketio.NewServer(nil)
-	log.Println("Socket.IO server created")
+	log.Println("Creating WebSocket server...")
+	sio := wsrt.NewServer(nil)
+	log.Println("WebSocket server created")
 
 	log.Println("Setting up socket handlers...")
 	chatServer.setupSocketHandlers(sio)
 
+	log.Println("Setting up server registry (multi-server support)...")
+	serverManager, err := NewServerManager(resolveServerDataDir())
+	if err != nil {
+		log.Fatalf("FATAL: Cannot initialize server registry: %v", err)
+	}
+	// Register the already-constructed default tenant so it isn't rebuilt
+	// (and so its DB connection isn't opened twice) on first request.
+	serverManager.registerDefaultTenant(chatServer, sio)
+
 	log.Println("Setting up HTTP routes...")
-	mux := newHTTPHandler(chatServer, sio)
+	mux := newHTTPHandler(serverManager)
 
 	log.Println("===== SERVER STARTUP COMPLETE ======")
 	log.Printf("Binding to port %s...", port)
@@ -62,7 +71,7 @@ func main() {
 	}
 
 	log.Printf("Server listening on: http://localhost:%s", port)
-	log.Printf("Socket.IO endpoint: http://localhost:%s/socket.io/", port)
+	log.Printf("WebSocket endpoint: ws://localhost:%s/ws/", port)
 	log.Printf("API endpoint: http://localhost:%s/api/login", port)
 	log.Println("===== READY TO ACCEPT CONNECTIONS ======")
 

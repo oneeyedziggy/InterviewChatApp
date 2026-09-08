@@ -5,18 +5,18 @@ import {
   useHomeRoomsContext,
 } from './HomePageContext';
 
-export function useHomeRooms() {
+export const useHomeRooms = () => {
   return useHomeRoomsContext();
-}
+};
 
-export function useHomeComposer() {
+export const useHomeComposer = () => {
   return useHomeComposerContext();
-}
+};
 
-export function useHomePresence() {
+export const useHomePresence = () => {
   return useHomePresenceContext();
-}
+};
 
-export function useHomeAuth() {
+export const useHomeAuth = () => {
   return useHomeAuthContext();
-}
+};

@@ -1,17 +1,19 @@
 import { VALIDATION } from '../constants';
+import { countUnicodeCodePoints } from './unicode';
 
-export function getUsernameError(username: string): string {
-  if (!username.length) {
+export const getUsernameError = (username: string): string => {
+  const usernameLength = countUnicodeCodePoints(username);
+  if (!usernameLength) {
     return '';
   }
-  if (username.length < VALIDATION.MIN_USERNAME_LENGTH) {
+  if (usernameLength < VALIDATION.MIN_USERNAME_LENGTH) {
     return `Username must be at least ${VALIDATION.MIN_USERNAME_LENGTH} characters`;
   }
   if (/\s/.test(username)) {
     return 'Username cannot contain whitespace';
   }
   return '';
-}
+};
 
 export type PasswordRequirementStatus = {
   hasMinLength: boolean;
@@ -22,12 +24,13 @@ export type PasswordRequirementStatus = {
   hasSpecial: boolean;
 };
 
-export function getPasswordRequirementStatus(
+export const getPasswordRequirementStatus = (
   password: string,
-): PasswordRequirementStatus {
-  const hasMinLength = password.length >= VALIDATION.MIN_PASSWORD_LENGTH;
+): PasswordRequirementStatus => {
+  const passwordLength = countUnicodeCodePoints(password);
+  const hasMinLength = passwordLength >= VALIDATION.MIN_PASSWORD_LENGTH;
   const belowMaxLength =
-    password.length < VALIDATION.MAX_PASSWORD_LENGTH_EXCLUSIVE;
+    passwordLength < VALIDATION.MAX_PASSWORD_LENGTH_EXCLUSIVE;
   const hasUpper = /\p{Lu}/u.test(password);
   const hasLower = /\p{Ll}/u.test(password);
   const hasNumber = /\p{Nd}/u.test(password);
@@ -42,10 +45,10 @@ export function getPasswordRequirementStatus(
     hasNumber,
     hasSpecial,
   };
-}
+};
 
-export function getPasswordError(password: string): string {
-  if (!password.length) {
+export const getPasswordError = (password: string): string => {
+  if (!countUnicodeCodePoints(password)) {
     return '';
   }
 
@@ -70,4 +73,4 @@ export function getPasswordError(password: string): string {
   }
 
   return '';
-}
+};

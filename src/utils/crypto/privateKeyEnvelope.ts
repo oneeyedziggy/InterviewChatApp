@@ -25,24 +25,24 @@ export type EncryptedPrivateKeyEnvelope = {
   ciphertext: string;
 };
 
-function bytesToBase64(bytes: Uint8Array): string {
+const bytesToBase64 = (bytes: Uint8Array):  string => {
   let binary = '';
   for (const b of bytes) {
     binary += String.fromCharCode(b);
   }
   return btoa(binary);
-}
+};
 
-function base64ToBytes(value: string): Uint8Array {
+const base64ToBytes = (value: string):  Uint8Array => {
   const binary = atob(value);
   const out = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     out[i] = binary.charCodeAt(i);
   }
   return out;
-}
+};
 
-function randomBytes(length: number): Uint8Array {
+const randomBytes = (length: number):  Uint8Array => {
   if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
     throw new Error('Web Crypto random source unavailable');
   }
@@ -50,9 +50,9 @@ function randomBytes(length: number): Uint8Array {
   const out = new Uint8Array(length);
   crypto.getRandomValues(out);
   return out;
-}
+};
 
-export function isEncryptedPrivateKeyEnvelope(value: string): boolean {
+export const isEncryptedPrivateKeyEnvelope = (value: string):  boolean => {
   if (!value || value[0] !== '{') {
     return false;
   }
@@ -70,12 +70,11 @@ export function isEncryptedPrivateKeyEnvelope(value: string): boolean {
   } catch {
     return false;
   }
-}
+};
 
-export async function encryptPrivateKeyWithPassword(
+export const encryptPrivateKeyWithPassword = async (
   privateKeyArmored: string,
-  password: string,
-): Promise<string> {
+  password: string,):  Promise<string> => {
   const salt = randomBytes(PRIVATE_KEY_SALT_BYTES);
   const iv = randomBytes(PRIVATE_KEY_IV_BYTES);
   const key = await deriveAes256KeyFromPassword(password, salt);
@@ -101,12 +100,11 @@ export async function encryptPrivateKeyWithPassword(
   };
 
   return JSON.stringify(envelope);
-}
+};
 
-export async function decryptPrivateKeyWithPassword(
+export const decryptPrivateKeyWithPassword = async (
   encryptedPayload: string,
-  password: string,
-): Promise<string> {
+  password: string,):  Promise<string> => {
   if (!isEncryptedPrivateKeyEnvelope(encryptedPayload)) {
     throw new Error('Stored private key is not in encrypted format');
   }
@@ -124,4 +122,4 @@ export async function decryptPrivateKeyWithPassword(
   );
 
   return new TextDecoder().decode(plaintext);
-}
+};

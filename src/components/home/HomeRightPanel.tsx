@@ -1,11 +1,17 @@
 import { UserListPanel } from '../UserListPanel';
 import { ThemeToggleStretch } from '../ThemeToggle';
+import Link from 'next/link';
 import {
   SidePanel,
   PrimaryButton,
+  MobilePanelHeader,
   VerticalResizableSections,
 } from './LayoutPrimitives';
 import { useHomePresence } from '../../contexts/home/useHomePageSelectors';
+import { withBasePath } from '@/utils/appPaths';
+import { InviteDialog } from '../InviteDialog';
+import { AppModal } from '../AppModal';
+import { useState } from 'react';
 
 const BUILD_STAMP = process.env.NEXT_PUBLIC_BUILD_STAMP ?? 'unknown-build';
 const rightSidebarSectionTitleStyle = {
@@ -17,7 +23,10 @@ const rightSidebarSectionTitleStyle = {
   whiteSpace: 'nowrap' as const,
 };
 
-export function HomeRightPanel() {
+export const HomeRightPanel = () => {
+  const [keyTransferUser, setKeyTransferUser] = useState<string | null>(null);
+  const [keyTransferPassword, setKeyTransferPassword] = useState('');
+  const [isKeyTransferPending, setIsKeyTransferPending] = useState(false);
   const {
     username,
     loggedInUsers,
@@ -35,7 +44,8 @@ export function HomeRightPanel() {
   } = useHomePresence();
 
   return (
-    <SidePanel>
+    <SidePanel aria-label="Users, logout, and additional info panel">
+      <MobilePanelHeader title="People" previousSlide={1} />
       <VerticalResizableSections
         storageKey="home.layout.right.usersSectionPct"
         defaultTopSize={82}
@@ -50,6 +60,9 @@ export function HomeRightPanel() {
             <div style={{ marginBottom: '5px' }}>
               <span style={rightSidebarSectionTitleStyle}>Users</span>
             </div>
+            <div className="mb-2">
+              <InviteDialog />
+            </div>
             <UserListPanel
               currentUsername={username}
               loggedInUsers={loggedInUsers}
@@ -57,10 +70,64 @@ export function HomeRightPanel() {
               userLastSeen={userLastSeen}
               blockedUsers={blockedUsers}
               onMessageUser={handleMessageUser}
-              onSendPublicKey={handleSendPublicKeyToUser}
+              onSendPublicKey={(user) => {
+                setKeyTransferPassword('');
+                setKeyTransferUser(user);
+              }}
               onBlockUser={handleBlockUser}
               onUnblockUser={handleUnblockUser}
             />
+            <AppModal
+              open={!!keyTransferUser}
+              title="Verify your password"
+              onClose={() => {
+                if (!isKeyTransferPending) setKeyTransferUser(null);
+              }}
+              actions={
+                <>
+                  <button
+                    type="button"
+                    className="app-secondary-button"
+                    onClick={() => setKeyTransferUser(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="app-primary-button"
+                    disabled={!keyTransferPassword || isKeyTransferPending}
+                    onClick={() => {
+                      if (!keyTransferUser) return;
+                      void (async () => {
+                        setIsKeyTransferPending(true);
+                        await handleSendPublicKeyToUser(
+                          keyTransferUser,
+                          keyTransferPassword,
+                        );
+                        setIsKeyTransferPending(false);
+                        setKeyTransferPassword('');
+                        setKeyTransferUser(null);
+                      })();
+                    }}
+                  >
+                    {isKeyTransferPending ? 'Verifying...' : 'Verify and send'}
+                  </button>
+                </>
+              }
+            >
+              <p className="app-dialog-message">
+                Re-enter your AES password to authorize sending this encrypted
+                private-key bundle.
+              </p>
+              <input
+                className="app-text-input app-dialog-password-input"
+                type="password"
+                autoFocus
+                value={keyTransferPassword}
+                onChange={(event) => setKeyTransferPassword(event.target.value)}
+                aria-label="AES password"
+              />
+            </AppModal>
           </div>
         }
         bottom={
@@ -121,9 +188,17 @@ export function HomeRightPanel() {
             <div className="text-center text-[11px] font-semibold text-app-muted">
               Build: {BUILD_STAMP}
             </div>
+            <div className="flex justify-end">
+              <Link
+                href={withBasePath('/diagrams/')}
+                className="inline-flex items-center rounded-md border border-app-border bg-app-surface px-2 py-1 text-[11px] font-semibold text-app-muted transition-colors duration-150 hover:bg-app-panel hover:text-app-fg"
+              >
+                Architecture diagrams
+              </Link>
+            </div>
           </div>
         }
       />
     </SidePanel>
   );
-}
+};

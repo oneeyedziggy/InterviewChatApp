@@ -10,9 +10,10 @@ import (
 	"strings"
 	"time"
 
+	wsrt "chat-server-go/websocket"
+
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 	"github.com/google/uuid"
-	socketio "github.com/karagenc/socket.io-go"
 	"golang.org/x/crypto/scrypt"
 )
 
@@ -230,21 +231,21 @@ func sanitizeServerPayloadForWire(data interface{}) interface{} {
 	}
 }
 
-func (cs *ChatServer) emitNamespaceSigned(defaultNsp *socketio.Namespace, event string, data interface{}) {
+func (cs *ChatServer) emitNamespaceSigned(defaultNsp *wsrt.Namespace, event string, data interface{}) {
 	if defaultNsp == nil {
 		return
 	}
 	defaultNsp.Emit(event, cs.withServerSignature(event, sanitizeServerPayloadForWire(data)))
 }
 
-func (cs *ChatServer) emitNamespaceRoomSigned(defaultNsp *socketio.Namespace, room socketio.Room, event string, data interface{}) {
+func (cs *ChatServer) emitNamespaceRoomSigned(defaultNsp *wsrt.Namespace, room wsrt.Room, event string, data interface{}) {
 	if defaultNsp == nil {
 		return
 	}
 	defaultNsp.To(room).Emit(event, cs.withServerSignature(event, sanitizeServerPayloadForWire(data)))
 }
 
-func (cs *ChatServer) emitSocketSigned(socket socketio.ServerSocket, event string, data interface{}) {
+func (cs *ChatServer) emitSocketSigned(socket wsrt.ServerSocket, event string, data interface{}) {
 	socket.Emit(event, cs.withServerSignature(event, sanitizeServerPayloadForWire(data)))
 }
 func contains(slice []string, item string) bool {
@@ -269,6 +270,19 @@ func generateSalt() string {
 	return hex.EncodeToString(bytes)
 }
 
+// sessionIDPreview returns a short, log-safe fingerprint of a session ID
+// (or any other secret token) so auth diagnostics can correlate values
+// across log lines without leaking the full session credential.
+func sessionIDPreview(id string) string {
+	if id == "" {
+		return "<empty>"
+	}
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8] + "…"
+}
+
 func hashPassword(password, salt string) (string, error) {
 	dk, err := scrypt.Key([]byte(password), []byte(salt), 16384, 8, 1, 32)
 	if err != nil {
@@ -288,7 +302,7 @@ func constantTimeCompare(a, b string) bool {
 	return result == 0
 }
 
-func (cs *ChatServer) sendToUserIDs(defaultNsp *socketio.Namespace, userIDs []string, event string, data interface{}) {
+func (cs *ChatServer) sendToUserIDs(defaultNsp *wsrt.Namespace, userIDs []string, event string, data interface{}) {
 	if defaultNsp == nil {
 		log.Printf("[sendToUserIDs] ✗ defaultNsp is nil, cannot send event %s", event)
 		return
@@ -309,12 +323,12 @@ func (cs *ChatServer) sendToUserIDs(defaultNsp *socketio.Namespace, userIDs []st
 			log.Printf("[sendToUserIDs] ✗ UserID %s not found in active sockets", userID)
 			continue
 		}
-		cs.emitNamespaceRoomSigned(defaultNsp, socketio.Room(socketID), event, data)
+		cs.emitNamespaceRoomSigned(defaultNsp, wsrt.Room(socketID), event, data)
 		log.Printf("[sendToUserIDs] ✓ Sent %s to userID %s (socketID: %s)", event, userID, socketID)
 	}
 }
 
-func (cs *ChatServer) sendToUsers(defaultNsp *socketio.Namespace, userIDs []string, event string, data interface{}) {
+func (cs *ChatServer) sendToUsers(defaultNsp *wsrt.Namespace, userIDs []string, event string, data interface{}) {
 	cs.sendToUserIDs(defaultNsp, userIDs, event, data)
 }
 

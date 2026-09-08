@@ -37,6 +37,13 @@ export const Input = ({
     onChange(thing?.target?.value ?? '');
   };
 
+  const animationHandler = (thing: React.AnimationEvent<HTMLInputElement>) => {
+    // Browser autofill can bypass React onChange; sync value into controlled state.
+    if (thing.animationName === 'app-on-auto-fill-start') {
+      onChange(thing.currentTarget.value ?? '');
+    }
+  };
+
   return (
     <div className="app-auth-input-row">
       <label className="app-auth-input-label" htmlFor={id}>
@@ -55,6 +62,7 @@ export const Input = ({
               minLength={minLength}
               required={required}
               onChange={changeHandeler}
+              onAnimationStart={animationHandler}
               onKeyDown={onKeyDown}
               autoFocus={autoFocus}
             />

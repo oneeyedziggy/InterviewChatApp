@@ -24,6 +24,7 @@ const (
 	EventClientVoteJoin                 = "clientVoteJoin"
 	EventClientRequestInitialData       = "clientRequestInitialData"
 	EventClientRequestRoomData          = "clientRequestRoomData"
+	EventClientRequestRoomWindow        = "clientRequestRoomWindow"
 	EventClientVoteMessage              = "clientVoteMessage"
 	EventClientEditMessage              = "clientEditMessage"
 	EventClientDeleteMessage            = "clientDeleteMessage"
@@ -100,6 +101,7 @@ type LoginRequest struct {
 	Password           string `json:"password,omitempty"`
 	PublicKey          string `json:"publicKey,omitempty"`
 	EncryptedUUID      string `json:"encryptedUUID,omitempty"`
+	InviteCode         string `json:"inviteCode,omitempty"`
 }
 
 type LoginResponse struct {
@@ -109,6 +111,63 @@ type LoginResponse struct {
 	Challenge       string `json:"challenge,omitempty"`
 	ServerPublicKey string `json:"serverPublicKey,omitempty"`
 }
+
+type CreateInviteRequest struct {
+	UserID    string `json:"userId"`
+	SessionID string `json:"sessionId"`
+}
+
+type CreateInviteResponse struct {
+	Code      string `json:"code,omitempty"`
+	ExpiresAt int64  `json:"expiresAt,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+type ManageInviteRequest struct {
+	UserID string `json:"userId"`
+	SessionID string `json:"sessionId"`
+	InviteID string `json:"inviteId,omitempty"`
+}
+
+type InviteSummary struct {
+	InviteID string `json:"inviteId"`
+	CreatedByUserID string `json:"createdByUserId"`
+	CreatedAt int64 `json:"createdAt"`
+	ExpiresAt int64 `json:"expiresAt"`
+	Status string `json:"status"`
+	UsedCount int64 `json:"usedCount"`
+	MaxUses *int64 `json:"maxUses,omitempty"`
+}
+
+type ServerCreationChallengeRequest struct {
+	PublicKey string `json:"publicKey"`
+}
+
+type ServerCreationChallengeResponse struct {
+	Capability string `json:"capability,omitempty"`
+	ServerPublicKey string `json:"serverPublicKey,omitempty"`
+	ExpiresAt  int64  `json:"expiresAt,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+type CreateServerRequest struct {
+	Capability string `json:"capability"`
+	PublicKey  string `json:"publicKey"`
+	Signature  string `json:"signature"`
+	UserID string `json:"userId"`
+	UsernameHash string `json:"usernameHash"`
+	UsernameCiphertext string `json:"usernameCiphertext"`
+}
+
+type CreateServerResponse struct {
+	ServerID string `json:"serverId"`
+	Alias string `json:"alias"`
+	SessionID string `json:"sessionId"`
+	ServerPublicKey string `json:"serverPublicKey"`
+	UserID string `json:"userId"`
+}
+
+const InviteTTL = 24 * time.Hour
 
 type DeleteUserRequest struct {
 	UserID    string `json:"userId"`

@@ -1,15 +1,30 @@
-import { useEffect, useRef } from 'react';
-import { MainPanel, Row, AppTextArea, PrimaryButton } from './LayoutPrimitives';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  MainPanel,
+  Row,
+  AppTextArea,
+  PrimaryButton,
+  MobilePanelHeader,
+} from './LayoutPrimitives';
 import { renderMessageThread } from './MessageThread';
 import { MESSAGE_LIMITS } from '../../constants';
+import { getRoomDisplayLabel } from '../../utils/dmRooms';
 import {
   useHomeComposer,
   useHomePresence,
 } from '../../contexts/home/useHomePageSelectors';
 import { getUtf8ByteLength } from '../../utils/messages';
+import { SOCKET_EVENTS } from '../../constants';
+import {
+  requireRoomIdByName,
+  requireUserIdByUsername,
+} from '../../utils/identityMap';
 
-export function HomeCenterPanel() {
+export const HomeCenterPanel = () => {
   const composerTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const scrollHeightBeforeOlderRef = useRef<number | null>(null);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [hasOlderMessages, setHasOlderMessages] = useState(true);
 
   const {
     chatValues,
@@ -33,6 +48,94 @@ export function HomeCenterPanel() {
     doSend,
   } = useHomeComposer();
 
+  const loadOlderMessages = useCallback(() => {
+    if (isLoadingOlder || !hasOlderMessages) return;
+    void (async () => {
+      if (!socket || !username || !currentRoom) return;
+      setIsLoadingOlder(true);
+      const [{ loadKeysAsync }, { emitSignedMutation }] = await Promise.all([
+        import('../../utils/gpg'),
+        import('../../utils/socketAuth'),
+      ]);
+      const keys = await loadKeysAsync();
+      if (!keys?.sessionId) {
+        setIsLoadingOlder(false);
+        return;
+      }
+      const roomMessages = chatValues[currentRoom] || [];
+      const firstMessage = roomMessages[0];
+      const thread = document.querySelector('.app-message-thread-card');
+      scrollHeightBeforeOlderRef.current = thread?.scrollHeight || null;
+      const userId = requireUserIdByUsername(username);
+      let roomId = currentRoom;
+      try {
+        roomId = requireRoomIdByName(currentRoom);
+      } catch {
+        // DM room IDs are already canonical.
+      }
+      try {
+        await emitSignedMutation(socket, {
+          event: SOCKET_EVENTS.CLIENT_REQUEST_ROOM_WINDOW,
+          payload: {
+            room: currentRoom,
+            roomId,
+            userId,
+            sessionId: keys.sessionId,
+            limit: 100,
+            beforeTimestamp: firstMessage?.timestamp,
+            beforeMessageId: firstMessage?.id,
+          },
+          userId,
+          sessionId: keys.sessionId,
+          claims: {
+            room: currentRoom,
+            roomId,
+            limit: '100',
+            beforeTimestamp: firstMessage?.timestamp || 0,
+            beforeMessageId: firstMessage?.id || '',
+          },
+        });
+      } catch {
+        setIsLoadingOlder(false);
+      }
+    })();
+  }, [
+    chatValues,
+    currentRoom,
+    hasOlderMessages,
+    isLoadingOlder,
+    socket,
+    username,
+  ]);
+
+  useEffect(() => {
+    const onWindowLoaded = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ direction?: string; hasMore?: boolean }>
+      ).detail;
+      setIsLoadingOlder(false);
+      if (detail?.direction === 'older') {
+        setHasOlderMessages(detail.hasMore === true);
+        const previousHeight = scrollHeightBeforeOlderRef.current;
+        const thread = document.querySelector('.app-message-thread-card');
+        if (previousHeight !== null && thread) {
+          window.requestAnimationFrame(() => {
+            thread.scrollTop += thread.scrollHeight - previousHeight;
+          });
+        }
+        scrollHeightBeforeOlderRef.current = null;
+      }
+    };
+    window.addEventListener('chat-room-window-loaded', onWindowLoaded);
+    return () =>
+      window.removeEventListener('chat-room-window-loaded', onWindowLoaded);
+  }, []);
+
+  useEffect(() => {
+    setHasOlderMessages(true);
+    scrollHeightBeforeOlderRef.current = null;
+  }, [currentRoom]);
+
   const {
     handleMessageUser,
     handleSendPublicKeyToUser,
@@ -44,6 +147,9 @@ export function HomeCenterPanel() {
   const draftByteLength = getUtf8ByteLength(userDraftMessage);
   const showByteCounter = draftByteLength > MESSAGE_LIMITS.WARN_TEXT_BYTES;
   const isOverLimit = draftByteLength > MESSAGE_LIMITS.MAX_TEXT_BYTES;
+  const mobileRoomTitle = currentRoom
+    ? getRoomDisplayLabel(currentRoom, username)
+    : 'Messages';
 
   useEffect(() => {
     const el = composerTextAreaRef.current;
@@ -65,8 +171,14 @@ export function HomeCenterPanel() {
   }, [userDraftMessage]);
 
   return (
-    <MainPanel>
+    <MainPanel aria-label="Messages and composer panel">
+      <MobilePanelHeader
+        title={mobileRoomTitle}
+        previousSlide={0}
+        nextSlide={2}
+      />
       <div className="app-message-thread-area">
+        {isLoadingOlder && <div role="status">Loading older messages...</div>}
         {renderMessageThread(
           chatValues,
           currentRoom,
@@ -88,6 +200,7 @@ export function HomeCenterPanel() {
           replyingTo,
           editingMessageTimestamp,
           socket,
+          loadOlderMessages,
         )}
       </div>
       {currentRoom && (
@@ -127,7 +240,10 @@ export function HomeCenterPanel() {
           {(replyingTo || editingMessageTimestamp) && (
             <button
               onClick={handleCancelReplyOrEdit}
-              className="rounded-md bg-red-500 px-2 py-1 text-xs text-white"
+              aria-label={
+                editingMessageTimestamp ? 'Cancel edit' : 'Cancel reply'
+              }
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-red-600 text-sm font-bold leading-none text-white shadow-sm transition-colors hover:bg-red-700"
               title={editingMessageTimestamp ? 'Cancel edit' : 'Cancel reply'}
             >
               X
@@ -144,4 +260,4 @@ export function HomeCenterPanel() {
       )}
     </MainPanel>
   );
-}
+};

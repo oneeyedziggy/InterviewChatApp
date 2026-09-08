@@ -3,11 +3,21 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ThemeToggle, ThemeToggleStretch } from './ThemeToggle';
 
-function installMatchMedia(matches: boolean) {
+const installMatchMedia = (matches: boolean) => {
   const listeners = new Set<(event: MediaQueryListEvent) => void>();
+  let currentMatches = matches;
   const mediaQueryList = {
-    matches,
+    get matches() {
+      return currentMatches;
+    },
     media: '(prefers-color-scheme: dark)',
+    onchange: null,
+    addListener: vi.fn((listener: (event: MediaQueryListEvent) => void) => {
+      listeners.add(listener);
+    }),
+    removeListener: vi.fn((listener: (event: MediaQueryListEvent) => void) => {
+      listeners.delete(listener);
+    }),
     addEventListener: vi.fn(
       (event: string, listener: (event: MediaQueryListEvent) => void) => {
         if (event === 'change') listeners.add(listener);
@@ -18,17 +28,20 @@ function installMatchMedia(matches: boolean) {
         if (event === 'change') listeners.delete(listener);
       },
     ),
+    dispatchEvent: vi.fn(() => true),
     dispatchChange(nextMatches: boolean) {
-      mediaQueryList.matches = nextMatches;
+      currentMatches = nextMatches;
       listeners.forEach((listener) =>
         listener({ matches: nextMatches } as MediaQueryListEvent),
       );
     },
-  } as MediaQueryList & { dispatchChange: (nextMatches: boolean) => void };
+  } as unknown as MediaQueryList & {
+    dispatchChange: (nextMatches: boolean) => void;
+  };
 
   window.matchMedia = vi.fn(() => mediaQueryList) as any;
   return mediaQueryList;
-}
+};
 
 describe('ThemeToggle', () => {
   beforeEach(() => {

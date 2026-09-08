@@ -4,7 +4,9 @@ import {
   SidePanel,
   BlockTextInput,
   PrimaryButton,
+  MobilePanelHeader,
   VerticalResizableSections,
+  useHomeMobileCarousel,
 } from './LayoutPrimitives';
 import { useHomeRooms } from '../../contexts/home/useHomePageSelectors';
 
@@ -22,6 +24,7 @@ type RoomTreeSection = {
 };
 
 export function HomeLeftPanel() {
+  const { isMobileCarousel } = useHomeMobileCarousel();
   const {
     currentRoom,
     username,
@@ -64,6 +67,14 @@ export function HomeLeftPanel() {
     () => roomList.filter((room) => leftRooms.has(room) && !isDmRoom(room)),
     [roomList, leftRooms],
   );
+
+  const normalizedNewRoomName = newRoomName.trim().toLowerCase();
+  const roomNameExists =
+    normalizedNewRoomName !== '' &&
+    roomList.some(
+      (room) => room.trim().toLowerCase() === normalizedNewRoomName,
+    );
+  const roomNameErrorId = 'newRoomNameError';
 
   const treeSections = useMemo<RoomTreeSection[]>(() => {
     const toNode = (room: string): RoomTreeNode => ({
@@ -127,7 +138,11 @@ export function HomeLeftPanel() {
               minWidth: 0,
               fontSize: '12px',
             }}
-            onClick={() => setCurrentRoom(room)}
+            onClick={() => {
+              if (room !== currentRoom) {
+                setCurrentRoom(room);
+              }
+            }}
             title={room}
           >
             {node.label}
@@ -157,7 +172,8 @@ export function HomeLeftPanel() {
   };
 
   return (
-    <SidePanel>
+    <SidePanel aria-label="Rooms panel">
+      <MobilePanelHeader title="Rooms" nextSlide={1} />
       <VerticalResizableSections
         storageKey="home.layout.left.roomsSectionPct"
         defaultTopSize={80}
@@ -175,35 +191,41 @@ export function HomeLeftPanel() {
                     return null;
                   }
 
-                  const isCollapsed = !!collapsedSections[section.id];
+                  const hideInternalHeader =
+                    isMobileCarousel && section.id === 'channels';
+                  const isCollapsed = hideInternalHeader
+                    ? false
+                    : !!collapsedSections[section.id];
                   return (
                     <div key={section.id}>
-                      <button
-                        type="button"
-                        onClick={() => toggleSection(section.id)}
-                        aria-expanded={!isCollapsed}
-                        style={{
-                          width: '100%',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          border: 'none',
-                          borderTop: '1px solid var(--app-border)',
-                          borderBottom: '1px solid var(--app-border)',
-                          background: 'var(--app-panel)',
-                          color: 'var(--app-muted)',
-                          fontSize: '13px',
-                          fontWeight: 800,
-                          letterSpacing: '0.01em',
-                          padding: '6px 10px',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <span>{section.label}</span>
-                        <span style={{ fontSize: '10px' }}>
-                          {isCollapsed ? '▸' : '▾'} {section.nodes.length}
-                        </span>
-                      </button>
+                      {!hideInternalHeader && (
+                        <button
+                          type="button"
+                          onClick={() => toggleSection(section.id)}
+                          aria-expanded={!isCollapsed}
+                          style={{
+                            width: '100%',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            border: 'none',
+                            borderTop: '1px solid var(--app-border)',
+                            borderBottom: '1px solid var(--app-border)',
+                            background: 'var(--app-panel)',
+                            color: 'var(--app-muted)',
+                            fontSize: '13px',
+                            fontWeight: 800,
+                            letterSpacing: '0.01em',
+                            padding: '6px 10px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <span>{section.label}</span>
+                          <span style={{ fontSize: '10px' }}>
+                            {isCollapsed ? '▸' : '▾'} {section.nodes.length}
+                          </span>
+                        </button>
+                      )}
 
                       {!isCollapsed && (
                         <div>
@@ -230,6 +252,8 @@ export function HomeLeftPanel() {
                 type="text"
                 id="newRoomNameInput"
                 value={newRoomName}
+                aria-invalid={roomNameExists}
+                aria-describedby={roomNameExists ? roomNameErrorId : undefined}
                 onChange={(e) => {
                   setNewRoomName(e.target.value);
                   if (e.target.value.trim() !== '') {
@@ -247,6 +271,20 @@ export function HomeLeftPanel() {
                 onKeyDown={onNewRoomKeyDownHandler}
                 autoComplete="off"
               />
+              {roomNameExists && (
+                <p
+                  id={roomNameErrorId}
+                  role="alert"
+                  style={{
+                    marginTop: '6px',
+                    color: '#b32030',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                  }}
+                >
+                  A room with that name already exists.
+                </p>
+              )}
               {showAutocomplete && newRoomName.trim() === '' && (
                 <div
                   style={{
@@ -306,6 +344,7 @@ export function HomeLeftPanel() {
               type="button"
               id="createNewRoomButton"
               onClick={makeNewRoom}
+              disabled={roomNameExists}
               className="app-left-room-create-button"
             >
               Make New Room

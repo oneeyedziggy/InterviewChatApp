@@ -1,8 +1,16 @@
-import * as socketio from 'socket.io';
-
 import { type Messages } from './types/types';
 import { mySessionCache } from './cache';
 import { SOCKET_EVENTS, DEFAULT_ROOM } from './constants';
+
+type SocketLike = {
+  on: (event: string, handler: (payload: any) => void) => void;
+  emit: (event: string, payload: any) => void;
+};
+
+type SocketServerLike = {
+  on: (event: 'connection', handler: (socket: SocketLike) => void) => void;
+  emit: (event: string, payload: any) => void;
+};
 
 const messages: Messages = {
   [DEFAULT_ROOM]: [],
@@ -23,13 +31,13 @@ const getUserList = () => {
   return alphabeticalSort(Object.keys(users).filter((user) => !!user));
 };
 
-export const setupSocketHandlers = (io: socketio.Server) => {
+export const setupSocketHandlers = (io: SocketServerLike) => {
   // socket.emit === back to requester
   // socket.broadcast.emit === to all but sender
   // io.emit === back to ALL
-  io.on('connection', (socket: socketio.Socket) => {
+  io.on('connection', (socket: SocketLike) => {
     console.log('client connected');
-    socket.emit(SOCKET_EVENTS.STATUS, 'Hello from Socket.io');
+    socket.emit(SOCKET_EVENTS.STATUS, 'Hello from WebSocket');
     socket.emit(SOCKET_EVENTS.INITIAL_DATA, {
       messages,
       rooms,

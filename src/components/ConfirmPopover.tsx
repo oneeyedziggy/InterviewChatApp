@@ -70,7 +70,7 @@ type ConfirmPopoverProps = {
   onCancel: () => void;
 };
 
-export function ConfirmPopover({
+export const ConfirmPopover = ({
   message,
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
@@ -78,7 +78,7 @@ export function ConfirmPopover({
   anchorRect,
   onConfirm,
   onCancel,
-}: ConfirmPopoverProps) {
+}: ConfirmPopoverProps) => {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -120,4 +120,4 @@ export function ConfirmPopover({
     </Popover>,
     document.body,
   );
-}
+};

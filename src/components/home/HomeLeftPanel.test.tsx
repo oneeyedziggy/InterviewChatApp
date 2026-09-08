@@ -2,14 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HomeLeftPanel } from './HomeLeftPanel';
+import type { HomeRoomsContextValue } from '../../contexts/home/homePageTypes';
 
 const homeRoomsMock = vi.hoisted(() => ({
   useHomeRooms: vi.fn(),
 }));
 
-let homeRoomsState: ReturnType<
-  typeof homeRoomsMock.useHomeRooms.mockReturnValue
-> | null = null;
+let homeRoomsState: HomeRoomsContextValue | null = null;
 
 vi.mock('../../contexts/home/useHomePageSelectors', () => homeRoomsMock);
 
@@ -37,7 +36,7 @@ describe('HomeLeftPanel', () => {
       onNewRoomKeyDownHandler: vi.fn(),
       makeNewRoom: vi.fn(),
     };
-    homeRoomsMock.useHomeRooms.mockReturnValue(homeRoomsState as any);
+    homeRoomsMock.useHomeRooms.mockReturnValue(homeRoomsState);
   });
 
   afterEach(() => {
@@ -94,5 +93,24 @@ describe('HomeLeftPanel', () => {
 
     await user.click(screen.getByRole('button', { name: /make new room/i }));
     expect(homeRoomsState?.makeNewRoom).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables room creation and shows feedback for duplicate names', () => {
+    homeRoomsState = {
+      ...homeRoomsState!,
+      newRoomName: 'general',
+    };
+    homeRoomsMock.useHomeRooms.mockReturnValue(homeRoomsState);
+
+    render(<HomeLeftPanel />);
+
+    const input = screen.getByLabelText(/new room name/i);
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      /a room with that name already exists/i,
+    );
+    expect(
+      screen.getByRole('button', { name: /make new room/i }),
+    ).toBeDisabled();
   });
 });

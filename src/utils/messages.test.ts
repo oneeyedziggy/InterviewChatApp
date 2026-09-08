@@ -22,8 +22,9 @@ describe('messages utils', () => {
     const message: Message = {
       id: '1',
       username: 'alice',
+      userId: 'alice-id',
+      roomId: 'general-id',
       content: 'plain text',
-      room: '#general',
       timestamp: Date.now(),
     };
 
@@ -37,8 +38,9 @@ describe('messages utils', () => {
     const message: Message = {
       id: '2',
       username: 'alice',
+      userId: 'alice-id',
+      roomId: 'general-id',
       content: 'secret',
-      room: '#general',
       timestamp: Date.now(),
     };
 
@@ -49,10 +51,11 @@ describe('messages utils', () => {
     const message: Message = {
       id: '3',
       username: 'alice',
+      userId: 'alice-id',
+      roomId: 'general-id',
       content: 'hidden',
-      room: '#general',
       timestamp: Date.now(),
-      encryptedFor: { viewer: true },
+      encryptedFor: { viewer: 'ciphertext' },
     };
 
     expect(canUserViewMessage(message, 'viewer')).toBe(true);
@@ -62,10 +65,17 @@ describe('messages utils', () => {
     const message: Message = {
       id: '4',
       username: 'alice',
+      userId: 'alice-id',
+      roomId: 'general-id',
       content: 'old',
-      room: '#general',
       timestamp: Date.now(),
-      versions: [{ content: 'latest', encryptedMessage: 'ciphertext' }],
+      versions: [
+        {
+          version: 2,
+          timestamp: Date.now(),
+          encryptedMessage: 'ciphertext',
+        },
+      ],
     };
 
     expect(canUserViewMessage(message, 'viewer')).toBe(true);
@@ -75,8 +85,9 @@ describe('messages utils', () => {
     const message: Message = {
       id: '5',
       username: 'alice',
+      userId: 'alice-id',
+      roomId: 'general-id',
       content: 'hidden',
-      room: '#general',
       timestamp: Date.now(),
       encryptedMessage: 'ciphertext',
     };
@@ -88,10 +99,17 @@ describe('messages utils', () => {
     const message: Message = {
       id: '6',
       username: 'alice',
+      userId: 'alice-id',
+      roomId: 'general-id',
       content: 'old',
-      room: '#general',
       timestamp: Date.now(),
-      versions: [{ content: 'latest', encryptedFor: { viewer: true } }],
+      versions: [
+        {
+          version: 2,
+          timestamp: Date.now(),
+          encryptedFor: { viewer: 'ciphertext' },
+        },
+      ],
     };
 
     expect(canUserViewMessage(message, 'viewer')).toBe(true);
@@ -103,8 +121,9 @@ describe('messages utils', () => {
     const message: Message = {
       id: '6b',
       username: 'alice',
+      userId: 'alice-id',
+      roomId: 'general-id',
       content: 'plain text',
-      room: '#general',
       timestamp: Date.now(),
     };
 
@@ -117,10 +136,11 @@ describe('messages utils', () => {
     const message: Message = {
       id: '6c',
       username: 'alice',
+      userId: 'alice-id',
+      roomId: 'general-id',
       content: 'hidden',
-      room: '#general',
       timestamp: Date.now(),
-      encryptedFor: { 'viewer-id': true },
+      encryptedFor: { 'viewer-id': 'ciphertext' },
     };
 
     expect(canUserViewMessage(message, 'viewer')).toBe(true);
@@ -132,8 +152,9 @@ describe('messages utils', () => {
     const message: Message = {
       id: '6d',
       username: 'alice',
+      userId: 'alice-id',
+      roomId: 'general-id',
       content: 'hidden',
-      room: '#general',
       timestamp: Date.now(),
       encryptedMessage: 'ciphertext',
     };
@@ -145,10 +166,17 @@ describe('messages utils', () => {
     const message: Message = {
       id: '7',
       username: 'alice',
+      userId: 'alice-id',
+      roomId: 'general-id',
       content: 'old',
-      room: '#general',
       timestamp: Date.now(),
-      versions: [{ content: 'latest', encryptedFor: { other: true } }],
+      versions: [
+        {
+          version: 2,
+          timestamp: Date.now(),
+          encryptedFor: { other: 'ciphertext' },
+        },
+      ],
     };
 
     expect(canUserViewMessage(message, 'viewer')).toBe(true);
@@ -158,8 +186,9 @@ describe('messages utils', () => {
     const message: Message = {
       id: '8',
       username: 'alice',
+      userId: 'alice-id',
+      roomId: 'general-id',
       content: 'plain text',
-      room: '#general',
       timestamp: Date.now(),
     };
 
@@ -171,7 +200,7 @@ describe('messages utils', () => {
       id: '9',
       username: 'alice',
       content: 'blocked',
-      room: '#general',
+      roomId: 'general-id',
       timestamp: Date.now(),
       userId: 'system',
     };

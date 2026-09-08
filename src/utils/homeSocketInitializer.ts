@@ -1,5 +1,6 @@
-import io, { type Socket } from 'socket.io-client';
-import { socketIoPath } from '@/utils/appPaths';
+import connectWebSocket, { type Socket } from './websocketClient';
+import { websocketPath } from '@/utils/appPaths';
+import { mergeMessageWindow } from './messageWindow';
 import { type Message, type Messages } from '../types/types';
 import { SOCKET_EVENTS, DEFAULT_ROOM, SYSTEM_MESSAGES } from '../constants';
 import {
@@ -29,31 +30,19 @@ import { getBlockedUsers } from '../utils/userSettings';
 import { filterRoomsForUser, isDmRoom, isUserInDmRoom } from '../utils/dmRooms';
 import type { Dispatch, SetStateAction } from 'react';
 import type { JoinRequest } from '../contexts/home/homePageTypes';
+import { normalizeRoomName } from './unicode';
 
-function createClientMessageId(prefix = 'client'): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return `${prefix}:${crypto.randomUUID()}`;
-  }
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
-    const suffix = Array.from(bytes)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-    return `${prefix}:${Date.now()}:${suffix}`;
-  }
-  throw new Error('Secure randomness unavailable for client message IDs');
-}
-
-function ensureMessageId(message: Message): Message {
+const ensureMessageId = (message: Message): Message => {
   if (message.id && message.id.trim() !== '') {
     return message;
   }
+  // Deterministic (not random) so re-delivery of the same server message
+  // dedupes correctly instead of being treated as a brand-new message.
   return {
     ...message,
-    id: createClientMessageId('legacy'),
+    id: `legacy:${message.roomId || ''}:${message.timestamp}:${message.userId || ''}`,
   };
-}
+};
 
 type StoredRoomPrefs = {
   leftRooms?: string[];
@@ -77,7 +66,7 @@ type ServerSignatureEnvelope = {
 
 const SERVER_SIGNATURE_STRICT_STORAGE_KEY = 'chat_server_signature_strict';
 
-function isServerSignatureStrictMode(): boolean {
+const isServerSignatureStrictMode = (): boolean => {
   if (typeof window === 'undefined') {
     return true;
   }
@@ -89,18 +78,18 @@ function isServerSignatureStrictMode(): boolean {
 
   const value = raw.trim().toLowerCase();
   return value !== '0' && value !== 'false' && value !== 'off';
-}
+};
 
-function escapeGoJsonString(value: string): string {
+const escapeGoJsonString = (value: string): string => {
   return JSON.stringify(value)
     .replace(/</g, '\\u003c')
     .replace(/>/g, '\\u003e')
     .replace(/&/g, '\\u0026')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
-}
+};
 
-function goJsonStringify(value: unknown): string {
+const goJsonStringify = (value: unknown): string => {
   if (value === null || value === undefined) {
     return 'null';
   }
@@ -123,23 +112,23 @@ function goJsonStringify(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(String(value));
-}
+};
 
-async function sha256Hex(value: string): Promise<string> {
+const sha256Hex = async (value: string): Promise<string> => {
   const data = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest('SHA-256', data);
   const bytes = Array.from(new Uint8Array(digest));
   return bytes.map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
+};
 
-async function roomNameHash(roomName: string): Promise<string> {
-  const normalized = roomName.trim().toLowerCase();
+const roomNameHash = async (roomName: string): Promise<string> => {
+  const normalized = normalizeRoomName(roomName);
   return sha256Hex(normalized);
-}
+};
 
-function buildServerSigningInput(
+const buildServerSigningInput = (
   envelope: Required<ServerSignatureEnvelope>,
-): string {
+): string => {
   return [
     envelope.version,
     envelope.event,
@@ -147,9 +136,11 @@ function buildServerSigningInput(
     envelope.nonce,
     envelope.payloadHash,
   ].join('|');
-}
+};
 
-async function applyEncryptedRoomDirectory(payload: unknown): Promise<number> {
+const applyEncryptedRoomDirectory = async (
+  payload: unknown,
+): Promise<number> => {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return 0;
   }
@@ -217,9 +208,11 @@ async function applyEncryptedRoomDirectory(payload: unknown): Promise<number> {
     });
   }
   return Object.keys(decryptedRoomDirectory).length;
-}
+};
 
-async function applyEncryptedUserDirectory(payload: unknown): Promise<number> {
+const applyEncryptedUserDirectory = async (
+  payload: unknown,
+): Promise<number> => {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return 0;
   }
@@ -287,9 +280,9 @@ async function applyEncryptedUserDirectory(payload: unknown): Promise<number> {
     });
   }
   return Object.keys(decryptedUserDirectory).length;
-}
+};
 
-function parseUserIdsFromPubKeyPayload(payload: unknown): Set<string> {
+const parseUserIdsFromPubKeyPayload = (payload: unknown): Set<string> => {
   const userIds = new Set<string>();
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return userIds;
@@ -303,11 +296,11 @@ function parseUserIdsFromPubKeyPayload(payload: unknown): Set<string> {
   }
 
   return userIds;
-}
+};
 
-function collectEncryptionRecipients(
+const collectEncryptionRecipients = (
   incomingUserPubKeys: unknown,
-): Record<string, string> {
+): Record<string, string> => {
   const entries = loadUserPublicKeyEntries() || {};
   const recipients: Record<string, string> = {};
   for (const [userId, entry] of Object.entries(entries)) {
@@ -346,9 +339,9 @@ function collectEncryptionRecipients(
   }
 
   return recipients;
-}
+};
 
-async function buildIdentityDirectoryRefreshPayload(
+const buildIdentityDirectoryRefreshPayload = async (
   newUserIds: string[],
   incomingUserPubKeys: unknown,
 ): Promise<{
@@ -356,7 +349,7 @@ async function buildIdentityDirectoryRefreshPayload(
   userDirectoryCiphertexts: Record<string, string>;
   roomDirectoryUpdatedAt: Record<string, number>;
   userDirectoryUpdatedAt: Record<string, number>;
-} | null> {
+} | null> => {
   if (newUserIds.length === 0) {
     return null;
   }
@@ -374,6 +367,11 @@ async function buildIdentityDirectoryRefreshPayload(
 
   const roomDirectory = getRoomDirectorySnapshot();
   const userDirectory = getUserDirectorySnapshot();
+  const currentUserId =
+    keys.userId || getCurrentUserId() || requireUserIdByUsername(keys.username);
+  if (currentUserId && !userDirectory[currentUserId]) {
+    userDirectory[currentUserId] = keys.username;
+  }
   const roomDirectoryUpdatedAt = getRoomDirectoryTimestampSnapshot();
   const userDirectoryUpdatedAt = getUserDirectoryTimestampSnapshot();
 
@@ -433,23 +431,24 @@ async function buildIdentityDirectoryRefreshPayload(
     roomDirectoryUpdatedAt,
     userDirectoryUpdatedAt,
   };
-}
+};
 
-async function maybeSendIdentityDirectoryRefresh(args: {
+const maybeSendIdentityDirectoryRefresh = async (args: {
   socket: Socket;
   authToken: string;
   username: string;
   incomingUserPubKeys: unknown;
-}): Promise<void> {
+}): Promise<void> => {
   const { socket, authToken, username, incomingUserPubKeys } = args;
   if (!authToken || !username) {
     return;
   }
 
-  const knownBefore = parseUserIdsFromPubKeyPayload(loadUserPublicKeyEntries());
   const knownAfter = parseUserIdsFromPubKeyPayload(incomingUserPubKeys);
   const newUserIds = Array.from(knownAfter).filter(
-    (userId) => !knownBefore.has(userId),
+    (userId) =>
+      userId !== getCurrentUserId() &&
+      userId !== requireUserIdByUsername(username),
   );
 
   if (newUserIds.length === 0) {
@@ -465,39 +464,102 @@ async function maybeSendIdentityDirectoryRefresh(args: {
   }
 
   const userId = requireUserIdByUsername(username);
-  await emitSignedMutation(socket, {
-    event: SOCKET_EVENTS.CLIENT_IDENTITY_DIRECTORY_REFRESH,
-    payload: {
+  try {
+    await emitSignedMutation(socket, {
+      event: SOCKET_EVENTS.CLIENT_IDENTITY_DIRECTORY_REFRESH,
+      payload: {
+        userId,
+        refreshedForUserIds: newUserIds,
+        roomNameCiphertexts: refreshPayload.roomNameCiphertexts,
+        userDirectoryCiphertexts: refreshPayload.userDirectoryCiphertexts,
+        roomDirectoryUpdatedAt: refreshPayload.roomDirectoryUpdatedAt,
+        userDirectoryUpdatedAt: refreshPayload.userDirectoryUpdatedAt,
+        submittedAt: Date.now(),
+      },
       userId,
-      refreshedForUserIds: newUserIds,
-      roomNameCiphertexts: refreshPayload.roomNameCiphertexts,
-      userDirectoryCiphertexts: refreshPayload.userDirectoryCiphertexts,
-      roomDirectoryUpdatedAt: refreshPayload.roomDirectoryUpdatedAt,
-      userDirectoryUpdatedAt: refreshPayload.userDirectoryUpdatedAt,
-      submittedAt: Date.now(),
-    },
-    userId,
-    sessionId: authToken,
-    claims: {
-      userId,
-      refreshedForUserIds: JSON.stringify(newUserIds),
-    },
-  });
+      sessionId: authToken,
+      claims: {
+        userId,
+        refreshedForUserIds: JSON.stringify(newUserIds),
+      },
+    });
+  } catch (error) {
+    console.warn('[Socket] Identity directory refresh skipped:', error);
+  }
 
   console.log(
     '[Socket] Submitted identity directory refresh for new users:',
     newUserIds,
   );
-}
+};
 
-async function ensureDefaultRoomExists(args: {
+const maybeGrantNewMemberAccess = async (args: {
+  socket: Socket;
+  authToken: string;
+  username: string;
+  newUserId: string;
+  getChatValues: () => Messages;
+}): Promise<void> => {
+  const { socket, authToken, username, newUserId, getChatValues } = args;
+  const keys = await loadKeysAsync();
+  if (!keys?.privateKey || !keys.publicKey || !authToken || !newUserId) return;
+
+  const userId = keys.userId || requireUserIdByUsername(username);
+  const recipients = collectEncryptionRecipients(loadUserPublicKeyEntries());
+  const messages = getChatValues();
+
+  for (const [room, roomMessages] of Object.entries(messages)) {
+    if (isDmRoom(room)) continue;
+    let roomId = getRoomIdByName(room) || room;
+    for (const message of roomMessages) {
+      if (
+        message.userId !== userId ||
+        !message.content ||
+        message.content.includes('[Encrypted message]')
+      ) {
+        continue;
+      }
+      try {
+        const encryptedMessage = await encryptForAllUsers(
+          message.content,
+          { ...recipients, [newUserId]: recipients[newUserId] },
+          keys.publicKey,
+          username,
+        );
+        await emitSignedMutation(socket, {
+          event: SOCKET_EVENTS.CLIENT_GRANT_ACCESS,
+          payload: {
+            requestingUserId: newUserId,
+            originalRoomId: roomId,
+            messageTimestamp: message.timestamp,
+            encryptedMessage,
+            userId,
+            sessionId: authToken,
+          },
+          userId,
+          sessionId: authToken,
+          claims: {
+            requestingUserId: newUserId,
+            originalRoomId: roomId,
+            messageTimestamp: message.timestamp,
+            encryptedMessage,
+          },
+        });
+      } catch (error) {
+        console.warn('[Socket] Skipped automatic member message grant:', error);
+      }
+    }
+  }
+};
+
+const ensureDefaultRoomExists = async (args: {
   socket: Socket;
   authToken: string;
   username: string;
   roomIdsFromServer: unknown;
   incomingUserPubKeys?: unknown;
   retryAttempt?: number;
-}): Promise<void> {
+}): Promise<void> => {
   const {
     socket,
     authToken,
@@ -587,12 +649,14 @@ async function ensureDefaultRoomExists(args: {
   }
 
   console.log('[Socket] Bootstrapped missing default room:', DEFAULT_ROOM);
-}
+};
 
-async function validateAndApplyIdentityRefresh(payload: unknown): Promise<{
+const validateAndApplyIdentityRefresh = async (
+  payload: unknown,
+): Promise<{
   roomApplied: number;
   userApplied: number;
-}> {
+}> => {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return { roomApplied: 0, userApplied: 0 };
   }
@@ -732,16 +796,16 @@ async function validateAndApplyIdentityRefresh(payload: unknown): Promise<{
     roomApplied: Object.keys(decryptedRoomDirectory).length,
     userApplied: Object.keys(decryptedUserDirectory).length,
   };
-}
+};
 
-function maybeInjectIdentitySyncNoticeDM(args: {
+const maybeInjectIdentitySyncNoticeDM = (args: {
   username: string;
   activeUsers: unknown;
   decryptedRoomCount: number;
   providedRoomCipherCount: number;
   setChatValues: Dispatch<SetStateAction<Messages>>;
   setRoomList: Dispatch<SetStateAction<string[]>>;
-}): void {
+}): void => {
   const {
     username,
     activeUsers,
@@ -797,9 +861,9 @@ function maybeInjectIdentitySyncNoticeDM(args: {
     }
     return [...prev, dmRoom];
   });
-}
+};
 
-function toDisplayUsers(users: unknown): string[] {
+const toDisplayUsers = (users: unknown): string[] => {
   if (!Array.isArray(users)) {
     return [];
   }
@@ -812,20 +876,20 @@ function toDisplayUsers(users: unknown): string[] {
       return getUsernameByUserId(value) || value;
     })
     .filter((value) => value !== '');
-}
+};
 
-function isSyntheticSystemDmRoom(room: string): boolean {
+const isSyntheticSystemDmRoom = (room: string): boolean => {
   return room.startsWith('@dmid:system:');
-}
+};
 
 const OPAQUE_ROOM_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function isOpaqueRoomKey(room: string): boolean {
+const isOpaqueRoomKey = (room: string): boolean => {
   return OPAQUE_ROOM_ID_PATTERN.test(room);
-}
+};
 
-function isAddressableRoomEntry(room: string): boolean {
+const isAddressableRoomEntry = (room: string): boolean => {
   if (!room || isSyntheticSystemDmRoom(room)) {
     return false;
   }
@@ -841,9 +905,9 @@ function isAddressableRoomEntry(room: string): boolean {
     return true;
   }
   return true;
-}
+};
 
-function resolveFallbackRoom(rooms: string[]): string {
+const resolveFallbackRoom = (rooms: string[]): string => {
   const defaultRoom = rooms.find(
     (room) =>
       room === DEFAULT_ROOM || getRoomNameByRoomId(room) === DEFAULT_ROOM,
@@ -871,13 +935,13 @@ function resolveFallbackRoom(rooms: string[]): string {
   }
 
   return getRoomIdByName(DEFAULT_ROOM) || DEFAULT_ROOM;
-}
+};
 
-function normalizeIncomingRoomKey(
+const normalizeIncomingRoomKey = (
   room: string,
   candidateRooms: string[],
   roomMessages?: Message[],
-): string {
+): string => {
   const mappedRoomName = getRoomNameByRoomId(room);
   if (mappedRoomName && isAddressableRoomEntry(mappedRoomName)) {
     return mappedRoomName;
@@ -918,9 +982,9 @@ function normalizeIncomingRoomKey(
     },
   );
   return room;
-}
+};
 
-function normalizeRoomListEntries(rooms: string[]): string[] {
+const normalizeRoomListEntries = (rooms: string[]): string[] => {
   const byEffectiveName = new Map<string, string>();
 
   for (const room of rooms) {
@@ -945,23 +1009,23 @@ function normalizeRoomListEntries(rooms: string[]): string[] {
   }
 
   return Array.from(byEffectiveName.values());
-}
+};
 
-function resolvePersistedCurrentRoom(
+const resolvePersistedCurrentRoom = (
   normalizedRooms: string[],
   preferredRoom: string,
   currentRoom: string,
-): string {
+): string => {
   const roomSet = new Set(normalizedRooms);
   const normalizedPreferred = preferredRoom.trim();
 
   if (normalizedPreferred) {
     const mappedPreferred = getRoomNameByRoomId(normalizedPreferred);
+    if (roomSet.has(normalizedPreferred)) {
+      return mappedPreferred || normalizedPreferred;
+    }
     if (mappedPreferred && roomSet.has(mappedPreferred)) {
       return mappedPreferred;
-    }
-    if (roomSet.has(normalizedPreferred)) {
-      return normalizedPreferred;
     }
 
     const preferredId = getRoomIdByName(normalizedPreferred);
@@ -971,24 +1035,24 @@ function resolvePersistedCurrentRoom(
         return mappedPreferredId;
       }
       if (roomSet.has(preferredId)) {
-        return preferredId;
+        return mappedPreferredId || preferredId;
       }
     }
   }
 
   const normalizedCurrent = currentRoom.trim();
   if (normalizedCurrent && roomSet.has(normalizedCurrent)) {
-    return normalizedCurrent;
+    return getRoomNameByRoomId(normalizedCurrent) || normalizedCurrent;
   }
 
   return resolveFallbackRoom(normalizedRooms);
-}
+};
 
-function refreshDisplayedUserLists(args: {
+const refreshDisplayedUserLists = (args: {
   setUserList: Dispatch<SetStateAction<string[]>>;
   setLoggedInUsers: Dispatch<SetStateAction<string[]>>;
   setActiveUsers: Dispatch<SetStateAction<string[]>>;
-}): void {
+}): void => {
   const { setUserList, setLoggedInUsers, setActiveUsers } = args;
   setUserList((prev) => prev.map((user) => getUsernameByUserId(user) || user));
   setLoggedInUsers((prev) =>
@@ -997,12 +1061,12 @@ function refreshDisplayedUserLists(args: {
   setActiveUsers((prev) =>
     prev.map((user) => getUsernameByUserId(user) || user),
   );
-}
+};
 
-async function verifyServerEventEnvelope(
+const verifyServerEventEnvelope = async (
   eventName: string,
   payload: unknown,
-): Promise<boolean> {
+): Promise<boolean> => {
   const strict = isServerSignatureStrictMode();
 
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -1079,13 +1143,13 @@ async function verifyServerEventEnvelope(
   }
 
   return true;
-}
+};
 
-function roomPrefsStorageKey(username: string): string {
+const roomPrefsStorageKey = (username: string): string => {
   return `home_room_prefs_${username}`;
-}
+};
 
-async function loadRoomPrefs(username: string): Promise<StoredRoomPrefs> {
+const loadRoomPrefs = async (username: string): Promise<StoredRoomPrefs> => {
   if (!username || typeof window === 'undefined') {
     return {};
   }
@@ -1125,9 +1189,9 @@ async function loadRoomPrefs(username: string): Promise<StoredRoomPrefs> {
   } catch {
     return {};
   }
-}
+};
 
-function normalizeMessageState(message: Message): Message {
+const normalizeMessageState = (message: Message): Message => {
   if (message.deleted || message.content === 'Message deleted') {
     return {
       ...message,
@@ -1144,17 +1208,22 @@ function normalizeMessageState(message: Message): Message {
   }
 
   return message;
-}
+};
 
-function isBlockedAuthor(message: Message, blockedUsers: Set<string>): boolean {
+const isBlockedAuthor = (
+  message: Message,
+  blockedUsers: Set<string>,
+): boolean => {
   if (message.userId === 'system') {
     return false;
   }
   const authorName = getUsernameByUserId(message.userId);
   return !!authorName && blockedUsers.has(authorName);
-}
+};
 
-function isEncryptedMessageWithoutReadableContent(message: Message): boolean {
+const isEncryptedMessageWithoutReadableContent = (
+  message: Message,
+): boolean => {
   const hasEncryptedPayload =
     !!message.encryptedMessage ||
     !!message.encryptedFor ||
@@ -1169,12 +1238,12 @@ function isEncryptedMessageWithoutReadableContent(message: Message): boolean {
   }
 
   return content.includes('🔒') || content.includes('[Encrypted message]');
-}
+};
 
-function scrubMessagesForLocalState(
+const scrubMessagesForLocalState = (
   messages: Message[],
   blockedUsers: Set<string>,
-): Message[] {
+): Message[] => {
   return messages.filter((message) => {
     if (isBlockedAuthor(message, blockedUsers)) {
       return false;
@@ -1188,9 +1257,11 @@ function scrubMessagesForLocalState(
 
     return true;
   });
-}
+};
 
-function messageIdentity(message: Pick<Message, 'id' | 'timestamp'>): string {
+const messageIdentity = (
+  message: Pick<Message, 'id' | 'timestamp'>,
+): string => {
   if (message.id && message.id.trim() !== '') {
     return `id:${message.id}`;
   }
@@ -1199,12 +1270,12 @@ function messageIdentity(message: Pick<Message, 'id' | 'timestamp'>): string {
   const replyTo = msg.replyTo ?? 'none';
   const content = (msg.content || '').slice(0, 48);
   return `ts:${message.timestamp}:u:${userId}:r:${replyTo}:c:${content}`;
-}
+};
 
-function resolveEncryptedPayloadForUser(
+const resolveEncryptedPayloadForUser = (
   msg: Message,
   userId: string | undefined,
-): string | null {
+): string | null => {
   if (!userId) {
     return null;
   }
@@ -1228,7 +1299,7 @@ function resolveEncryptedPayloadForUser(
   }
 
   return null;
-}
+};
 
 type InitSocketArgs = {
   authToken: string;
@@ -1256,7 +1327,7 @@ type InitSocketArgs = {
   setSocket: (next: Socket | undefined) => void;
 };
 
-export async function initializeHomeSocket({
+export const initializeHomeSocket = async ({
   authToken,
   username,
   setAuthToken,
@@ -1280,7 +1351,7 @@ export async function initializeHomeSocket({
   getRoomList,
   setHiddenDmUnreadBaseline,
   setSocket,
-}: InitSocketArgs) {
+}: InitSocketArgs) => {
   const forcedRoomPayloads = new Set<string>();
   let preferredRoomFromPrefs = '';
   let socket = getSocket();
@@ -1306,20 +1377,18 @@ export async function initializeHomeSocket({
     (window as any).__socket = undefined;
   }
 
-  // Connect to Socket.IO server - use current origin (should be localhost:3000)
+  // Connect to WebSocket server - use current origin (should be localhost:3000)
   const socketUrl = window.location.origin;
   console.log('[Socket] Connecting to:', socketUrl);
 
-  socket = io(socketUrl, {
-    path: socketIoPath(),
+  socket = connectWebSocket(socketUrl, {
+    path: websocketPath(),
     auth: {
       username,
     },
-    transports: ['polling', 'websocket'],
     reconnection: true,
     reconnectionAttempts: 5,
     reconnectionDelay: 1000,
-    forceNew: true, // Force a new connection
   });
 
   const activeSocket = socket;
@@ -1352,7 +1421,7 @@ export async function initializeHomeSocket({
     (window as any).__socket = activeSocket;
   });
 
-  socket.on(SOCKET_EVENTS.SERVER_ACTION_RESULT, (result) => {
+  socket.on(SOCKET_EVENTS.SERVER_ACTION_RESULT, async (result) => {
     const action = result?.action || 'action';
     const success = !!result?.success;
     const code = result?.code || 'unknown';
@@ -1360,6 +1429,17 @@ export async function initializeHomeSocket({
 
     if (success) {
       console.log(`[ActionResult] ${action} success: ${message}`);
+      return;
+    }
+
+    if (action === 'identityRefresh') {
+      console.warn(
+        '[ActionResult] Identity refresh was not accepted; continuing authenticated session',
+        {
+          code,
+          message,
+        },
+      );
       return;
     }
 
@@ -1377,6 +1457,31 @@ export async function initializeHomeSocket({
 
     alert(userMessage);
     console.warn('[ActionResult] rejected:', { action, code, message });
+    if (code === 'unauthorized' || code === 'session_expired') {
+      const keys = await loadKeysAsync();
+      console.warn(
+        '[ActionResult] Auth diagnostic snapshot at time of rejection (compare against server "[auth]"/"session mismatch" logs to see which sessionId/userId pairing the server actually has on file):',
+        {
+          action,
+          code,
+          contextUsername: username,
+          authTokenPreview: authToken
+            ? `${authToken.slice(0, 8)}…(len ${authToken.length})`
+            : '<empty>',
+          'keys.userId (from loadKeysAsync)': keys?.userId,
+          'keys.sessionId (from loadKeysAsync, per-server)': keys?.sessionId
+            ? `${keys.sessionId.slice(0, 8)}…(len ${keys.sessionId.length})`
+            : '<empty>',
+          'requireUserIdByUsername(username)': username
+            ? requireUserIdByUsername(username)
+            : '<no username>',
+          activeServerIdInUrl:
+            typeof window !== 'undefined'
+              ? new URLSearchParams(window.location.search).get('server')
+              : undefined,
+        },
+      );
+    }
   });
 
   socket.on(SOCKET_EVENTS.INITIAL_DATA, async (data) => {
@@ -1503,7 +1608,35 @@ export async function initializeHomeSocket({
         '[Socket] ✓ Setting chat values, count:',
         Object.keys(decryptedMessages).length,
       );
-      setChatValues(decryptedMessages);
+      setChatValues((prev) => {
+        const merged = { ...prev };
+        for (const [room, incomingMessages] of Object.entries(
+          decryptedMessages,
+        )) {
+          const existing = merged[room] || [];
+          const byIdentity = new Map(
+            existing.map((message) => [messageIdentity(message), message]),
+          );
+          for (const message of incomingMessages) {
+            byIdentity.set(messageIdentity(message), message);
+          }
+          merged[room] = Array.from(byIdentity.values()).sort(
+            (a, b) => a.timestamp - b.timestamp,
+          );
+        }
+        return merged;
+      });
+      if (data?.messageWindowDirection) {
+        window.dispatchEvent(
+          new CustomEvent('chat-room-window-loaded', {
+            detail: {
+              direction: data.messageWindowDirection,
+              room: data.messageWindow?.room,
+              hasMore: data.messageWindow?.hasMore,
+            },
+          }),
+        );
+      }
     } else {
       console.warn('[Socket] ✗ No messages in INITIAL_DATA');
     }
@@ -1512,7 +1645,9 @@ export async function initializeHomeSocket({
       const scopedRooms = filterRoomsForUser(data.rooms, username).map((room) =>
         normalizeIncomingRoomKey(room, data.rooms as string[]),
       );
-      const normalizedRooms = normalizeRoomListEntries(scopedRooms);
+      const normalizedRooms = normalizeRoomListEntries(scopedRooms).map(
+        (room) => getRoomNameByRoomId(room) || room,
+      );
       console.log('[Socket] ✓ Setting room list:', normalizedRooms);
       setRoomList(normalizedRooms);
       const resolvedCurrentRoom = resolvePersistedCurrentRoom(
@@ -1520,8 +1655,10 @@ export async function initializeHomeSocket({
         preferredRoomFromPrefs,
         getCurrentRoom(),
       );
-      if (resolvedCurrentRoom !== getCurrentRoom()) {
-        setCurrentRoom(resolvedCurrentRoom);
+      const canonicalCurrentRoom =
+        getRoomNameByRoomId(resolvedCurrentRoom) || resolvedCurrentRoom;
+      if (canonicalCurrentRoom !== getCurrentRoom()) {
+        setCurrentRoom(canonicalCurrentRoom);
       }
     } else {
       console.warn('[Socket] ✗ No rooms in INITIAL_DATA');
@@ -1561,8 +1698,57 @@ export async function initializeHomeSocket({
       incomingUserPubKeys: data?.userPubKeys,
     });
 
+    const keys = await loadKeysAsync();
+    const currentRoom = getCurrentRoom();
+    const roomId = getRoomIdByName(currentRoom);
+    const currentUserId = data.currentUserId || getCurrentUserId();
+    if (keys?.sessionId && currentUserId && currentRoom && roomId) {
+      activeSocket.emit(SOCKET_EVENTS.CLIENT_REQUEST_ROOM_DATA, {
+        username,
+        userId: currentUserId,
+        sessionId: keys.sessionId,
+        room: currentRoom,
+        roomId,
+      });
+    }
+
     console.log('[Socket] ===== INITIAL_DATA PROCESSING COMPLETE =====');
   });
+
+  // A room name just got decrypted; if the room we're currently viewing (or
+  // any room already holding messages) was still keyed by its opaque wire ID,
+  // migrate it to the resolved name so the UI and chat state agree on one key.
+  // Otherwise messages keep landing under the resolved name while the visible
+  // pane stays pinned to the now-orphaned opaque-ID key.
+  const reconcileCurrentRoomWithResolvedName = (source: string) => {
+    const currentRoom = getCurrentRoom();
+    const resolvedCurrentRoom = getRoomNameByRoomId(currentRoom) || currentRoom;
+    if (resolvedCurrentRoom === currentRoom) {
+      return;
+    }
+    console.log(
+      `[Socket] Re-resolving currentRoom after ${source} resolved a room name:`,
+      { from: currentRoom, to: resolvedCurrentRoom },
+    );
+    setChatValues((prev) => {
+      if (!prev[currentRoom]) {
+        return prev;
+      }
+      const updated = { ...prev };
+      const staleMessages = updated[currentRoom];
+      delete updated[currentRoom];
+      const existing = updated[resolvedCurrentRoom] || [];
+      const existingIds = new Set(existing.map((m) => messageIdentity(m)));
+      const merged = [
+        ...existing,
+        ...staleMessages.filter((m) => !existingIds.has(messageIdentity(m))),
+      ];
+      merged.sort((a, b) => a.timestamp - b.timestamp);
+      updated[resolvedCurrentRoom] = merged;
+      return updated;
+    });
+    setCurrentRoom(resolvedCurrentRoom);
+  };
 
   socket.on(SOCKET_EVENTS.SERVER_MESSAGE, async (data) => {
     if (
@@ -1574,7 +1760,11 @@ export async function initializeHomeSocket({
       return;
     }
 
-    await applyEncryptedRoomDirectory(data);
+    const serverMessageRoomDirectoryApplied =
+      await applyEncryptedRoomDirectory(data);
+    if (serverMessageRoomDirectoryApplied > 0) {
+      reconcileCurrentRoomWithResolvedName('SERVER_MESSAGE');
+    }
     const serverMessageUserDirectoryApplied =
       await applyEncryptedUserDirectory(data);
     if (serverMessageUserDirectoryApplied > 0) {
@@ -1616,8 +1806,24 @@ export async function initializeHomeSocket({
 
     // Check if this is an access grant update - handle it specially
     if (data?.accessGrant) {
-      const { originalRoom, messageTimestamp, encryptedMessage } =
-        data.accessGrant;
+      const {
+        originalRoom: originalRoomHint,
+        messageTimestamp,
+        encryptedMessage,
+      } = data.accessGrant;
+      const matchingWireRoom = Object.keys(data.messages || {}).find(
+        (room) =>
+          room === originalRoomHint ||
+          getRoomNameByRoomId(room) === originalRoomHint,
+      );
+      const originalRoom = normalizeIncomingRoomKey(
+        matchingWireRoom || originalRoomHint,
+        normalizeRoomListEntries([
+          ...Object.keys(getChatValues()),
+          ...getRoomList(),
+          ...Object.keys(getRoomDirectorySnapshot()),
+        ]),
+      );
 
       const encryptedPacket = encryptedMessage || '';
 
@@ -1634,7 +1840,11 @@ export async function initializeHomeSocket({
       );
 
       // If server sent updated messages, use those (they include the new version)
-      if (data?.messages && data.messages[originalRoom]) {
+      if (
+        data?.messages &&
+        matchingWireRoom &&
+        data.messages[matchingWireRoom]
+      ) {
         const keys = await loadKeysAsync();
         if (!keys) {
           console.error('[AccessGrant] No keys available for decryption');
@@ -1642,7 +1852,7 @@ export async function initializeHomeSocket({
         }
         const currentUserId = requireUserIdByUsername(username);
 
-        const roomMessages = data.messages[originalRoom] as Message[];
+        const roomMessages = data.messages[matchingWireRoom] as Message[];
 
         console.log(
           '[AccessGrant] Processing',
@@ -2175,8 +2385,14 @@ export async function initializeHomeSocket({
                 newMessageCount += 1;
               }
             });
+            const mergeDirection =
+              data?.messageWindowDirection === 'older' ? 'older' : 'newer';
             merged[room] = scrubMessagesForLocalState(
-              Array.from(existingMap.values()),
+              mergeMessageWindow(
+                Array.from(existingMap.values()),
+                [],
+                mergeDirection,
+              ),
               blockedUsers,
             );
           }
@@ -2193,6 +2409,18 @@ export async function initializeHomeSocket({
         );
         return merged;
       });
+
+      if (data?.messageWindowDirection) {
+        window.dispatchEvent(
+          new CustomEvent('chat-room-window-loaded', {
+            detail: {
+              direction: data.messageWindowDirection,
+              room: Object.keys(data.messages)[0],
+              hasMore: data.hasMore === true,
+            },
+          }),
+        );
+      }
 
       const roomNotificationsSnapshot = getRoomNotifications();
       const nextRoomNotifications = { ...roomNotificationsSnapshot };
@@ -2336,7 +2564,11 @@ export async function initializeHomeSocket({
       return;
     }
 
-    await applyEncryptedRoomDirectory(data);
+    const roomsBeforeUpdate = new Set(getRoomList());
+    const newRoomRoomDirectoryApplied = await applyEncryptedRoomDirectory(data);
+    if (newRoomRoomDirectoryApplied > 0) {
+      reconcileCurrentRoomWithResolvedName('SERVER_NEW_ROOM');
+    }
 
     console.log('[Socket] SERVER_NEW_ROOM received');
     const newRoomUserDirectoryApplied = await applyEncryptedUserDirectory(data);
@@ -2426,6 +2658,12 @@ export async function initializeHomeSocket({
         ...getRoomList(),
         ...nextRooms,
       ]);
+      const newlyAddedRoom = nextRooms.find(
+        (room) => !roomsBeforeUpdate.has(room),
+      );
+      if (newlyAddedRoom) {
+        setCurrentRoom(newlyAddedRoom);
+      }
       if (!nextVisibleRooms.includes(getCurrentRoom())) {
         setCurrentRoom(resolveFallbackRoom(nextVisibleRooms));
       }
@@ -2457,6 +2695,10 @@ export async function initializeHomeSocket({
       setLoggedInUsers,
       setActiveUsers,
     });
+
+    if (applied.roomApplied > 0) {
+      reconcileCurrentRoomWithResolvedName('identity directory refresh');
+    }
 
     console.log('[Socket] Applied identity directory refresh:', applied);
   });
@@ -2840,7 +3082,6 @@ export async function initializeHomeSocket({
       });
     }
     activeSocket.emit(SOCKET_EVENTS.CLIENT_DISCONNECTING, authToken);
-    setAuthToken('');
   });
 
   socket.on(SOCKET_EVENTS.STATUS, (msg) => {
@@ -2936,6 +3177,13 @@ export async function initializeHomeSocket({
           },
         };
 
+        storeUserPublicKeys(nextUserPubKeys, {
+          [fromUserId]:
+            typeof data.publicKeyUpdatedAt === 'number'
+              ? data.publicKeyUpdatedAt
+              : Date.now(),
+        });
+
         if (!hadSenderKey) {
           await maybeSendIdentityDirectoryRefresh({
             socket: activeSocket,
@@ -2943,24 +3191,25 @@ export async function initializeHomeSocket({
             username,
             incomingUserPubKeys: nextUserPubKeys,
           });
+          await maybeGrantNewMemberAccess({
+            socket: activeSocket,
+            authToken,
+            username,
+            newUserId: fromUserId,
+            getChatValues,
+          });
+          if (Object.keys(getChatValues()).length === 0) {
+            window.setTimeout(() => {
+              void maybeGrantNewMemberAccess({
+                socket: activeSocket,
+                authToken,
+                username,
+                newUserId: fromUserId,
+                getChatValues,
+              });
+            }, 1500);
+          }
         }
-
-        userPubKeys[fromUserId] = {
-          publicKey: data.publicKey,
-          updatedAt:
-            typeof data.publicKeyUpdatedAt === 'number'
-              ? data.publicKeyUpdatedAt
-              : undefined,
-          blocked: !!userPubKeys[fromUserId]?.blocked,
-          blockedAt: userPubKeys[fromUserId]?.blockedAt,
-          blockedBy: userPubKeys[fromUserId]?.blockedBy,
-        };
-        storeUserPublicKeys(userPubKeys, {
-          [fromUserId]:
-            typeof data.publicKeyUpdatedAt === 'number'
-              ? data.publicKeyUpdatedAt
-              : Date.now(),
-        });
       }
       console.log('[Socket] ✓ Stored public key from', fromUserId || fromUser);
     }
@@ -2971,8 +3220,32 @@ export async function initializeHomeSocket({
     console.log('[Socket] Socket ID:', activeSocket.id);
     console.log('[Socket] Socket connected:', activeSocket.connected);
     const keys = await loadKeysAsync();
+    const sessionIdPreview = (value?: string) =>
+      value ? `${value.slice(0, 8)}…(len ${value.length})` : '<empty>';
+    console.log('[Socket] Auth snapshot on connect:', {
+      username,
+      authTokenPreview: sessionIdPreview(authToken),
+      'keys.userId (authoritative, from loadKeysAsync)': keys?.userId,
+      'keys.sessionId (per-server, from loadKeysAsync)': sessionIdPreview(
+        keys?.sessionId,
+      ),
+      authTokenMatchesKeysSessionId: authToken === keys?.sessionId,
+    });
     if (keys?.publicKey && username) {
       const fromUserId = requireUserIdByUsername(username);
+      if (keys.userId && keys.userId !== fromUserId) {
+        console.warn(
+          '[Socket] ⚠ userId mismatch before CLIENT_SEND_PUBLIC_KEY: requireUserIdByUsername(username) returned',
+          fromUserId,
+          'but loadKeysAsync() says this account is',
+          keys.userId,
+          '— the local identity map is stale/out of sync with the account actually logged in. This will likely cause an "unauthorized" rejection.',
+        );
+      }
+      console.log('[Socket] Emitting CLIENT_SEND_PUBLIC_KEY with', {
+        fromUserId,
+        sessionIdPreview: sessionIdPreview(authToken),
+      });
       void emitSignedMutation(activeSocket, {
         event: SOCKET_EVENTS.CLIENT_SEND_PUBLIC_KEY,
         payload: {
@@ -3005,8 +3278,15 @@ export async function initializeHomeSocket({
           typeof roomId === 'string' && roomId.trim() !== '',
       );
 
+    const initialDataUserId = requireUserIdByUsername(username);
+    console.log('[Socket] Emitting CLIENT_REQUEST_INITIAL_DATA with', {
+      userId: initialDataUserId,
+      sessionIdPreview: sessionIdPreview(authToken),
+      currentRoom: requestedCurrentRoom,
+      openRooms: requestedOpenRooms,
+    });
     activeSocket.emit(SOCKET_EVENTS.CLIENT_REQUEST_INITIAL_DATA, {
-      userId: requireUserIdByUsername(username),
+      userId: initialDataUserId,
       sessionId: authToken,
       defaultRoom: DEFAULT_ROOM,
       currentRoom: requestedCurrentRoom,
@@ -3069,4 +3349,4 @@ export async function initializeHomeSocket({
     'id:',
     activeSocket.id,
   );
-}
+};

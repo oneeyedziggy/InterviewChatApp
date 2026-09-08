@@ -93,7 +93,7 @@ type UserListPanelProps = {
   onUnblockUser: (user: string) => void;
 };
 
-function UserListEntry({
+const UserListEntry = ({
   user,
   loggedIn,
   currentUsername,
@@ -111,7 +111,7 @@ function UserListEntry({
   onSendPublicKey: (user: string) => void;
   onBlockUser: (user: string) => void;
   onUnblockUser: (user: string) => void;
-}) {
+}) => {
   const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
 
@@ -243,9 +243,9 @@ function UserListEntry({
       )}
     </UserRow>
   );
-}
+};
 
-export function UserListPanel({
+export const UserListPanel = ({
   currentUsername,
   loggedInUsers,
   activeUsers,
@@ -255,7 +255,7 @@ export function UserListPanel({
   onSendPublicKey,
   onBlockUser,
   onUnblockUser,
-}: UserListPanelProps) {
+}: UserListPanelProps) => {
   const sortByLastSeen = useCallback(
     (a: string, b: string) => (userLastSeen[b] || 0) - (userLastSeen[a] || 0),
     [userLastSeen],
@@ -368,4 +368,4 @@ export function UserListPanel({
       </ScrollableDiv>
     </>
   );
-}
+};

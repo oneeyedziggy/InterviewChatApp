@@ -21,6 +21,7 @@ import {
   type StoredKeys,
 } from '../utils/gpg';
 import { requireUserIdByUsername } from '@/utils/identityMap';
+import { getPasswordError, getUsernameError } from '@/utils/authValidation';
 
 type LoginDialogProps = {
   username: string;
@@ -28,44 +29,6 @@ type LoginDialogProps = {
   open: boolean;
   onSuccess: (authToken: string, username: string) => void;
   onLogout?: () => void;
-};
-
-const getUsernameError = (username: string): string => {
-  if (!username.length) {
-    return '';
-  }
-  if (username.length < VALIDATION.MIN_USERNAME_LENGTH) {
-    return `Username must be at least ${VALIDATION.MIN_USERNAME_LENGTH} characters`;
-  }
-  if (/\s/.test(username)) {
-    return 'Username cannot contain whitespace';
-  }
-  return '';
-};
-
-const getPasswordError = (password: string): string => {
-  if (!password.length) {
-    return '';
-  }
-  if (password.length < 10) {
-    return 'Password must be at least 10 characters';
-  }
-  if (password.length >= 256) {
-    return 'Password must be shorter than 256 characters';
-  }
-  if (!/\p{Lu}/u.test(password)) {
-    return 'Password must include at least one uppercase letter';
-  }
-  if (!/\p{Ll}/u.test(password)) {
-    return 'Password must include at least one lowercase letter';
-  }
-  if (!/\p{Nd}/u.test(password)) {
-    return 'Password must include at least one number';
-  }
-  if (!/[^\p{L}\p{Nd}\s]/u.test(password) && !/[_]/u.test(password)) {
-    return 'Password must include at least one special character';
-  }
-  return '';
 };
 
 const InputError = styled.span`

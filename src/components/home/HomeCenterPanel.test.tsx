@@ -25,7 +25,8 @@ const renderMessageThreadMock = vi.fn(() => (
 ));
 
 vi.mock('./MessageThread', () => ({
-  renderMessageThread: (...args: unknown[]) => renderMessageThreadMock(...args),
+  renderMessageThread: (...args: unknown[]) =>
+    (renderMessageThreadMock as (...input: unknown[]) => unknown)(...args),
 }));
 
 describe('HomeCenterPanel', () => {
@@ -112,9 +113,13 @@ describe('HomeCenterPanel', () => {
     expect(
       screen.getByText(/max message size is 1000 bytes/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'X' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /cancel (reply|edit)/i }),
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'X' }));
+    await user.click(
+      screen.getByRole('button', { name: /cancel (reply|edit)/i }),
+    );
     expect(replyState.handleCancelReplyOrEdit).toHaveBeenCalled();
   });
 });

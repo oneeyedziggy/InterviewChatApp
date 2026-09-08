@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-async function loadIdentityMap() {
+const loadIdentityMap = async () => {
   return import('./identityMap');
-}
+};
 
 describe('identityMap', () => {
   beforeEach(() => {

@@ -11,10 +11,11 @@ import (
 	"sync"
 	"time"
 
+	wsrt "chat-server-go/websocket"
+
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 	"github.com/ProtonMail/gopenpgp/v2/helper"
 	"github.com/google/uuid"
-	socketio "github.com/karagenc/socket.io-go"
 )
 
 type ChatServer struct {
@@ -31,14 +32,14 @@ type ChatServer struct {
 	serverKeyRing          *crypto.KeyRing
 	serverPublicKey        string
 	mu                     sync.RWMutex
-	store                  *FileStore
+	store                  StateStore
 	joinRequests           map[string]*JoinRequest
 	userLastSeen           map[string]int64
 	roomMembers            map[string]map[string]bool
 	roomCreators           map[string]string
 	hasSentJoinMsg         map[string]bool
 	joinScheduled          map[string]bool
-	defaultNsp             *socketio.Namespace
+	defaultNsp             *wsrt.Namespace
 	authReplay             map[string]time.Time
 	authReplayOrder        []string
 	authReplayLimit        int
@@ -48,7 +49,10 @@ type ChatServer struct {
 	usernameCiphertexts    map[string]string
 	userDirectoryUpdatedAt map[string]int64
 	roomDirectoryUpdatedAt map[string]int64
+	roomCreatedAt          map[string]int64
+	userJoinedAt           map[string]int64
 	pendingLeaveByUser     map[string]int64
+	alias                  string
 }
 
 func formatSystemUserRef(userID string) string {
@@ -67,18 +71,27 @@ func parseSystemUserRef(value string) string {
 	return trimmed
 }
 
-func resolveStateFilePath() string {
+func resolveSQLiteStorePath() string {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
-		return "chat-state.json"
+		return "chat-state.sqlite3"
 	}
-	return filepath.Join(filepath.Dir(thisFile), "chat-state.json")
+	return filepath.Join(filepath.Dir(thisFile), "chat-state.sqlite3")
 }
 
-func NewChatServer() *ChatServer {
-	storePath := resolveStateFilePath()
-	log.Printf("[NewChatServer] Using state file: %s", storePath)
-	store := NewFileStore(storePath)
+func NewChatServer(storePath string) *ChatServer {
+	return newChatServer(storePath, nil, "")
+}
+
+func newChatServer(storePath string, suppliedKeyRing *crypto.KeyRing, suppliedPublicKey string) *ChatServer {
+	if storePath == "" {
+		storePath = resolveSQLiteStorePath()
+	}
+	log.Printf("[NewChatServer] Using sqlite state store: %s", storePath)
+	store, err := NewStateStore(storePath)
+	if err != nil {
+		log.Fatalf("[NewChatServer] ✗ Failed to initialize state store: %v", err)
+	}
 
 	messages, rooms, users, userPubKeys, userPubKeysUpdatedAt, _, roomIDs, roomNameHashes, roomNameCiphertexts, usernameCiphertexts, userDirectoryUpdatedAt, roomDirectoryUpdatedAt, err := store.Load()
 	if err != nil {
@@ -133,7 +146,16 @@ func NewChatServer() *ChatServer {
 		log.Printf("[NewChatServer] Skipping message purge on startup (CLEAR_ON_START!=true)")
 	}
 
-	serverKeyRing, serverPublicKey, err := generateOrLoadServerKeys()
+	keyDirectory := filepath.Dir(storePath)
+	keyPrefix := ""
+	if filepath.Base(storePath) != filepath.Base(resolveSQLiteStorePath()) {
+		keyPrefix = strings.TrimSuffix(filepath.Base(storePath), filepath.Ext(storePath))
+	}
+	serverKeyRing := suppliedKeyRing
+	serverPublicKey := suppliedPublicKey
+	if serverKeyRing == nil || serverPublicKey == "" {
+		serverKeyRing, serverPublicKey, err = generateOrLoadServerKeys(keyDirectory, keyPrefix)
+	}
 	if err != nil {
 		log.Fatalf("[NewChatServer] ✗ Failed to generate/load server GPG keys: %v", err)
 	}
@@ -142,6 +164,17 @@ func NewChatServer() *ChatServer {
 	userLastSeen := make(map[string]int64)
 	roomMembers := make(map[string]map[string]bool)
 	roomCreators := make(map[string]string)
+
+	roomCreatedAt, err := store.RoomCreatedAt()
+	if err != nil {
+		log.Printf("[NewChatServer] ✗ Failed to load room created_at timestamps: %v, continuing without them", err)
+		roomCreatedAt = make(map[string]int64)
+	}
+	userJoinedAt, err := store.UserJoinedAt()
+	if err != nil {
+		log.Printf("[NewChatServer] Failed to load user joined_at timestamps: %v", err)
+		userJoinedAt = make(map[string]int64)
+	}
 
 	for _, room := range rooms {
 		roomID := roomIDs[room]
@@ -181,6 +214,8 @@ func NewChatServer() *ChatServer {
 		roomNameCiphertexts:    roomNameCiphertexts,
 		userDirectoryUpdatedAt: userDirectoryUpdatedAt,
 		roomDirectoryUpdatedAt: roomDirectoryUpdatedAt,
+		roomCreatedAt:          roomCreatedAt,
+		userJoinedAt:           userJoinedAt,
 		pendingLeaveByUser:     make(map[string]int64),
 	}
 
@@ -277,6 +312,28 @@ func (cs *ChatServer) roomNameForIDLocked(roomID string) string {
 
 func (cs *ChatServer) oldestExtantRoomIDLocked() string {
 	var oldestRoomID string
+	var oldestCreatedAt int64
+
+	// Prefer the persisted true creation timestamp; it survives restarts,
+	// unlike the runtime-only roomDirectoryUpdatedAt fallback below.
+	for _, room := range cs.rooms {
+		roomID := cs.roomIDs[room]
+		if roomID == "" {
+			continue
+		}
+		createdAt := cs.roomCreatedAt[roomID]
+		if createdAt <= 0 {
+			continue
+		}
+		if oldestRoomID == "" || createdAt < oldestCreatedAt {
+			oldestRoomID = roomID
+			oldestCreatedAt = createdAt
+		}
+	}
+	if oldestRoomID != "" {
+		return oldestRoomID
+	}
+
 	var oldestUpdatedAt int64
 
 	for _, room := range cs.rooms {
@@ -411,9 +468,21 @@ func (cs *ChatServer) saveState(messages Messages, rooms []string, users map[str
 	return cs.store.SaveWithIdentity(messages, rooms, users, userPubKeys, userPubKeysUpdatedAt, nil, roomIDsCopy, roomNameHashes, roomNameCiphertexts, usernameCiphertexts, userDirectoryUpdatedAt, roomDirectoryUpdatedAt)
 }
 
-func generateOrLoadServerKeys() (*crypto.KeyRing, string, error) {
-	keyPath := "server-gpg-key.asc"
-	privateKeyPath := "server-gpg-private-key.asc"
+func generateOrLoadServerKeys(keyDirectories ...string) (*crypto.KeyRing, string, error) {
+	keyDirectory := "."
+	if len(keyDirectories) > 0 && strings.TrimSpace(keyDirectories[0]) != "" {
+		keyDirectory = keyDirectories[0]
+	}
+	keyPrefix := ""
+	if len(keyDirectories) > 1 {
+		keyPrefix = strings.TrimSpace(keyDirectories[1])
+	}
+	keySuffix := "server-gpg"
+	if keyPrefix != "" {
+		keySuffix = keyPrefix + ".server-gpg"
+	}
+	keyPath := filepath.Join(keyDirectory, keySuffix+"-key.asc")
+	privateKeyPath := filepath.Join(keyDirectory, keySuffix+"-private-key.asc")
 
 	if _, err := os.Stat(privateKeyPath); err == nil {
 		log.Printf("[GPG] Loading existing server keys from %s", privateKeyPath)
@@ -506,21 +575,7 @@ func (cs *ChatServer) setUser(userID, sessionID string) {
 		log.Printf("[setUser] ✓ Canceled pending leave message for %s", userID)
 	}
 	if !wasLoggedIn || oldSessionID != sessionID {
-		needsJoinMsg := !cs.hasSentJoinMsg[userID]
-		if needsJoinMsg {
-			// Schedule the join message and mark it as pending to avoid races
-			// where a concurrently-handled client message sees the flag as
-			// false and mis-orders that first message. The actual join
-			// message will be sent asynchronously; `sendJoinMessage` will set
-			// `hasSentJoinMsg` when it completes.
-			cs.joinScheduled[userID] = true
-			log.Printf("[setUser] ✓ Scheduled join message for user %s (was logged in: %v)", userID, wasLoggedIn)
-			cs.mu.Unlock()
-			go cs.sendJoinMessage(userID)
-			cs.mu.Lock()
-		} else {
-			log.Printf("[setUser] ⚠ Join message already sent for %s (shouldn't happen on new login)", userID)
-		}
+		log.Printf("[setUser] Session changed for %s (was logged in: %v); suppressing join/leave system messages", userID, wasLoggedIn)
 	}
 	log.Printf("[setUser] ✓ User set in map")
 	shouldBroadcast := !wasLoggedIn || oldSessionID != sessionID
@@ -529,7 +584,48 @@ func (cs *ChatServer) setUser(userID, sessionID string) {
 	if shouldBroadcast {
 		cs.broadcastUserListUpdate()
 	}
+	go cs.deliverPendingAccessGrantRequests(userID)
 	log.Printf("[setUser] ===== EXITING setUser ======")
+}
+
+func (cs *ChatServer) deliverPendingAccessGrantRequests(userID string) {
+	if cs.defaultNsp == nil {
+		return
+	}
+	requests, err := cs.store.PendingAccessGrantRequestsForUser(userID)
+	if err != nil {
+		log.Printf("[accessRequest] failed to load pending requests for %s: %v", userID, err)
+		return
+	}
+	for _, request := range requests {
+		cs.mu.RLock()
+		roomName := cs.roomsByID[request.OriginalRoomID]
+		requestingKey := cs.userPubKeys[request.RequestingUserID]
+		requestingUpdatedAt := cs.userPubKeysUpdatedAt[request.RequestingUserID]
+		cs.mu.RUnlock()
+		if roomName == "" {
+			continue
+		}
+		requestAccess := map[string]interface{}{
+			"requestingUserId": request.RequestingUserID,
+			"originalSenderId": request.OriginalSenderID,
+			"originalRoomId": request.OriginalRoomID,
+			"originalRoom": roomName,
+			"messageTimestamp": request.MessageTimestamp,
+		}
+		payload := map[string]interface{}{
+			"requestAccess": requestAccess,
+			"requestRoom": buildCanonicalDMRoom(request.RequestingUserID, request.OriginalSenderID),
+			"requestingUserId": request.RequestingUserID,
+			"originalSenderId": request.OriginalSenderID,
+			"requestingUserPubKey": requestingKey,
+			"requestingUserPubKeyUpdatedAt": requestingUpdatedAt,
+		}
+		cs.sendToUserIDs(cs.defaultNsp, []string{userID}, EventServerAccessRequest, payload)
+		if err := cs.store.CompleteAccessGrantRequest(request.RequestID); err != nil {
+			log.Printf("[accessRequest] failed to complete request %s: %v", request.RequestID, err)
+		}
+	}
 }
 
 func (cs *ChatServer) broadcastUserListUpdate() {

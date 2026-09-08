@@ -1,14 +1,17 @@
 package main
 
 import (
+	"encoding/json"
+	"io"
 	"log"
 	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
-	socketio "github.com/karagenc/socket.io-go"
+	"github.com/ProtonMail/gopenpgp/v2/crypto"
 )
 
 type mimeOverrideWriter struct {
@@ -78,7 +81,7 @@ func resolveOutDir() string {
 	return filepath.Clean(filepath.Join(execDir, "..", "out"))
 }
 
-func newHTTPHandler(chatServer *ChatServer, sio *socketio.Server) http.Handler {
+func newHTTPHandler(sm *ServerManager) http.Handler {
 	mux := http.NewServeMux()
 	basePath := normalizeBasePath(os.Getenv("APP_BASE_PATH"))
 	if basePath == "" {
@@ -87,57 +90,229 @@ func newHTTPHandler(chatServer *ChatServer, sio *socketio.Server) http.Handler {
 		log.Printf("HTTP base path: %s", basePath)
 	}
 
-	mux.HandleFunc("/api/server-public-key", chatServer.handleGetServerPublicKey)
+	// tenantHandler resolves the `server` query param to a ChatServer for
+	// every request before delegating, so each tenant's data stays isolated.
+	tenantHandler := func(fn func(cs *ChatServer, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			tenant, err := sm.GetTenant(resolveServerIDFromRequest(r.URL.Query()))
+			if err != nil {
+				http.Error(w, "unknown server", http.StatusNotFound)
+				return
+			}
+			fn(tenant.ChatServer, w, r)
+		}
+	}
+
+	mux.HandleFunc("/api/server-public-key", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
+		cs.handleGetServerPublicKey(w, r)
+	}))
 	if basePath != "" {
-		mux.HandleFunc(basePath+"/api/server-public-key", chatServer.handleGetServerPublicKey)
+		mux.HandleFunc(basePath+"/api/server-public-key", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
+			cs.handleGetServerPublicKey(w, r)
+		}))
 	}
 	log.Println("Registered /api/server-public-key handler")
 
-	mux.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/server-status", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
+		cs.handleServerStatus(w, r)
+	}))
+	if basePath != "" {
+		mux.HandleFunc(basePath+"/api/server-status", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
+			cs.handleServerStatus(w, r)
+		}))
+	}
+
+
+	creationChallengeHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var request ServerCreationChallengeRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || strings.TrimSpace(request.PublicKey) == "" {
+			http.Error(w, "invalid public key", http.StatusBadRequest)
+			return
+		}
+		if _, err := crypto.NewKeyFromArmored(request.PublicKey); err != nil {
+			http.Error(w, "invalid public key", http.StatusBadRequest)
+			return
+		}
+		capability, expiresAt, serverPublicKey := sm.issueCreationCapability(request.PublicKey)
+		if capability == "" || serverPublicKey == "" {
+			http.Error(w, "failed to prepare server capability", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ServerCreationChallengeResponse{Capability: capability, ExpiresAt: expiresAt, ServerPublicKey: serverPublicKey})
+	}
+	mux.HandleFunc("/api/server-creation-capability", creationChallengeHandler)
+	if basePath != "" {
+		mux.HandleFunc(basePath+"/api/server-creation-capability", creationChallengeHandler)
+	}
+
+	createServerHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var request CreateServerRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Capability == "" || request.PublicKey == "" || request.Signature == "" || request.UserID == "" || request.UsernameHash == "" || request.UsernameCiphertext == "" {
+			http.Error(w, "invalid creation request", http.StatusBadRequest)
+			return
+		}
+		publicKey, err := crypto.NewKeyFromArmored(request.PublicKey)
+		if err != nil {
+			http.Error(w, "invalid or expired creation capability", http.StatusUnauthorized)
+			return
+		}
+		verifyRing, err := crypto.NewKeyRing(publicKey)
+		if err != nil {
+			http.Error(w, "invalid creation key", http.StatusUnauthorized)
+			return
+		}
+		signature, err := crypto.NewPGPSignatureFromArmored(request.Signature)
+		if err != nil || verifyRing.VerifyDetached(crypto.NewPlainMessageFromString("server-create:v1:"+request.Capability), signature, time.Now().Unix()) != nil {
+			http.Error(w, "invalid creation proof", http.StatusUnauthorized)
+			return
+		}
+		capability, validCapability := sm.consumeCreationCapability(request.Capability, request.PublicKey)
+		if !validCapability {
+			http.Error(w, "invalid or expired creation capability", http.StatusUnauthorized)
+			return
+		}
+		tenant, err := sm.createTenantWithCapability(capability)
+		if err != nil {
+			log.Printf("[/api/servers] ✗ failed to create server: %v", err)
+			http.Error(w, "failed to create server", http.StatusInternalServerError)
+			return
+		}
+		sessionID, err := sm.registerFirstUser(tenant, request.UserID, request.UsernameHash, request.UsernameCiphertext, request.PublicKey)
+		if err != nil {
+			http.Error(w, "failed to register first user", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CreateServerResponse{ServerID: tenant.ID, Alias: tenant.Alias, SessionID: sessionID, ServerPublicKey: capability.TenantPublicKey, UserID: request.UserID})
+	}
+	mux.HandleFunc("/api/servers", createServerHandler)
+	if basePath != "" {
+		mux.HandleFunc(basePath+"/api/servers", createServerHandler)
+	}
+	log.Println("Registered /api/servers handler")
+
+	mux.HandleFunc("/api/login", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
 		log.Printf("===== /api/login REQUEST (wrapper) ======")
 		log.Printf("Method: %s", r.Method)
 		log.Printf("Remote: %s", r.RemoteAddr)
 		log.Printf("URL: %s", r.URL.String())
-		chatServer.handleLogin(w, r)
+		cs.handleLogin(w, r)
 		log.Printf("===== /api/login REQUEST (wrapper) COMPLETE ======")
-	})
+	}))
 	if basePath != "" {
-		mux.HandleFunc(basePath+"/api/login", func(w http.ResponseWriter, r *http.Request) {
-			log.Printf("===== /api/login REQUEST (wrapper) ======")
-			log.Printf("Method: %s", r.Method)
-			log.Printf("Remote: %s", r.RemoteAddr)
-			log.Printf("URL: %s", r.URL.String())
-			chatServer.handleLogin(w, r)
-			log.Printf("===== /api/login REQUEST (wrapper) COMPLETE ======")
-		})
+		mux.HandleFunc(basePath+"/api/login", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
+			cs.handleLogin(w, r)
+		}))
 	}
 	log.Println("Registered /api/login handler")
 
-	mux.HandleFunc("/api/auth", func(w http.ResponseWriter, r *http.Request) {
-		chatServer.handleAuth(w, r)
-	})
+	mux.HandleFunc("/api/auth", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
+		cs.handleAuth(w, r)
+	}))
 	if basePath != "" {
-		mux.HandleFunc(basePath+"/api/auth", func(w http.ResponseWriter, r *http.Request) {
-			chatServer.handleAuth(w, r)
-		})
+		mux.HandleFunc(basePath+"/api/auth", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
+			cs.handleAuth(w, r)
+		}))
 	}
 	log.Println("Registered /api/auth handler")
 
-	mux.HandleFunc("/api/delete-user", func(w http.ResponseWriter, r *http.Request) {
-		chatServer.handleDeleteUser(w, r)
-	})
+	mux.HandleFunc("/api/delete-user", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
+		cs.handleDeleteUser(w, r)
+	}))
 	if basePath != "" {
-		mux.HandleFunc(basePath+"/api/delete-user", func(w http.ResponseWriter, r *http.Request) {
-			chatServer.handleDeleteUser(w, r)
-		})
+		mux.HandleFunc(basePath+"/api/delete-user", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
+			cs.handleDeleteUser(w, r)
+		}))
 	}
+
+	leaveServerHandler := tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "invalid leave request", http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+		var request DeleteUserRequest
+		if err := json.Unmarshal(body, &request); err != nil {
+			http.Error(w, "invalid leave request", http.StatusBadRequest)
+			return
+		}
+		cs.mu.RLock()
+		owner := false
+		for _, creatorID := range cs.roomCreators {
+			if creatorID == request.UserID {
+				owner = true
+				break
+			}
+		}
+		cs.mu.RUnlock()
+		if owner {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": "Owner cannot leave server",
+				"code":  "owner_cannot_leave",
+			})
+			return
+		}
+		cs.handleDeleteUser(w, r)
+	})
+	mux.HandleFunc("/api/leave-server", leaveServerHandler)
+	if basePath != "" {
+		mux.HandleFunc(basePath+"/api/leave-server", leaveServerHandler)
+	}
+	log.Println("Registered /api/leave-server handler")
 	log.Println("Registered /api/delete-user handler")
 
-	mux.Handle("/socket.io/", sio)
+	mux.HandleFunc("/api/invites", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			cs.handleListInvites(w, r)
+			return
+		}
+		cs.handleCreateInvite(w, r)
+	}))
 	if basePath != "" {
-		mux.Handle(basePath+"/socket.io/", http.StripPrefix(basePath, sio))
+		mux.HandleFunc(basePath+"/api/invites", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				cs.handleListInvites(w, r)
+				return
+			}
+			cs.handleCreateInvite(w, r)
+		}))
 	}
-	log.Println("Registered /socket.io/ handler")
+	mux.HandleFunc("/api/invites/revoke", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) { cs.handleRevokeInvite(w, r) }))
+	if basePath != "" {
+		mux.HandleFunc(basePath+"/api/invites/revoke", tenantHandler(func(cs *ChatServer, w http.ResponseWriter, r *http.Request) { cs.handleRevokeInvite(w, r) }))
+	}
+	log.Println("Registered /api/invites handler")
+
+	// /ws/ dispatches to the tenant's own isolated websocket server instance.
+	wsHandler := func(w http.ResponseWriter, r *http.Request) {
+		tenant, err := sm.GetTenant(resolveServerIDFromRequest(r.URL.Query()))
+		if err != nil {
+			http.Error(w, "unknown server", http.StatusNotFound)
+			return
+		}
+		tenant.WS.ServeHTTP(w, r)
+	}
+	mux.HandleFunc("/ws/", wsHandler)
+	if basePath != "" {
+		mux.Handle(basePath+"/ws/", http.StripPrefix(basePath, http.HandlerFunc(wsHandler)))
+	}
+	log.Println("Registered /ws/ handler")
 
 	outDir := resolveOutDir()
 	log.Printf("Serving static export from: %s", outDir)
@@ -260,7 +435,7 @@ func newHTTPHandler(chatServer *ChatServer, sio *socketio.Server) http.Handler {
 	}
 
 	serveExportedRoute := func(w http.ResponseWriter, r *http.Request, requestPath string) {
-		if strings.HasPrefix(requestPath, "/api/") || strings.HasPrefix(requestPath, "/socket.io/") || strings.HasPrefix(requestPath, "/_next/") {
+		if strings.HasPrefix(requestPath, "/api/") || strings.HasPrefix(requestPath, "/ws/") || strings.HasPrefix(requestPath, "/_next/") {
 			http.NotFound(w, r)
 			return
 		}

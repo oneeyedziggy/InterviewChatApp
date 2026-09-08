@@ -1,5 +1,5 @@
-export function cn(
+export const cn = (
   ...classes: Array<string | false | null | undefined>
-): string {
+): string => {
   return classes.filter(Boolean).join(' ');
-}
+};

@@ -15,6 +15,11 @@ describe('authValidation', () => {
     expect(getUsernameError('validUser')).toBe('');
   });
 
+  it('counts astral Unicode characters as one username character', () => {
+    expect(getUsernameError('😀😀😀😀😀😀😀😀')).toBe('');
+    expect(getUsernameError('😀😀😀😀😀😀😀')).toContain('at least');
+  });
+
   it('reports password requirement status with UTF-8 support', () => {
     const status = getPasswordRequirementStatus('Äbcdefghi1!');
     expect(status).toEqual({
@@ -36,5 +41,12 @@ describe('authValidation', () => {
     expect(getPasswordError('NoDigits!!')).toContain('number');
     expect(getPasswordError('NoSpecial12')).toContain('special');
     expect(getPasswordError('StrongPass1!')).toBe('');
+  });
+
+  it('counts astral Unicode characters as one password character', () => {
+    expect(getPasswordRequirementStatus('😀😀😀😀😀😀😀😀😀😀')).toMatchObject({
+      hasMinLength: true,
+      belowMaxLength: true,
+    });
   });
 });

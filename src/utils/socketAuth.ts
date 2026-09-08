@@ -11,7 +11,7 @@ export type SignedMutationAuth = {
   signature: string;
 };
 
-function createNonce(): string {
+const createNonce = (): string => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
   }
@@ -26,9 +26,9 @@ function createNonce(): string {
   }
 
   throw new Error('Secure randomness unavailable for nonce generation');
-}
+};
 
-function base64UrlEncodeUtf8(value: string): string {
+const base64UrlEncodeUtf8 = (value: string): string => {
   const bytes = new TextEncoder().encode(value);
   let binary = '';
   for (const b of bytes) {
@@ -38,16 +38,16 @@ function base64UrlEncodeUtf8(value: string): string {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/g, '');
-}
+};
 
-function canonicalClaimsString(claims: Record<string, string>): string {
+const canonicalClaimsString = (claims: Record<string, string>): string => {
   const keys = Object.keys(claims).sort();
   return keys
     .map((key) => `${key}=${base64UrlEncodeUtf8(claims[key] ?? '')}`)
     .join('&');
-}
+};
 
-function signingInput(auth: Omit<SignedMutationAuth, 'signature'>): string {
+const signingInput = (auth: Omit<SignedMutationAuth, 'signature'>): string => {
   return [
     auth.version,
     auth.event,
@@ -57,23 +57,23 @@ function signingInput(auth: Omit<SignedMutationAuth, 'signature'>): string {
     auth.nonce,
     canonicalClaimsString(auth.claims),
   ].join('|');
-}
+};
 
-function normalizeClaimValue(value: unknown): string {
+const normalizeClaimValue = (value: unknown): string => {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') {
     return String(value);
   }
   return JSON.stringify(value);
-}
+};
 
-export async function buildSignedMutationAuth(args: {
+export const buildSignedMutationAuth = async (args: {
   event: string;
   userId: string;
   sessionId: string;
   claims: Record<string, unknown>;
-}): Promise<SignedMutationAuth> {
+}): Promise<SignedMutationAuth> => {
   const keys = await loadKeysAsync();
   if (!keys?.privateKey) {
     throw new Error('Missing private key for signed mutation auth');
@@ -103,9 +103,9 @@ export async function buildSignedMutationAuth(args: {
     ...unsignedAuth,
     signature,
   };
-}
+};
 
-export async function emitSignedMutation(
+export const emitSignedMutation = async (
   socket: { emit: (event: string, payload: unknown) => void } | undefined,
   args: {
     event: string;
@@ -114,7 +114,7 @@ export async function emitSignedMutation(
     sessionId: string;
     claims: Record<string, unknown>;
   },
-): Promise<void> {
+): Promise<void> => {
   if (!socket) {
     throw new Error('Socket unavailable');
   }
@@ -130,4 +130,4 @@ export async function emitSignedMutation(
     ...args.payload,
     auth,
   });
-}
+};

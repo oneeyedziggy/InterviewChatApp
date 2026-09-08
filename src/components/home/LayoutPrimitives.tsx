@@ -3,24 +3,104 @@
 import type {
   ButtonHTMLAttributes,
   CSSProperties,
+  ReactNode,
   InputHTMLAttributes,
   TextareaHTMLAttributes,
   MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
   PropsWithChildren,
-  ReactNode,
   HTMLAttributes,
 } from 'react';
-import { Children, forwardRef, useEffect, useRef, useState } from 'react';
+import {
+  Children,
+  createContext,
+  forwardRef,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { cn } from '@/utils/cn';
 
 const HORIZONTAL_SPLIT_KEY_LEFT = 'home.layout.leftWidthPct';
 const HORIZONTAL_SPLIT_KEY_RIGHT = 'home.layout.rightWidthPct';
 
-function clamp(value: number, min: number, max: number) {
+const clamp = (value: number, min: number, max: number) => {
   return Math.min(max, Math.max(min, value));
-}
+};
 
-function usePersistentNumber(key: string, fallback: number) {
+type HomeMobileCarouselContextValue = {
+  isMobileCarousel: boolean;
+  activeSlide: number;
+  hasPrev: boolean;
+  hasNext: boolean;
+  goToSlide: (slide: number) => void;
+};
+
+const HomeMobileCarouselContext =
+  createContext<HomeMobileCarouselContextValue | null>(null);
+
+const disabledCarouselContextValue: HomeMobileCarouselContextValue = {
+  isMobileCarousel: false,
+  activeSlide: 1,
+  hasPrev: false,
+  hasNext: false,
+  goToSlide: () => {},
+};
+
+export const useHomeMobileCarousel = () => {
+  return useContext(HomeMobileCarouselContext) ?? disabledCarouselContextValue;
+};
+
+type MobilePanelHeaderProps = {
+  title: ReactNode;
+  previousSlide?: number;
+  nextSlide?: number;
+};
+
+export const MobilePanelHeader = ({
+  title,
+  previousSlide,
+  nextSlide,
+}: MobilePanelHeaderProps) => {
+  const { isMobileCarousel, goToSlide } = useHomeMobileCarousel();
+
+  if (!isMobileCarousel) {
+    return null;
+  }
+
+  return (
+    <div className="app-mobile-panel-header">
+      {typeof previousSlide === 'number' ? (
+        <button
+          type="button"
+          className="app-mobile-panel-nav-button"
+          aria-label="Previous panel"
+          onClick={() => goToSlide(previousSlide)}
+        >
+          <span aria-hidden="true">←</span>
+        </button>
+      ) : (
+        <span aria-hidden="true" className="app-mobile-panel-nav-spacer" />
+      )}
+      <div className="app-mobile-panel-title">{title}</div>
+      {typeof nextSlide === 'number' ? (
+        <button
+          type="button"
+          className="app-mobile-panel-nav-button"
+          aria-label="Next panel"
+          onClick={() => goToSlide(nextSlide)}
+        >
+          <span aria-hidden="true">→</span>
+        </button>
+      ) : (
+        <span aria-hidden="true" className="app-mobile-panel-nav-spacer" />
+      )}
+    </div>
+  );
+};
+
+const usePersistentNumber = (key: string, fallback: number) => {
   const [value, setValue] = useState(fallback);
 
   useEffect(() => {
@@ -59,9 +139,9 @@ function usePersistentNumber(key: string, fallback: number) {
   }, [key, value]);
 
   return [value, setValue] as const;
-}
+};
 
-export function AppLayoutRow({ children }: PropsWithChildren) {
+export const AppLayoutRow = ({ children }: PropsWithChildren) => {
   const [leftWidthPct, setLeftWidthPct] = usePersistentNumber(
     HORIZONTAL_SPLIT_KEY_LEFT,
     22,
@@ -72,6 +152,20 @@ export function AppLayoutRow({ children }: PropsWithChildren) {
   );
   const rootRef = useRef<HTMLDivElement | null>(null);
   const childParts = Children.toArray(children);
+  const mobileActiveSlideRef = useRef(1);
+  const mobileScrollRafRef = useRef<number | null>(null);
+  const mobileDragStateRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startScrollLeft: number;
+    dragging: boolean;
+  } | null>(null);
+  const [isMobileCarousel, setIsMobileCarousel] = useState(false);
+  const [hasMobilePrev, setHasMobilePrev] = useState(false);
+  const [hasMobileNext, setHasMobileNext] = useState(false);
+  const [mobileActiveSlide, setMobileActiveSlide] = useState(1);
+  const [isCarouselDragging, setIsCarouselDragging] = useState(false);
+  const carouselHintId = 'home-panels-carousel-hint';
 
   useEffect(() => {
     if (childParts.length !== 3) {
@@ -83,6 +177,179 @@ export function AppLayoutRow({ children }: PropsWithChildren) {
       );
     }
   }, [childParts.length]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia('(max-width: 767px)');
+    const updateMobileMode = () => {
+      setIsMobileCarousel(mediaQuery.matches);
+    };
+
+    updateMobileMode();
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', updateMobileMode);
+      return () => mediaQuery.removeEventListener('change', updateMobileMode);
+    }
+
+    mediaQuery.addListener(updateMobileMode);
+    return () => mediaQuery.removeListener(updateMobileMode);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileCarousel || childParts.length !== 3) {
+      return;
+    }
+
+    const root = rootRef.current;
+    if (!root) {
+      return;
+    }
+
+    const syncCarouselState = () => {
+      const { scrollLeft, clientWidth, scrollWidth } = root;
+      const slideWidth = clientWidth || 1;
+      const activeSlide = clamp(Math.round(scrollLeft / slideWidth), 0, 2);
+      mobileActiveSlideRef.current = activeSlide;
+      setMobileActiveSlide(activeSlide);
+      setHasMobilePrev(scrollLeft > 4);
+      setHasMobileNext(scrollLeft + clientWidth < scrollWidth - 4);
+    };
+
+    const snapToActiveSlide = () => {
+      root.scrollTo({
+        left: mobileActiveSlideRef.current * root.clientWidth,
+        behavior: 'auto',
+      });
+      syncCarouselState();
+    };
+
+    const onScroll = () => {
+      if (mobileScrollRafRef.current !== null) {
+        window.cancelAnimationFrame(mobileScrollRafRef.current);
+      }
+
+      mobileScrollRafRef.current = window.requestAnimationFrame(() => {
+        syncCarouselState();
+      });
+    };
+
+    const raf = window.requestAnimationFrame(() => {
+      mobileActiveSlideRef.current = 1;
+      root.scrollTo({ left: root.clientWidth, behavior: 'auto' });
+      syncCarouselState();
+    });
+
+    root.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', snapToActiveSlide);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      if (mobileScrollRafRef.current !== null) {
+        window.cancelAnimationFrame(mobileScrollRafRef.current);
+        mobileScrollRafRef.current = null;
+      }
+      root.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', snapToActiveSlide);
+    };
+  }, [childParts.length, isMobileCarousel]);
+
+  const shouldStartCarouselDrag = (target: EventTarget | null) => {
+    if (!(target instanceof HTMLElement)) {
+      return true;
+    }
+
+    return (
+      target.closest(
+        'button, a, input, textarea, select, label, [role="button"], [role="link"]',
+      ) === null
+    );
+  };
+
+  const startCarouselDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (
+      !isMobileCarousel ||
+      event.pointerType !== 'mouse' ||
+      event.button !== 0
+    ) {
+      return;
+    }
+
+    if (!shouldStartCarouselDrag(event.target)) {
+      return;
+    }
+
+    const root = rootRef.current;
+    if (!root) {
+      return;
+    }
+
+    event.preventDefault();
+
+    mobileDragStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startScrollLeft: root.scrollLeft,
+      dragging: false,
+    };
+    setIsCarouselDragging(true);
+
+    try {
+      root.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is not guaranteed for all environments.
+    }
+  };
+
+  const moveCarouselDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const dragState = mobileDragStateRef.current;
+    const root = rootRef.current;
+    if (!dragState || !root || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const deltaX = event.clientX - dragState.startX;
+    if (!dragState.dragging && Math.abs(deltaX) < 4) {
+      return;
+    }
+
+    dragState.dragging = true;
+    root.scrollLeft = dragState.startScrollLeft - deltaX;
+  };
+
+  const endCarouselDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const dragState = mobileDragStateRef.current;
+    const root = rootRef.current;
+    if (!dragState || !root || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    mobileDragStateRef.current = null;
+
+    try {
+      root.releasePointerCapture(event.pointerId);
+    } catch {
+      // Ignore release failures in older/partial pointer implementations.
+    }
+
+    if (dragState.dragging) {
+      const slideWidth = root.clientWidth || 1;
+      mobileActiveSlideRef.current = clamp(
+        Math.round(root.scrollLeft / slideWidth),
+        0,
+        2,
+      );
+      root.scrollTo({
+        left: mobileActiveSlideRef.current * slideWidth,
+        behavior: 'smooth',
+      });
+    }
+
+    setIsCarouselDragging(false);
+  };
 
   const startHorizontalResize = (
     side: 'left' | 'right',
@@ -121,6 +388,20 @@ export function AppLayoutRow({ children }: PropsWithChildren) {
   };
 
   const centerWidthPct = 100 - leftWidthPct - rightWidthPct;
+  const goToSlide = (slide: number) => {
+    const root = rootRef.current;
+    if (!root || !isMobileCarousel) {
+      return;
+    }
+
+    const nextSlide = clamp(slide, 0, 2);
+    mobileActiveSlideRef.current = nextSlide;
+    root.scrollTo({
+      left: nextSlide * root.clientWidth,
+      behavior: 'smooth',
+    });
+  };
+
   useEffect(() => {
     if (childParts.length !== 3) {
       return;
@@ -161,9 +442,9 @@ export function AppLayoutRow({ children }: PropsWithChildren) {
         );
       }
 
-      if (!isDesktop && flexDirection !== 'column') {
+      if (!isDesktop && flexDirection !== 'row') {
         console.warn(
-          '[LayoutHydration] Mobile viewport but layout is not column',
+          '[LayoutHydration] Mobile viewport but layout is not row',
           {
             viewportWidth: window.innerWidth,
             flexDirection,
@@ -201,51 +482,123 @@ export function AppLayoutRow({ children }: PropsWithChildren) {
   } as CSSProperties;
 
   return (
-    <div ref={rootRef} className="app-layout-row" style={layoutVars}>
-      <div className="app-layout-pane app-layout-pane-left">
-        {childParts[0]}
-      </div>
+    <HomeMobileCarouselContext.Provider
+      value={{
+        isMobileCarousel,
+        activeSlide: mobileActiveSlide,
+        hasPrev: isMobileCarousel && hasMobilePrev,
+        hasNext: isMobileCarousel && hasMobileNext,
+        goToSlide,
+      }}
+    >
       <div
-        role="separator"
-        aria-orientation="vertical"
-        onMouseDown={(event) => startHorizontalResize('left', event)}
-        className="app-layout-separator app-layout-separator-vertical"
-      />
-      <div className="app-layout-pane app-layout-pane-center">
-        {childParts[1]}
+        ref={rootRef}
+        className="app-layout-row"
+        style={layoutVars}
+        data-carousel-mode={isMobileCarousel ? 'mobile' : 'desktop'}
+        data-carousel-active-slide={mobileActiveSlide}
+        data-carousel-dragging={isCarouselDragging ? 'true' : 'false'}
+        data-carousel-has-prev={
+          isMobileCarousel && hasMobilePrev ? 'true' : 'false'
+        }
+        data-carousel-has-next={
+          isMobileCarousel && hasMobileNext ? 'true' : 'false'
+        }
+        aria-roledescription={isMobileCarousel ? 'carousel' : undefined}
+        aria-label={isMobileCarousel ? 'Chat panels' : undefined}
+        aria-describedby={isMobileCarousel ? carouselHintId : undefined}
+        onPointerDown={startCarouselDrag}
+        onPointerMove={moveCarouselDrag}
+        onPointerUp={endCarouselDrag}
+        onPointerCancel={endCarouselDrag}
+      >
+        {isMobileCarousel && (
+          <span
+            id={carouselHintId}
+            style={{
+              position: 'absolute',
+              width: '1px',
+              height: '1px',
+              padding: 0,
+              margin: '-1px',
+              overflow: 'hidden',
+              clip: 'rect(0, 0, 0, 0)',
+              whiteSpace: 'nowrap',
+              border: 0,
+            }}
+          >
+            Swipe left or right to move between the rooms panel, messages panel,
+            and user information panel.
+          </span>
+        )}
+        <div
+          className="app-layout-pane app-layout-pane-left"
+          data-carousel-pane="left"
+        >
+          {childParts[0]}
+        </div>
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          onMouseDown={(event) => startHorizontalResize('left', event)}
+          className="app-layout-separator app-layout-separator-vertical"
+        />
+        <div
+          className="app-layout-pane app-layout-pane-center"
+          data-carousel-pane="center"
+        >
+          {childParts[1]}
+        </div>
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          onMouseDown={(event) => startHorizontalResize('right', event)}
+          className="app-layout-separator app-layout-separator-vertical"
+        />
+        <div
+          className="app-layout-pane app-layout-pane-right"
+          data-carousel-pane="right"
+        >
+          {childParts[2]}
+        </div>
       </div>
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        onMouseDown={(event) => startHorizontalResize('right', event)}
-        className="app-layout-separator app-layout-separator-vertical"
-      />
-      <div className="app-layout-pane app-layout-pane-right">
-        {childParts[2]}
-      </div>
-    </div>
+    </HomeMobileCarouselContext.Provider>
   );
-}
+};
 
-export function SidePanel({ children }: PropsWithChildren) {
-  return <aside className="app-side-panel">{children}</aside>;
-}
+export const SidePanel = ({
+  children,
+  ...props
+}: PropsWithChildren<HTMLAttributes<HTMLElement>>) => {
+  return (
+    <aside {...props} className={cn('app-side-panel', props.className)}>
+      {children}
+    </aside>
+  );
+};
 
-export function MainPanel({ children }: PropsWithChildren) {
-  return <section className="app-main-panel">{children}</section>;
-}
+export const MainPanel = ({
+  children,
+  ...props
+}: PropsWithChildren<HTMLAttributes<HTMLElement>>) => {
+  return (
+    <section {...props} className={cn('app-main-panel', props.className)}>
+      {children}
+    </section>
+  );
+};
 
-export function Row({
+export const Row = ({
   children,
   className,
   ...props
-}: PropsWithChildren<HTMLAttributes<HTMLDivElement>>) {
+}: PropsWithChildren<HTMLAttributes<HTMLDivElement>>) => {
   return (
     <div {...props} className={cn('app-row', className)}>
       {children}
     </div>
   );
-}
+};
 
 type VerticalResizableSectionsProps = {
   storageKey: string;
@@ -254,12 +607,12 @@ type VerticalResizableSectionsProps = {
   defaultTopSize?: number;
 };
 
-export function VerticalResizableSections({
+export const VerticalResizableSections = ({
   storageKey,
   top,
   bottom,
   defaultTopSize = 78,
-}: VerticalResizableSectionsProps) {
+}: VerticalResizableSectionsProps) => {
   const [topSize, setTopSize] = usePersistentNumber(storageKey, defaultTopSize);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -298,15 +651,17 @@ export function VerticalResizableSections({
       <div className="app-vertical-bottom">{bottom}</div>
     </div>
   );
-}
+};
 
-export function AppTextInput(props: InputHTMLAttributes<HTMLInputElement>) {
+export const AppTextInput = (props: InputHTMLAttributes<HTMLInputElement>) => {
   return <input {...props} className={cn('app-text-input', props.className)} />;
-}
+};
 
-export function BlockTextInput(props: InputHTMLAttributes<HTMLInputElement>) {
+export const BlockTextInput = (
+  props: InputHTMLAttributes<HTMLInputElement>,
+) => {
   return <AppTextInput {...props} className={cn('block', props.className)} />;
-}
+};
 
 export const AppTextArea = forwardRef<
   HTMLTextAreaElement,
@@ -321,8 +676,10 @@ export const AppTextArea = forwardRef<
   );
 });
 
-export function PrimaryButton(props: ButtonHTMLAttributes<HTMLButtonElement>) {
+export const PrimaryButton = (
+  props: ButtonHTMLAttributes<HTMLButtonElement>,
+) => {
   return (
     <button {...props} className={cn('app-primary-button', props.className)} />
   );
-}
+};

@@ -10,7 +10,7 @@ import {
 
 type DialogState = InPageDialogRequest | null;
 
-export function InPageDialogHost() {
+export const InPageDialogHost = () => {
   const [dialog, setDialog] = useState<DialogState>(null);
 
   useEffect(() => {
@@ -102,4 +102,4 @@ export function InPageDialogHost() {
       </div>
     </div>
   );
-}
+};

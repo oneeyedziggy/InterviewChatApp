@@ -19,19 +19,19 @@ const BROKER_SW_PATH = '/private-key-broker-sw.js';
 let registrationPromise: Promise<ServiceWorkerRegistration | null> | null =
   null;
 
-function getBrokerServiceWorkerCandidates(): string[] {
+const getBrokerServiceWorkerCandidates = ():  string[] => {
   const candidates = [withBasePath(BROKER_SW_PATH), BROKER_SW_PATH];
   return Array.from(new Set(candidates));
-}
+};
 
-function formatRegistrationError(error: unknown): string {
+const formatRegistrationError = (error: unknown):  string => {
   if (error instanceof Error) {
     return `${error.name}: ${error.message}`;
   }
   return String(error);
-}
+};
 
-async function registerBrokerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+const registerBrokerServiceWorker = async ():  Promise<ServiceWorkerRegistration | null> => {
   if (
     typeof window === 'undefined' ||
     !('serviceWorker' in navigator) ||
@@ -66,9 +66,9 @@ async function registerBrokerServiceWorker(): Promise<ServiceWorkerRegistration 
   }
 
   return registrationPromise;
-}
+};
 
-async function getBrokerWorker(): Promise<ServiceWorker | null> {
+const getBrokerWorker = async ():  Promise<ServiceWorker | null> => {
   const registration = await registerBrokerServiceWorker();
   if (!registration) return null;
 
@@ -76,11 +76,10 @@ async function getBrokerWorker(): Promise<ServiceWorker | null> {
     registration.active || registration.waiting || registration.installing;
 
   return worker ?? null;
-}
+};
 
-async function sendBrokerRequest(
-  request: BrokerRequest,
-): Promise<BrokerResponse> {
+const sendBrokerRequest = async (
+  request: BrokerRequest,):  Promise<BrokerResponse> => {
   const worker = await getBrokerWorker();
   if (!worker) {
     return { ok: false, error: 'Broker worker unavailable' };
@@ -100,35 +99,33 @@ async function sendBrokerRequest(
 
     worker.postMessage(request, [channel.port2]);
   });
-}
+};
 
-export async function brokerSetPrivateKey(
+export const brokerSetPrivateKey = async (
   username: string,
-  privateKey: string,
-): Promise<boolean> {
+  privateKey: string,):  Promise<boolean> => {
   const response = await sendBrokerRequest({
     cmd: 'set',
     username,
     privateKey,
   });
   return response.ok;
-}
+};
 
-export async function brokerGetPrivateKey(
-  username: string,
-): Promise<string | null> {
+export const brokerGetPrivateKey = async (
+  username: string,):  Promise<string | null> => {
   const response = await sendBrokerRequest({ cmd: 'get', username });
   if (!response.ok) {
     return null;
   }
 
   return response.privateKey ?? null;
-}
+};
 
-export async function brokerClearPrivateKey(username: string): Promise<void> {
+export const brokerClearPrivateKey = async (username: string):  Promise<void> => {
   await sendBrokerRequest({ cmd: 'clear', username });
-}
+};
 
-export async function brokerClearAllPrivateKeys(): Promise<void> {
+export const brokerClearAllPrivateKeys = async ():  Promise<void> => {
   await sendBrokerRequest({ cmd: 'clearAll' });
-}
+};

@@ -1,11 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { setupSocketHandlers, setUser } from './socket';
-import * as socketio from 'socket.io';
 import { Messages } from './types/types';
 import { SOCKET_EVENTS } from './constants';
-
-// Mock socket.io
-vi.mock('socket.io');
 
 describe('socket module', () => {
   let mockSocket: any;
@@ -58,7 +54,10 @@ describe('socket module', () => {
     it('sets up connection handler', () => {
       setupSocketHandlers(mockIo as any);
 
-      expect(mockIo.on).toHaveBeenCalledWith('connection', expect.any(Function));
+      expect(mockIo.on).toHaveBeenCalledWith(
+        'connection',
+        expect.any(Function),
+      );
     });
 
     it('emits status and initialData on connection', () => {
@@ -66,33 +65,36 @@ describe('socket module', () => {
 
       // Get the connection handler
       const connectionHandler = mockIo.on.mock.calls.find(
-        (call: any[]) => call[0] === 'connection'
+        (call: any[]) => call[0] === 'connection',
       )?.[1];
 
       // Simulate connection
       connectionHandler?.(mockSocket);
 
-      expect(mockSocket.emit).toHaveBeenCalledWith(SOCKET_EVENTS.STATUS, 'Hello from Socket.io');
+      expect(mockSocket.emit).toHaveBeenCalledWith(
+        SOCKET_EVENTS.STATUS,
+        'Hello from WebSocket',
+      );
       expect(mockSocket.emit).toHaveBeenCalledWith(
         SOCKET_EVENTS.INITIAL_DATA,
         expect.objectContaining({
           messages: expect.any(Object),
           rooms: expect.any(Array),
           users: expect.any(Array),
-        })
+        }),
       );
     });
 
     it('sets up clientMessage handler', () => {
       setupSocketHandlers(mockIo as any);
       const connectionHandler = mockIo.on.mock.calls.find(
-        (call: any[]) => call[0] === 'connection'
+        (call: any[]) => call[0] === 'connection',
       )?.[1];
       connectionHandler?.(mockSocket);
 
       // Find clientMessage handler
       const clientMessageHandler = mockSocket.on.mock.calls.find(
-        (call: any[]) => call[0] === SOCKET_EVENTS.CLIENT_MESSAGE
+        (call: any[]) => call[0] === SOCKET_EVENTS.CLIENT_MESSAGE,
       )?.[1];
 
       expect(clientMessageHandler).toBeDefined();
@@ -111,19 +113,19 @@ describe('socket module', () => {
         expect.objectContaining({
           messages: expect.any(Object),
           users: expect.any(Array),
-        })
+        }),
       );
     });
 
     it('adds message to correct room on clientMessage', () => {
       setupSocketHandlers(mockIo as any);
       const connectionHandler = mockIo.on.mock.calls.find(
-        (call: any[]) => call[0] === 'connection'
+        (call: any[]) => call[0] === 'connection',
       )?.[1];
       connectionHandler?.(mockSocket);
 
       const clientMessageHandler = mockSocket.on.mock.calls.find(
-        (call: any[]) => call[0] === 'clientMessage'
+        (call: any[]) => call[0] === 'clientMessage',
       )?.[1];
 
       const testMessage = {
@@ -136,7 +138,7 @@ describe('socket module', () => {
 
       // Verify serverMessage was emitted with messages containing the new message
       const serverMessageCall = mockIo.emit.mock.calls.find(
-        (call: any[]) => call[0] === SOCKET_EVENTS.SERVER_MESSAGE
+        (call: any[]) => call[0] === SOCKET_EVENTS.SERVER_MESSAGE,
       );
       expect(serverMessageCall).toBeDefined();
       if (serverMessageCall) {
@@ -151,12 +153,12 @@ describe('socket module', () => {
     it('sets up clientNewRoom handler', () => {
       setupSocketHandlers(mockIo as any);
       const connectionHandler = mockIo.on.mock.calls.find(
-        (call: any[]) => call[0] === 'connection'
+        (call: any[]) => call[0] === 'connection',
       )?.[1];
       connectionHandler?.(mockSocket);
 
       const clientNewRoomHandler = mockSocket.on.mock.calls.find(
-        (call: any[]) => call[0] === SOCKET_EVENTS.CLIENT_NEW_ROOM
+        (call: any[]) => call[0] === SOCKET_EVENTS.CLIENT_NEW_ROOM,
       )?.[1];
 
       expect(clientNewRoomHandler).toBeDefined();
@@ -168,25 +170,25 @@ describe('socket module', () => {
         expect.objectContaining({
           messages: expect.any(Object),
           rooms: expect.any(Array),
-        })
+        }),
       );
     });
 
     it('creates new room with # prefix', () => {
       setupSocketHandlers(mockIo as any);
       const connectionHandler = mockIo.on.mock.calls.find(
-        (call: any[]) => call[0] === 'connection'
+        (call: any[]) => call[0] === 'connection',
       )?.[1];
       connectionHandler?.(mockSocket);
 
       const clientNewRoomHandler = mockSocket.on.mock.calls.find(
-        (call: any[]) => call[0] === SOCKET_EVENTS.CLIENT_NEW_ROOM
+        (call: any[]) => call[0] === SOCKET_EVENTS.CLIENT_NEW_ROOM,
       )?.[1];
 
       clientNewRoomHandler?.('testroom');
 
       const serverNewRoomCall = mockIo.emit.mock.calls.find(
-        (call: any[]) => call[0] === SOCKET_EVENTS.SERVER_NEW_ROOM
+        (call: any[]) => call[0] === SOCKET_EVENTS.SERVER_NEW_ROOM,
       );
       expect(serverNewRoomCall).toBeDefined();
       if (serverNewRoomCall) {
@@ -198,12 +200,12 @@ describe('socket module', () => {
     it('does not duplicate existing rooms', () => {
       setupSocketHandlers(mockIo as any);
       const connectionHandler = mockIo.on.mock.calls.find(
-        (call: any[]) => call[0] === 'connection'
+        (call: any[]) => call[0] === 'connection',
       )?.[1];
       connectionHandler?.(mockSocket);
 
       const clientNewRoomHandler = mockSocket.on.mock.calls.find(
-        (call: any[]) => call[0] === SOCKET_EVENTS.CLIENT_NEW_ROOM
+        (call: any[]) => call[0] === SOCKET_EVENTS.CLIENT_NEW_ROOM,
       )?.[1];
 
       // Try to create #general twice
@@ -211,9 +213,9 @@ describe('socket module', () => {
       clientNewRoomHandler?.('general');
 
       const serverNewRoomCalls = mockIo.emit.mock.calls.filter(
-        (call: any[]) => call[0] === 'serverNewRoom'
+        (call: any[]) => call[0] === 'serverNewRoom',
       );
-      
+
       // Should only have one #general in the final rooms list
       const lastCall = serverNewRoomCalls[serverNewRoomCalls.length - 1];
       if (lastCall) {
@@ -226,12 +228,12 @@ describe('socket module', () => {
     it('sets up clientDisconnecting handler', () => {
       setupSocketHandlers(mockIo as any);
       const connectionHandler = mockIo.on.mock.calls.find(
-        (call: any[]) => call[0] === 'connection'
+        (call: any[]) => call[0] === 'connection',
       )?.[1];
       connectionHandler?.(mockSocket);
 
       const clientDisconnectingHandler = mockSocket.on.mock.calls.find(
-        (call: any[]) => call[0] === SOCKET_EVENTS.CLIENT_DISCONNECTING
+        (call: any[]) => call[0] === SOCKET_EVENTS.CLIENT_DISCONNECTING,
       )?.[1];
 
       expect(clientDisconnectingHandler).toBeDefined();
@@ -247,12 +249,12 @@ describe('socket module', () => {
     it('sets up disconnect handler', () => {
       setupSocketHandlers(mockIo as any);
       const connectionHandler = mockIo.on.mock.calls.find(
-        (call: any[]) => call[0] === 'connection'
+        (call: any[]) => call[0] === 'connection',
       )?.[1];
       connectionHandler?.(mockSocket);
 
       const disconnectHandler = mockSocket.on.mock.calls.find(
-        (call: any[]) => call[0] === SOCKET_EVENTS.DISCONNECT
+        (call: any[]) => call[0] === SOCKET_EVENTS.DISCONNECT,
       )?.[1];
 
       expect(disconnectHandler).toBeDefined();
@@ -264,19 +266,19 @@ describe('socket module', () => {
     it('sorts rooms alphabetically', () => {
       setupSocketHandlers(mockIo as any);
       const connectionHandler = mockIo.on.mock.calls.find(
-        (call: any[]) => call[0] === 'connection'
+        (call: any[]) => call[0] === 'connection',
       )?.[1];
       connectionHandler?.(mockSocket);
 
       const clientNewRoomHandler = mockSocket.on.mock.calls.find(
-        (call: any[]) => call[0] === SOCKET_EVENTS.CLIENT_NEW_ROOM
+        (call: any[]) => call[0] === SOCKET_EVENTS.CLIENT_NEW_ROOM,
       )?.[1];
 
       clientNewRoomHandler?.('zebra');
       clientNewRoomHandler?.('alpha');
 
       const serverNewRoomCalls = mockIo.emit.mock.calls.filter(
-        (call: any[]) => call[0] === 'serverNewRoom'
+        (call: any[]) => call[0] === 'serverNewRoom',
       );
       const lastCall = serverNewRoomCalls[serverNewRoomCalls.length - 1];
       if (lastCall) {
@@ -288,4 +290,3 @@ describe('socket module', () => {
     });
   });
 });
-

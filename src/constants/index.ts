@@ -17,6 +17,7 @@ export const SOCKET_EVENTS = {
   CLIENT_VOTE_JOIN: 'clientVoteJoin',
   CLIENT_REQUEST_INITIAL_DATA: 'clientRequestInitialData',
   CLIENT_REQUEST_ROOM_DATA: 'clientRequestRoomData',
+  CLIENT_REQUEST_ROOM_WINDOW: 'clientRequestRoomWindow',
   SERVER_MESSAGE: 'serverMessage',
   SERVER_NEW_ROOM: 'serverNewRoom',
   SERVER_USER_LIST_UPDATE: 'serverUserListUpdate',

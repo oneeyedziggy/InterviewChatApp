@@ -34,9 +34,23 @@ import {
   storeIdentityDirectories,
 } from '@/utils/identityMap';
 import PasswordVisibilityToggle from '@/components/PasswordVisibilityToggle';
+import { InviteInvalidNotice } from '../components/InviteInvalidNotice';
+import {
+  loadServerMembershipsAsync,
+  upsertServerMembership,
+  withServerQuery,
+  type ServerMembership,
+} from '../utils/serverRegistry';
 
 const DeleteAccountDialog = styled.dialog`
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2200;
   width: min(92vw, 440px);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
   border: 1px solid var(--app-border);
   border-radius: 14px;
   padding: 0;
@@ -72,12 +86,38 @@ const DeleteAccountDialogText = styled.p`
 
 const DeleteAccountDialogActions = styled.div`
   display: flex;
-  justify-content: flex-end;
   gap: 10px;
   margin-top: 4px;
 `;
 
-export default function LoginPage() {
+const DeleteAccountDialogActionButton = styled.button<{ $danger?: boolean }>`
+  flex: 1 1 0;
+  min-width: 0;
+  margin-top: 0;
+  padding: 11px 14px;
+  font-size: 1rem;
+  white-space: nowrap;
+
+  ${({ $danger }) =>
+    $danger
+      ? `
+          border-color: #b32030;
+          background: #b32030;
+
+          &:hover:not(:disabled) {
+            background: #8f1421;
+          }
+        `
+      : ''}
+`;
+
+const LoginPage = () => {
+  const inviteServerLabel =
+    typeof window === 'undefined'
+      ? ''
+      : new URLSearchParams(window.location.search)
+          .get('serverLabel')
+          ?.trim() || '';
   const [username, setUsername] = useState<string>('');
   const [selectedUser, setSelectedUser] = useState<string>('');
   const [localUsers, setLocalUsers] = useState<string[]>([]);
@@ -85,7 +125,8 @@ export default function LoginPage() {
   const [password, setPassword] = useState<string>('');
   const [confirmPassword, setConfirmPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState<boolean>(false);
+  const [showConfirmPassword, setShowConfirmPassword] =
+    useState<boolean>(false);
   const [passwordError, setPasswordError] = useState<string>('');
   const [confirmPasswordError, setConfirmPasswordError] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
@@ -94,10 +135,23 @@ export default function LoginPage() {
   const [serverPublicKey, setServerPublicKey] = useState<string>('');
   const [deleteDialogUsername, setDeleteDialogUsername] = useState<string>('');
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState<boolean>(false);
+  const [serverMemberships, setServerMemberships] = useState<
+    ServerMembership[]
+  >([]);
+  const [activeServerId, setActiveServerId] = useState<string>('');
+  const [serverAlias, setServerAlias] = useState<string>('');
+  const [serverRequiresInvite, setServerRequiresInvite] = useState(false);
+  const inviteCode =
+    typeof window === 'undefined'
+      ? ''
+      : new URLSearchParams(window.location.search).get('invite') || '';
 
   const showUserSelect = localUsers.length > 1;
   const isExistingLocalUser = !!username && localUsers.includes(username);
   const requiresPasswordConfirmation = !!username && !isExistingLocalUser;
+  const hasInvite = inviteCode.trim() !== '';
+  const shouldRequireInvite =
+    !!activeServerId && serverRequiresInvite && !hasInvite;
 
   const applyLocalUsers = useCallback(
     (users: string[], preselectSingle = false) => {
@@ -110,11 +164,48 @@ export default function LoginPage() {
     [],
   );
 
+  const membershipLabelFor = useCallback(
+    (serverId: string) =>
+      inviteServerLabel ||
+      serverMemberships.find(
+        (membership) =>
+          membership.serverId === serverId || membership.alias === serverId,
+      )?.label ||
+      serverAlias ||
+      serverId,
+    [inviteServerLabel, serverAlias, serverMemberships],
+  );
+
   // Load local users (users with private keys) and check for auto-login on mount
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
+      const url = new URL(window.location.href);
+      const serverId = url.searchParams.get('server')?.trim() || '';
+      const memberships = await loadServerMembershipsAsync();
+      if (!cancelled) {
+        setActiveServerId(serverId);
+        setServerMemberships(memberships);
+        if (serverId) {
+          fetch(apiPath('/api/server-status'))
+            .then(async (response) => {
+              if (!response.ok) throw new Error('Unknown server');
+              return (await response.json()) as {
+                requiresInvite?: boolean;
+                alias?: string;
+              };
+            })
+            .then((status) => {
+              if (cancelled) return;
+              setServerRequiresInvite(status.requiresInvite === true);
+              setServerAlias(status.alias?.trim() || '');
+            })
+            .catch(() => {
+              if (!cancelled) setServerRequiresInvite(true);
+            });
+        }
+      }
       const users = getAllLocalUsers();
       console.log('[LoginPage] Loaded local users:', users);
       if (!cancelled) {
@@ -134,15 +225,20 @@ export default function LoginPage() {
         }
       } else if (storedKeys?.sessionId) {
         console.log('[LoginPage] Auto-login with stored keys');
-        window.location.href = withBasePath('/');
+        window.location.href = withServerQuery(withBasePath('/'), serverId);
         return;
       }
 
-      fetchServerPublicKey()
-        .then(setServerPublicKey)
-        .catch((err) => {
-          console.error('[LoginPage] Failed to fetch server public key:', err);
-        });
+      if (serverId) {
+        fetchServerPublicKey()
+          .then(setServerPublicKey)
+          .catch((err) => {
+            console.error(
+              '[LoginPage] Failed to fetch server public key:',
+              err,
+            );
+          });
+      }
     })();
 
     return () => {
@@ -212,6 +308,74 @@ export default function LoginPage() {
     );
   }, [username, password, confirmPassword]);
 
+  const syncAutofilledInputs = useCallback(() => {
+    const usernameInput = document.getElementById(
+      'username',
+    ) as HTMLInputElement | null;
+    const passwordInput = document.getElementById(
+      'password',
+    ) as HTMLInputElement | null;
+    const confirmInput = document.getElementById(
+      'confirmPassword',
+    ) as HTMLInputElement | null;
+
+    const domUsername = usernameInput?.value?.trim() ?? '';
+    const domPassword = passwordInput?.value ?? '';
+    const domConfirm = confirmInput?.value ?? '';
+
+    if (domUsername) {
+      setUsername((prev) => (prev === domUsername ? prev : domUsername));
+    }
+    if (domPassword) {
+      setPassword((prev) => (prev === domPassword ? prev : domPassword));
+    }
+    if (domConfirm) {
+      setConfirmPassword((prev) => (prev === domConfirm ? prev : domConfirm));
+    }
+  }, []);
+
+  useEffect(() => {
+    const onMaybeAutofill = () => {
+      syncAutofilledInputs();
+    };
+
+    // Initial sweep catches early and late autofill writes.
+    const raf1 = window.requestAnimationFrame(onMaybeAutofill);
+    const timeout1 = window.setTimeout(onMaybeAutofill, 0);
+    const timeout2 = window.setTimeout(onMaybeAutofill, 120);
+    const timeout3 = window.setTimeout(onMaybeAutofill, 450);
+    const timeout4 = window.setTimeout(onMaybeAutofill, 1200);
+
+    // Some browsers delay credential injection until post-hydration or focus.
+    const interval = window.setInterval(onMaybeAutofill, 250);
+    const stopInterval = window.setTimeout(() => {
+      window.clearInterval(interval);
+    }, 4000);
+
+    const onVisibilityChange = () => {
+      if (!document.hidden) {
+        onMaybeAutofill();
+      }
+    };
+
+    window.addEventListener('pageshow', onMaybeAutofill);
+    window.addEventListener('focus', onMaybeAutofill);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.clearTimeout(timeout1);
+      window.clearTimeout(timeout2);
+      window.clearTimeout(timeout3);
+      window.clearTimeout(timeout4);
+      window.clearTimeout(stopInterval);
+      window.clearInterval(interval);
+      window.removeEventListener('pageshow', onMaybeAutofill);
+      window.removeEventListener('focus', onMaybeAutofill);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [syncAutofilledInputs]);
+
   const generateStrongPassword = useCallback(() => {
     const length = 32;
     const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -252,6 +416,9 @@ export default function LoginPage() {
         "Something went wrong at login, go grab a cup of tea, maybe we'll figure it out while you're gone";
 
       try {
+        const registrationServerId = activeServerId;
+        const registrationServerPublicKey = serverPublicKey;
+
         const storedMetadata = loadStoredKeyMetadataForUser(username);
 
         let keys: StoredKeys;
@@ -284,7 +451,8 @@ export default function LoginPage() {
           console.log('[LoginPage] Generating new keys for:', username);
           const keyPair = await generateKeyPair(username);
           const serverPubKey =
-            serverPublicKey || (await fetchServerPublicKey());
+            registrationServerPublicKey ||
+            (registrationServerId ? await fetchServerPublicKey() : '');
 
           keys = {
             username,
@@ -300,12 +468,33 @@ export default function LoginPage() {
         // - Register new user if user doesn't exist (for new users)
         // - Reject if user exists but public key doesn't match
         const userId =
-          storedMetadata?.userId || keys.userId || requireUserIdByUsername(username);
+          storedMetadata?.userId ||
+          keys.userId ||
+          requireUserIdByUsername(username);
+
+        if (!registrationServerId) {
+          await storeKeys(
+            {
+              ...keys,
+              userId,
+            },
+            password,
+          );
+          setLocalUsers(getAllLocalUsers());
+          setLoginError('');
+          window.location.href = withBasePath('/');
+          return;
+        }
+
         const opaqueIdentity = await buildOpaqueUsernameEnvelope(
           username,
           keys.serverPublicKey,
         );
-        const loginResponse = await fetch(apiPath('/api/login'), {
+        const loginPath = withServerQuery(
+          apiPath('/api/login'),
+          registrationServerId,
+        );
+        const loginResponse = await fetch(loginPath, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -313,6 +502,7 @@ export default function LoginPage() {
             usernameHash: opaqueIdentity.usernameHash,
             usernameCiphertext: opaqueIdentity.usernameCiphertext,
             publicKey: keys.publicKey,
+            inviteCode,
           }),
         });
 
@@ -362,7 +552,18 @@ export default function LoginPage() {
               sessionId: verifyData.sessionId,
               userId: verifyData.userId || userId,
               serverPublicKey: verifyData.serverPublicKey,
+              serverId: activeServerId,
             });
+
+            if (activeServerId) {
+              const updatedMemberships = upsertServerMembership({
+                serverId: activeServerId,
+                label: membershipLabelFor(activeServerId),
+                username,
+                userId: verifyData.userId || userId,
+              });
+              setServerMemberships(updatedMemberships);
+            }
 
             // Refresh user list to include this user in dropdown
             const updatedUsers = getAllLocalUsers();
@@ -370,7 +571,10 @@ export default function LoginPage() {
 
             setLoginError('');
             // Redirect to main app
-            window.location.href = withBasePath('/');
+            window.location.href = withServerQuery(
+              withBasePath('/'),
+              activeServerId,
+            );
           } else {
             setLoginError(verifyData.error || snarkyFallbackError);
           }
@@ -399,6 +603,15 @@ export default function LoginPage() {
             },
             password,
           );
+          if (registrationServerId) {
+            const updatedMemberships = upsertServerMembership({
+              serverId: registrationServerId,
+              label: membershipLabelFor(registrationServerId),
+              username,
+              userId: loginData.userId || userId,
+            });
+            setServerMemberships(updatedMemberships);
+          }
 
           // Refresh user list to include this new user in dropdown
           const updatedUsers = getAllLocalUsers();
@@ -407,7 +620,10 @@ export default function LoginPage() {
 
           setLoginError('');
           // Redirect to main app
-          window.location.href = withBasePath('/');
+          window.location.href = withServerQuery(
+            withBasePath('/'),
+            registrationServerId,
+          );
         } else {
           setLoginError(loginData.error || snarkyFallbackError);
         }
@@ -418,7 +634,7 @@ export default function LoginPage() {
         setIsLoading(false);
       }
     },
-    [serverPublicKey],
+    [activeServerId, inviteCode, membershipLabelFor, serverPublicKey],
   );
 
   const handleKeyDown = useCallback(
@@ -571,129 +787,133 @@ export default function LoginPage() {
     <PageShell className="app-auth-shell">
       <AuthCard className="app-auth-card-content">
         <h1 className="app-auth-title">Login</h1>
+        {shouldRequireInvite && !isExistingLocalUser && <InviteInvalidNotice />}
         {loginError && <span className="app-auth-error">{loginError}</span>}
-        <form
-          className="app-auth-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!isSubmitDisabled && !isLoading) {
-              void onSubmit(username, password);
-            }
-          }}
-        >
-          {showUserSelect && (
-            <>
-              <label htmlFor="userSelect" className="app-auth-label">
-                Select existing user:
-              </label>
-              <select
-                id="userSelect"
-                className="app-text-input app-auth-select"
-                value={selectedUser}
-                onChange={(e) => {
-                  setSelectedUser(e.target.value);
-                  if (e.target.value) {
-                    setUsername(e.target.value);
-                  }
-                }}
-              >
-                <option value="">-- Select a user --</option>
-                {localUsers.map((user) => (
-                  <option key={user} value={user}>
-                    {user}
-                  </option>
-                ))}
-              </select>
-              <div className="app-auth-divider">or</div>
-            </>
-          )}
-          <Input
-            id="username"
-            label="username:"
-            type="text"
-            error={usernameError}
-            minLength={VALIDATION.MIN_USERNAME_LENGTH}
-            value={username}
-            onChange={(val) => {
-              setUsername(val);
-              // If the new username is in the local users list, update selectedUser
-              // Otherwise, clear selection
-              if (localUsers.includes(val)) {
-                setSelectedUser(val);
-              } else {
-                setSelectedUser('');
+        {(!shouldRequireInvite || isExistingLocalUser) && (
+          <form
+            className="app-auth-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!isSubmitDisabled && !isLoading) {
+                void onSubmit(username, password);
               }
             }}
-            onKeyDown={handleKeyDown}
-            required={true}
-            autoFocus={localUsers.length === 0}
-          />
-          <Input
-            id="password"
-            label="password:"
-            type={showPassword ? 'text' : 'password'}
-            autoComplete="current-password"
-            error={passwordError}
-            minLength={VALIDATION.MIN_PASSWORD_LENGTH}
-            value={password}
-            onChange={setPassword}
-            onKeyDown={handleKeyDown}
-            required={true}
-            inlineRightSlot={
-              requiresPasswordConfirmation && password.length === 0 ? (
-                <button
-                  type="button"
-                  className="app-primary-button app-auth-input-inline-button"
-                  onClick={generateStrongPassword}
-                  disabled={isLoading}
+          >
+            {showUserSelect && (
+              <>
+                <label htmlFor="userSelect" className="app-auth-label">
+                  Select existing user:
+                </label>
+                <select
+                  id="userSelect"
+                  className="app-text-input app-auth-select"
+                  value={selectedUser}
+                  onChange={(e) => {
+                    setSelectedUser(e.target.value);
+                    if (e.target.value) {
+                      setUsername(e.target.value);
+                    }
+                  }}
                 >
-                  Generate
-                </button>
-              ) : undefined
-            }
-            rightSlot={
-              <PasswordVisibilityToggle
-                showing={showPassword}
-                onToggle={() => setShowPassword((current) => !current)}
-                disabled={isLoading}
-              />
-            }
-          />
-          {requiresPasswordConfirmation && (
+                  <option value="">-- Select a user --</option>
+                  {localUsers.map((user) => (
+                    <option key={user} value={user}>
+                      {user}
+                    </option>
+                  ))}
+                </select>
+                <div className="app-auth-divider">or</div>
+              </>
+            )}
             <Input
-              id="confirmPassword"
-              label="confirm password:"
-              type={showConfirmPassword ? 'text' : 'password'}
-              autoComplete="new-password"
-              error={confirmPasswordError}
-              minLength={VALIDATION.MIN_PASSWORD_LENGTH}
-              value={confirmPassword}
-              onChange={setConfirmPassword}
+              id="username"
+              label="username:"
+              type="text"
+              autoComplete="username"
+              error={usernameError}
+              minLength={VALIDATION.MIN_USERNAME_LENGTH}
+              value={username}
+              onChange={(val) => {
+                setUsername(val);
+                // If the new username is in the local users list, update selectedUser
+                // Otherwise, clear selection
+                if (localUsers.includes(val)) {
+                  setSelectedUser(val);
+                } else {
+                  setSelectedUser('');
+                }
+              }}
               onKeyDown={handleKeyDown}
               required={true}
+              autoFocus={localUsers.length === 0}
+            />
+            <Input
+              id="password"
+              label="password:"
+              type={showPassword ? 'text' : 'password'}
+              autoComplete="current-password"
+              error={passwordError}
+              minLength={VALIDATION.MIN_PASSWORD_LENGTH}
+              value={password}
+              onChange={setPassword}
+              onKeyDown={handleKeyDown}
+              required={true}
+              inlineRightSlot={
+                requiresPasswordConfirmation && password.length === 0 ? (
+                  <button
+                    type="button"
+                    className="app-primary-button app-auth-input-inline-button"
+                    onClick={generateStrongPassword}
+                    disabled={isLoading}
+                  >
+                    Generate
+                  </button>
+                ) : undefined
+              }
               rightSlot={
                 <PasswordVisibilityToggle
-                  showing={showConfirmPassword}
-                  onToggle={() =>
-                    setShowConfirmPassword((current) => !current)
-                  }
+                  showing={showPassword}
+                  onToggle={() => setShowPassword((current) => !current)}
                   disabled={isLoading}
                 />
               }
             />
-          )}
-          <button
-            type="submit"
-            disabled={isSubmitDisabled || isLoading}
-            className="app-primary-button app-auth-submit-button"
-          >
-            {isLoading
-              ? 'Logging in...'
-              : username && localUsers.includes(username)
-                ? 'Login as ' + username
-                : 'Login / Create User'}
-          </button>
-        </form>
+            {requiresPasswordConfirmation && (
+              <Input
+                id="confirmPassword"
+                label="confirm password:"
+                type={showConfirmPassword ? 'text' : 'password'}
+                autoComplete="new-password"
+                error={confirmPasswordError}
+                minLength={VALIDATION.MIN_PASSWORD_LENGTH}
+                value={confirmPassword}
+                onChange={setConfirmPassword}
+                onKeyDown={handleKeyDown}
+                required={true}
+                rightSlot={
+                  <PasswordVisibilityToggle
+                    showing={showConfirmPassword}
+                    onToggle={() =>
+                      setShowConfirmPassword((current) => !current)
+                    }
+                    disabled={isLoading}
+                  />
+                }
+              />
+            )}
+            <button
+              type="submit"
+              disabled={isSubmitDisabled || isLoading}
+              className="app-primary-button app-auth-submit-button"
+            >
+              {isLoading
+                ? 'Logging in...'
+                : username && localUsers.includes(username)
+                  ? 'Login as ' + username
+                  : 'Login / Create User'}
+            </button>
+          </form>
+        )}
         {username && localUsers.includes(username) && (
           <button
             type="button"
@@ -728,26 +948,26 @@ export default function LoginPage() {
               {deleteDialogUsername}&quot;? This action cannot be undone.
             </DeleteAccountDialogText>
             <DeleteAccountDialogActions>
-              <button
+              <DeleteAccountDialogActionButton
                 type="button"
-                className="app-primary-button"
                 onClick={closeDeleteDialog}
                 disabled={isLoading}
               >
                 Cancel
-              </button>
-              <button
+              </DeleteAccountDialogActionButton>
+              <DeleteAccountDialogActionButton
                 type="button"
-                className="app-primary-button app-auth-danger-button"
+                $danger
                 onClick={() => void confirmDeleteAccount()}
                 disabled={isLoading}
               >
                 {isLoading ? 'Deleting...' : 'Delete Account'}
-              </button>
+              </DeleteAccountDialogActionButton>
             </DeleteAccountDialogActions>
           </DeleteAccountDialogBody>
         </DeleteAccountDialog>
       </AuthCard>
     </PageShell>
   );
-}
+};
+export default LoginPage;

@@ -1,9 +1,11 @@
 import { createPortal } from 'react-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { type Socket } from 'socket.io-client';
+import { VariableSizeList } from 'react-window';
+import { type Socket } from '../../utils/websocketClient';
+import { getRoomIdByName, getRoomNameByRoomId } from '../../utils/identityMap';
 import { styled } from 'styled-components';
 import { ConfirmPopover } from '../ConfirmPopover';
-import { ScrollableDiv } from '../styled/ScrollableDiv';
+import { AppModal } from '../AppModal';
 import { ContextMenuItem, ContextMenuSurface } from '../styled/ContextMenu';
 import { SOCKET_EVENTS, FEATURES } from '../../constants';
 import { type Messages, type Message } from '../../types/types';
@@ -24,7 +26,7 @@ import {
 
 const IMPORTED_TRANSFER_MARKERS_KEY = 'imported_transfer_markers_v1';
 
-function readImportedTransferMarkers(): Record<string, boolean> {
+const readImportedTransferMarkers = (): Record<string, boolean> => {
   if (typeof window === 'undefined') {
     return {};
   }
@@ -46,9 +48,9 @@ function readImportedTransferMarkers(): Record<string, boolean> {
   } catch {
     return {};
   }
-}
+};
 
-function markTransferAsImported(marker: string): void {
+const markTransferAsImported = (marker: string): void => {
   if (typeof window === 'undefined' || !marker) {
     return;
   }
@@ -56,9 +58,9 @@ function markTransferAsImported(marker: string): void {
   const existing = readImportedTransferMarkers();
   existing[marker] = true;
   localStorage.setItem(IMPORTED_TRANSFER_MARKERS_KEY, JSON.stringify(existing));
-}
+};
 
-function transferImportMarker(message: Message): string {
+const transferImportMarker = (message: Message): string => {
   if (message.id && message.id.trim() !== '') {
     return `id:${message.id}`;
   }
@@ -69,34 +71,53 @@ function transferImportMarker(message: Message): string {
     message.keyTransferFromUserId ||
     'unknown';
   return `legacy:${message.timestamp}:${fromUser}`;
-}
+};
 
-function transferImportMarkerFromParts(
+const transferImportMarkerFromParts = (
   messageID: string | undefined,
   messageTimestamp: number,
   fromUser: string | undefined,
-): string {
+): string => {
   if (messageID && messageID.trim() !== '') {
     return `id:${messageID}`;
   }
   return `legacy:${messageTimestamp}:${fromUser || 'unknown'}`;
-}
+};
 
-function getDefaultImportedTransferNote(fromUser: string | undefined): string {
+const getDefaultImportedTransferNote = (
+  fromUser: string | undefined,
+): string => {
   if (fromUser) {
     return `Imported account from ${fromUser}. It is now available in your local login list.`;
   }
   return 'Imported account is available in your local login list.';
-}
+};
 
-function messageKey(message: Message, index: number): string {
+const messageKey = (message: Message, index: number): string => {
   if (message.id && message.id.trim() !== '') {
     return `id:${message.id}`;
   }
   return `ts:${message.timestamp}:u:${message.userId || 'unknown'}:i:${index}`;
-}
+};
 
-function resolveDisplayUsername(message: Message): string {
+const expansionKey = (message: Message): string =>
+  message.id || `ts:${message.timestamp}:u:${message.userId || 'unknown'}`;
+
+const isUnreadableEncryptedMessage = (message: Message): boolean => {
+  const hasEncryptedPayload =
+    !!message.encryptedMessage ||
+    !!message.encryptedFor ||
+    (message.versions?.length || 0) > 0;
+  const content = (message.content || '').trim();
+  return (
+    hasEncryptedPayload &&
+    (!content ||
+      content.includes('🔒') ||
+      content.includes('[Encrypted message]'))
+  );
+};
+
+const resolveDisplayUsername = (message: Message): string => {
   if (message.userId === 'system') {
     return 'system';
   }
@@ -107,9 +128,9 @@ function resolveDisplayUsername(message: Message): string {
     }
   }
   return message.userId || 'unknown';
-}
+};
 
-function resolveSystemUserRefs(content: string): string {
+const resolveSystemUserRefs = (content: string): string => {
   if (!content || content.trim() === '') {
     return content;
   }
@@ -118,12 +139,12 @@ function resolveSystemUserRefs(content: string): string {
     const mapped = getUsernameByUserId(userID);
     return mapped || full;
   });
-}
+};
 
-function isSameMessageRun(
+const isSameMessageRun = (
   previous: Message | undefined,
   current: Message,
-): boolean {
+): boolean => {
   if (!previous) {
     return false;
   }
@@ -133,7 +154,7 @@ function isSameMessageRun(
     (previous.userId || previous.username) ===
       (current.userId || current.username) && previousReplyTo === currentReplyTo
   );
-}
+};
 
 const MessageWithReplies = ({
   message,
@@ -161,6 +182,8 @@ const MessageWithReplies = ({
   editingMessageTimestamp,
   indentLevel = 0,
   collapseIntoPrevious = false,
+  expandedMessageIds,
+  onToggleExpanded,
 }: {
   message: Message;
   allMessages: Message[];
@@ -200,7 +223,10 @@ const MessageWithReplies = ({
     voteType: 'up' | 'down',
   ) => void;
   onMessageUser?: (targetUser: string) => void;
-  onSendPublicKeyToUser?: (targetUser: string) => void;
+  onSendPublicKeyToUser?: (
+    targetUser: string,
+    password: string,
+  ) => Promise<boolean>;
   onImportTransferredAccount?: (
     fromUser: string,
     encryptedPackage: string,
@@ -214,13 +240,15 @@ const MessageWithReplies = ({
   editingMessageTimestamp?: number;
   indentLevel?: number;
   collapseIntoPrevious?: boolean;
+  expandedMessageIds: Set<string>;
+  onToggleExpanded: (message: Message) => void;
 }) => {
   const transferDisplayFromUser =
     (message.keyTransferFromUserId
       ? getUsernameByUserId(message.keyTransferFromUserId)
       : undefined) || message.keyTransferFromUserId;
 
-  const [isExpanded, setIsExpanded] = useState(false);
+  const isExpanded = expandedMessageIds.has(expansionKey(message));
   const [isCompactHovered, setIsCompactHovered] = useState(false);
   const [actionMenuAnchor, setActionMenuAnchor] = useState<DOMRect | null>(
     null,
@@ -232,6 +260,9 @@ const MessageWithReplies = ({
     anchor: DOMRect;
   } | null>(null);
   const [isImportingTransfer, setIsImportingTransfer] = useState(false);
+  const [isPasswordDialogOpen, setIsPasswordDialogOpen] = useState(false);
+  const [transferPassword, setTransferPassword] = useState('');
+  const [isSendingTransfer, setIsSendingTransfer] = useState(false);
   const [isImportedOnThisDevice, setIsImportedOnThisDevice] = useState(() => {
     if (!message.keyTransferEncryptedPackage) {
       return false;
@@ -703,23 +734,6 @@ const MessageWithReplies = ({
             {!isCompactMessage && <>{renderAuthorLine()}: </>}
             [Encrypted message]
           </span>
-          {onRequestAccess && (
-            <button
-              onClick={() => {
-                if (message.userId && message.userId !== 'system') {
-                  onRequestAccess(message.userId, room, message.timestamp);
-                }
-              }}
-              style={{
-                marginLeft: '8px',
-                padding: '4px 8px',
-                fontSize: '12px',
-                cursor: 'pointer',
-              }}
-            >
-              Request Access
-            </button>
-          )}
         </div>
       );
     }
@@ -787,7 +801,7 @@ const MessageWithReplies = ({
     <div
       style={{
         position: 'relative',
-        marginBottom: isCompactMessage ? '2px' : '8px',
+        marginBottom: isCompactMessage ? '1px' : '4px',
         paddingLeft: indentLevel > 0 ? '24px' : '0',
       }}
       onMouseEnter={() => {
@@ -805,14 +819,12 @@ const MessageWithReplies = ({
         <span
           style={{
             position: 'absolute',
-            left: indentLevel > 0 ? '-44px' : '-128px',
+            right: indentLevel > 0 ? '-44px' : '-128px',
             top: '4px',
             fontSize: '11px',
-            color: '#6c7f9b',
-            background:
-              'color-mix(in srgb, var(--app-surface) 90%, transparent)',
-            border:
-              '1px solid color-mix(in srgb, var(--app-border) 70%, transparent)',
+            color: 'var(--app-surface)',
+            background: 'color-mix(in srgb, var(--app-fg) 92%, black)',
+            border: '1px solid color-mix(in srgb, var(--app-fg) 72%, black)',
             borderRadius: '10px',
             padding: '1px 6px',
             opacity: isCompactHovered ? 1 : 0,
@@ -820,6 +832,8 @@ const MessageWithReplies = ({
             transition: 'opacity 140ms ease, transform 140ms ease',
             pointerEvents: 'none',
             whiteSpace: 'nowrap',
+            zIndex: 2,
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.28)',
           }}
         >
           {localTimestamp}
@@ -869,7 +883,7 @@ const MessageWithReplies = ({
               <button
                 onClick={() => {
                   const nextIsExpanded = !isExpanded;
-                  setIsExpanded(nextIsExpanded);
+                  onToggleExpanded(message);
                   if (nextIsExpanded && markDirectRepliesRead) {
                     markDirectRepliesRead(message.timestamp);
                   }
@@ -889,6 +903,7 @@ const MessageWithReplies = ({
                   flexShrink: 0,
                   alignSelf: 'center',
                 }}
+                aria-label={isExpanded ? 'Collapse replies' : 'Expand replies'}
                 title={isExpanded ? 'Collapse replies' : 'Expand replies'}
               >
                 {isExpanded ? '−' : '+'}
@@ -912,7 +927,7 @@ const MessageWithReplies = ({
               <button
                 onClick={() => {
                   const nextIsExpanded = !isExpanded;
-                  setIsExpanded(nextIsExpanded);
+                  onToggleExpanded(message);
                   if (nextIsExpanded && markDirectRepliesRead) {
                     markDirectRepliesRead(message.timestamp);
                   }
@@ -926,6 +941,7 @@ const MessageWithReplies = ({
                   border: 'none',
                   color: unreadDirectRepliesCount ? '#0b7a6f' : '#666',
                 }}
+                aria-label={isExpanded ? 'Collapse replies' : 'Expand replies'}
                 title={isExpanded ? 'Collapse replies' : 'Expand replies'}
               >
                 {isExpanded ? '−' : '+'}
@@ -954,6 +970,7 @@ const MessageWithReplies = ({
             >
               <button
                 onClick={() => onVote(room, message.timestamp, 'up')}
+                aria-label="Upvote"
                 style={{
                   padding: '0',
                   fontSize: '14px',
@@ -988,6 +1005,7 @@ const MessageWithReplies = ({
               </span>
               <button
                 onClick={() => onVote(room, message.timestamp, 'down')}
+                aria-label="Downvote"
                 style={{
                   padding: '0',
                   fontSize: '14px',
@@ -1107,12 +1125,72 @@ const MessageWithReplies = ({
               variant="primary"
               anchorRect={pendingSendKeyConfirm.anchor}
               onConfirm={() => {
-                onSendPublicKeyToUser(messageDisplayUsername);
                 setPendingSendKeyConfirm(null);
+                setTransferPassword('');
+                setIsPasswordDialogOpen(true);
               }}
               onCancel={() => setPendingSendKeyConfirm(null)}
             />
           )}
+
+        <AppModal
+          open={isPasswordDialogOpen}
+          title="Verify your password"
+          onClose={() => {
+            if (!isSendingTransfer) setIsPasswordDialogOpen(false);
+          }}
+          actions={
+            <>
+              <button
+                type="button"
+                className="app-secondary-button"
+                disabled={isSendingTransfer}
+                onClick={() => setIsPasswordDialogOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="app-primary-button"
+                disabled={!transferPassword || isSendingTransfer}
+                onClick={() => {
+                  void (async () => {
+                    setIsSendingTransfer(true);
+                    const sendTransfer = onSendPublicKeyToUser;
+                    if (!sendTransfer) {
+                      setIsSendingTransfer(false);
+                      return;
+                    }
+                    const sent = await sendTransfer(
+                      messageDisplayUsername,
+                      transferPassword,
+                    );
+                    setIsSendingTransfer(false);
+                    if (sent) {
+                      setTransferPassword('');
+                      setIsPasswordDialogOpen(false);
+                    }
+                  })();
+                }}
+              >
+                {isSendingTransfer ? 'Verifying...' : 'Verify and send'}
+              </button>
+            </>
+          }
+        >
+          <p className="app-dialog-message">
+            Re-enter your AES password to authorize sending this encrypted
+            private-key bundle.
+          </p>
+          <input
+            className="app-text-input app-dialog-password-input"
+            type="password"
+            autoFocus
+            value={transferPassword}
+            onChange={(event) => setTransferPassword(event.target.value)}
+            aria-label="AES password"
+          />
+        </AppModal>
 
         {!isDeletedMessage &&
           !isSystemMessage &&
@@ -1216,7 +1294,7 @@ const MessageWithReplies = ({
         <div
           style={{
             position: 'relative',
-            marginTop: '8px',
+            marginTop: '4px',
             paddingLeft: '24px',
             display: 'grid',
             gridTemplateRows: isExpanded ? '1fr' : '0fr',
@@ -1295,6 +1373,8 @@ const MessageWithReplies = ({
                     editingMessageTimestamp={editingMessageTimestamp}
                     indentLevel={indentLevel + 1}
                     collapseIntoPrevious={collapseIntoPrevious}
+                    expandedMessageIds={expandedMessageIds}
+                    onToggleExpanded={onToggleExpanded}
                   />
                 </div>
               );
@@ -1306,7 +1386,7 @@ const MessageWithReplies = ({
   );
 };
 
-function MessageThreadCard({
+const MessageThreadCard = ({
   messages,
   allMessages,
   currentRoom,
@@ -1327,6 +1407,7 @@ function MessageThreadCard({
   replyingTo,
   editingMessageTimestamp,
   socket,
+  onLoadOlder,
 }: {
   messages: Message[];
   allMessages: Message[];
@@ -1360,7 +1441,10 @@ function MessageThreadCard({
     voteType: 'up' | 'down',
   ) => void;
   onMessageUser?: (targetUser: string) => void;
-  onSendPublicKeyToUser?: (targetUser: string) => void;
+  onSendPublicKeyToUser?: (
+    targetUser: string,
+    password: string,
+  ) => Promise<boolean>;
   onImportTransferredAccount?: (
     fromUser: string,
     encryptedPackage: string,
@@ -1371,11 +1455,53 @@ function MessageThreadCard({
   replyingTo?: number;
   editingMessageTimestamp?: number;
   socket?: Socket;
-}) {
+  onLoadOlder?: () => void;
+}) => {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const threadAreaRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<any>(null);
+  const [threadHeight, setThreadHeight] = useState(0);
+  const [expandedMessageIds, setExpandedMessageIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [expandedStorageKey, setExpandedStorageKey] = useState('');
   const shouldStickToBottomRef = useRef(true);
   const didInitializeReadMarkersRef = useRef(false);
   const messageCount = messages.length;
+  const storageKey = `home_message_expansions_${username || 'anonymous'}_${encodeURIComponent(currentRoom)}`;
+
+  useEffect(() => {
+    setExpandedStorageKey(storageKey);
+    if (typeof window === 'undefined') {
+      setExpandedMessageIds(new Set());
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(storageKey);
+      const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+      setExpandedMessageIds(
+        new Set(
+          Array.isArray(parsed)
+            ? parsed.filter(
+                (value): value is string => typeof value === 'string',
+              )
+            : [],
+        ),
+      );
+    } catch {
+      setExpandedMessageIds(new Set());
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (expandedStorageKey !== storageKey || typeof window === 'undefined') {
+      return;
+    }
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify(Array.from(expandedMessageIds)),
+    );
+  }, [expandedMessageIds, expandedStorageKey, storageKey]);
 
   const childrenByParent = useMemo(() => {
     const map = new Map<number, Message[]>();
@@ -1467,6 +1593,9 @@ function MessageThreadCard({
   const scrollToBottom = () => {
     const node = scrollRef.current;
     if (!node) return;
+    const distanceFromBottom =
+      node.scrollHeight - node.scrollTop - node.clientHeight;
+    if (distanceFromBottom <= 2) return;
     node.scrollTop = node.scrollHeight;
   };
 
@@ -1482,87 +1611,159 @@ function MessageThreadCard({
     return () => window.cancelAnimationFrame(raf);
   }, [messageCount, currentRoom]);
 
+  useEffect(() => {
+    const area = threadAreaRef.current;
+    if (!area) return;
+    const updateHeight = () => setThreadHeight(area.clientHeight);
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(area);
+    return () => observer.disconnect();
+  }, []);
+
   const handleScroll = () => {
     const node = scrollRef.current;
     if (!node) return;
+    if (node.scrollTop <= 48) onLoadOlder?.();
     const threshold = 24;
     shouldStickToBottomRef.current =
       node.scrollHeight - node.scrollTop - node.clientHeight <= threshold;
   };
 
-  return (
-    <ScrollableDiv
-      ref={scrollRef}
-      className="app-message-thread-card"
-      $padding="12px"
-      $border="none"
-      onScroll={handleScroll}
-    >
-      {messages.map((message, index) => {
-        const previousMessage = index > 0 ? messages[index - 1] : undefined;
-        const collapseIntoPrevious = isSameMessageRun(previousMessage, message);
+  const estimateMessageSize = (message: Message): number => {
+    const contentLines = Math.max(
+      1,
+      Math.ceil((message.content?.length || 0) / 72),
+    );
+    const replies = childrenByParent.get(message.timestamp) || [];
+    const baseSize = 58 + contentLines * 18;
+    if (
+      !expandedMessageIds.has(expansionKey(message)) ||
+      replies.length === 0
+    ) {
+      return baseSize;
+    }
+    return (
+      baseSize +
+      4 +
+      replies.reduce((total, reply) => total + estimateMessageSize(reply), 0)
+    );
+  };
 
-        return (
-          <MessageWithReplies
-            key={messageKey(message, index)}
-            message={message}
-            allMessages={allMessages}
-            childrenByParent={childrenByParent}
-            room={currentRoom}
-            username={username}
-            onRequestAccess={onRequestAccess}
-            onGrantAccess={onGrantAccess}
-            onDenyAccess={(
-              requestingUserId: string,
-              originalRoom: string,
-              messageTimestamp: number,
-            ) => {
-              void (async () => {
-                const keys = await loadKeysAsync();
-                if (!socket || !username || !keys?.sessionId) return;
-                const voterUserId = requireUserIdByUsername(username);
-                const originalRoomId = requireRoomIdByName(originalRoom);
-                void emitSignedMutation(socket, {
-                  event: SOCKET_EVENTS.CLIENT_DENY_ACCESS,
-                  payload: {
-                    requestingUserId,
-                    originalRoomId,
-                    messageTimestamp,
-                    sessionId: keys.sessionId,
-                  },
-                  userId: voterUserId,
-                  sessionId: keys.sessionId,
-                  claims: {
-                    requestingUserId,
-                    originalRoomId,
-                    messageTimestamp,
-                  },
-                });
-              })();
-            }}
-            onSelectVersion={onSelectVersion}
-            onReply={onReply}
-            onEdit={onEdit}
-            onDelete={onDelete}
-            onVote={onVote}
-            onMessageUser={onMessageUser}
-            onSendPublicKeyToUser={onSendPublicKeyToUser}
-            onImportTransferredAccount={onImportTransferredAccount}
-            onBlockUser={onBlockUser}
-            onUnblockUser={onUnblockUser}
-            blockedUsers={blockedUsers}
-            getUnreadDirectRepliesCount={getUnreadDirectRepliesCount}
-            markDirectRepliesRead={markDirectRepliesRead}
-            replyingTo={replyingTo}
-            editingMessageTimestamp={editingMessageTimestamp}
-            indentLevel={0}
-            collapseIntoPrevious={collapseIntoPrevious}
-          />
-        );
-      })}
-    </ScrollableDiv>
+  const toggleExpanded = (message: Message, topLevelIndex: number) => {
+    setExpandedMessageIds((previous) => {
+      const next = new Set(previous);
+      const key = expansionKey(message);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+    window.requestAnimationFrame(() => {
+      listRef.current?.resetAfterIndex(topLevelIndex, false);
+    });
+  };
+
+  const itemSize = (index: number) => {
+    return estimateMessageSize(messages[index]);
+  };
+
+  return (
+    <div
+      ref={threadAreaRef}
+      style={{ height: '100%', minHeight: 0, width: '100%' }}
+    >
+      <VariableSizeList
+        ref={listRef}
+        className="app-message-thread-card"
+        height={threadHeight || 320}
+        width="100%"
+        itemCount={messages.length}
+        itemSize={itemSize}
+        itemKey={(index) => messageKey(messages[index], index)}
+        outerRef={scrollRef}
+        onScroll={handleScroll}
+        onItemsRendered={({ visibleStartIndex }) => {
+          if (visibleStartIndex <= 1) onLoadOlder?.();
+        }}
+      >
+        {({ index, style }) => {
+          const message = messages[index];
+          const previousMessage = index > 0 ? messages[index - 1] : undefined;
+          const collapseIntoPrevious = isSameMessageRun(
+            previousMessage,
+            message,
+          );
+
+          return (
+            <div style={style}>
+              <MessageWithReplies
+                message={message}
+                allMessages={allMessages}
+                childrenByParent={childrenByParent}
+                room={currentRoom}
+                username={username}
+                onRequestAccess={onRequestAccess}
+                onGrantAccess={onGrantAccess}
+                onDenyAccess={(
+                  requestingUserId: string,
+                  originalRoom: string,
+                  messageTimestamp: number,
+                ) => {
+                  void (async () => {
+                    const keys = await loadKeysAsync();
+                    if (!socket || !username || !keys?.sessionId) return;
+                    const voterUserId = requireUserIdByUsername(username);
+                    const originalRoomId = requireRoomIdByName(originalRoom);
+                    void emitSignedMutation(socket, {
+                      event: SOCKET_EVENTS.CLIENT_DENY_ACCESS,
+                      payload: {
+                        requestingUserId,
+                        originalRoomId,
+                        messageTimestamp,
+                        sessionId: keys.sessionId,
+                      },
+                      userId: voterUserId,
+                      sessionId: keys.sessionId,
+                      claims: {
+                        requestingUserId,
+                        originalRoomId,
+                        messageTimestamp,
+                      },
+                    });
+                  })();
+                }}
+                onSelectVersion={onSelectVersion}
+                onReply={onReply}
+                onEdit={onEdit}
+                onDelete={onDelete}
+                onVote={onVote}
+                onMessageUser={onMessageUser}
+                onSendPublicKeyToUser={onSendPublicKeyToUser}
+                onImportTransferredAccount={onImportTransferredAccount}
+                onBlockUser={onBlockUser}
+                onUnblockUser={onUnblockUser}
+                blockedUsers={blockedUsers}
+                getUnreadDirectRepliesCount={getUnreadDirectRepliesCount}
+                markDirectRepliesRead={markDirectRepliesRead}
+                replyingTo={replyingTo}
+                editingMessageTimestamp={editingMessageTimestamp}
+                indentLevel={0}
+                collapseIntoPrevious={collapseIntoPrevious}
+                expandedMessageIds={expandedMessageIds}
+                onToggleExpanded={(expandedMessage) =>
+                  toggleExpanded(expandedMessage, index)
+                }
+              />
+            </div>
+          );
+        }}
+      </VariableSizeList>
+    </div>
   );
-}
+};
 
 export const renderMessageThread = (
   messages: Messages,
@@ -1598,7 +1799,10 @@ export const renderMessageThread = (
     voteType: 'up' | 'down',
   ) => void,
   onMessageUser?: (targetUser: string) => void,
-  onSendPublicKeyToUser?: (targetUser: string) => void,
+  onSendPublicKeyToUser?: (
+    targetUser: string,
+    password: string,
+  ) => Promise<boolean>,
   onImportTransferredAccount?: (
     fromUser: string,
     encryptedPackage: string,
@@ -1608,11 +1812,18 @@ export const renderMessageThread = (
   replyingTo?: number,
   editingMessageTimestamp?: number,
   socket?: Socket,
+  onLoadOlder?: () => void,
 ) => {
-  if (currentRoom && Object.keys(messages).length && messages[currentRoom]) {
-    const allRoomMessages = messages[currentRoom];
-    const visibleRoomMessages = allRoomMessages.filter((msg) =>
-      canUserViewMessage(msg, username),
+  const resolvedRoom =
+    (currentRoom && messages[currentRoom] && currentRoom) ||
+    (currentRoom && getRoomNameByRoomId(currentRoom)) ||
+    (currentRoom && getRoomIdByName(currentRoom)) ||
+    currentRoom;
+  if (resolvedRoom && Object.keys(messages).length && messages[resolvedRoom]) {
+    const allRoomMessages = messages[resolvedRoom];
+    const visibleRoomMessages = allRoomMessages.filter(
+      (msg) =>
+        canUserViewMessage(msg, username) && !isUnreadableEncryptedMessage(msg),
     );
     const topLevelMessages = allRoomMessages.filter(
       (msg) => !msg.replyTo && msg.replyTo !== 0,
@@ -1628,7 +1839,7 @@ export const renderMessageThread = (
       <MessageThreadCard
         messages={sortedMessages}
         allMessages={visibleRoomMessages}
-        currentRoom={currentRoom}
+        currentRoom={resolvedRoom}
         username={username}
         onRequestAccess={onRequestAccess}
         onGrantAccess={onGrantAccess}
@@ -1646,6 +1857,7 @@ export const renderMessageThread = (
         replyingTo={replyingTo}
         editingMessageTimestamp={editingMessageTimestamp}
         socket={socket}
+        onLoadOlder={onLoadOlder}
       />
     );
   }

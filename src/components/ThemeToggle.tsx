@@ -5,20 +5,20 @@ type ResolvedTheme = 'dark' | 'light';
 
 const THEME_STORAGE_KEY = 'chat_theme';
 
-function resolveSystemTheme(): ResolvedTheme {
+const resolveSystemTheme = ():  ResolvedTheme => {
   return window.matchMedia('(prefers-color-scheme: dark)').matches
     ? 'dark'
     : 'light';
-}
+};
 
-function applyTheme(mode: ThemeMode) {
+const applyTheme = (mode: ThemeMode) => {
   const resolved = mode === 'system' ? resolveSystemTheme() : mode;
   document.documentElement.setAttribute('data-theme', resolved);
   document.documentElement.setAttribute('data-theme-mode', mode);
   localStorage.setItem(THEME_STORAGE_KEY, mode);
-}
+};
 
-export function ThemeToggle({ compact = false }: { compact?: boolean }) {
+export const ThemeToggle = ({ compact = false }: { compact?: boolean }) => {
   const [themeMode, setThemeMode] = useState<ThemeMode>('system');
 
   useEffect(() => {
@@ -84,9 +84,9 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
       </button>
     </div>
   );
-}
+};
 
-export function ThemeToggleStretch({ compact = false }: { compact?: boolean }) {
+export const ThemeToggleStretch = ({ compact = false }: { compact?: boolean }) => {
   const [themeMode, setThemeMode] = useState<ThemeMode>('system');
 
   useEffect(() => {
@@ -152,4 +152,4 @@ export function ThemeToggleStretch({ compact = false }: { compact?: boolean }) {
       </button>
     </div>
   );
-}
+};

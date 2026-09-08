@@ -21,7 +21,7 @@ const IDENTITY_SECRET = 'identity_secret_v1';
 
 let identityCache: IdentityState | null = null;
 
-function safeParseMap(raw: string | null): Record<string, string> {
+const safeParseMap = (raw: string | null):  Record<string, string> => {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -35,9 +35,9 @@ function safeParseMap(raw: string | null): Record<string, string> {
   } catch {
     return {};
   }
-}
+};
 
-function safeParseNumberMap(raw: string | null): Record<string, number> {
+const safeParseNumberMap = (raw: string | null):  Record<string, number> => {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -60,26 +60,26 @@ function safeParseNumberMap(raw: string | null): Record<string, number> {
   } catch {
     return {};
   }
-}
+};
 
-function bytesToBase64(bytes: Uint8Array): string {
+const bytesToBase64 = (bytes: Uint8Array):  string => {
   let binary = '';
   for (let i = 0; i < bytes.length; i += 1) {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
-}
+};
 
-function base64ToBytes(value: string): Uint8Array {
+const base64ToBytes = (value: string):  Uint8Array => {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
-}
+};
 
-function randomHex(bytes = 16): string {
+const randomHex = (bytes = 16):  string => {
   if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
     throw new Error('Secure randomness unavailable');
   }
@@ -88,9 +88,9 @@ function randomHex(bytes = 16): string {
   return Array.from(out)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
-}
+};
 
-function getOrCreateIdentitySecret(): string {
+const getOrCreateIdentitySecret = ():  string => {
   if (typeof window === 'undefined') return '';
 
   const existing = localStorage.getItem(IDENTITY_SECRET);
@@ -104,14 +104,14 @@ function getOrCreateIdentitySecret(): string {
       : `${Date.now()}:${randomHex(16)}`;
   localStorage.setItem(IDENTITY_SECRET, secret);
   return secret;
-}
+};
 
-function readIdentitySecret(): string {
+const readIdentitySecret = ():  string => {
   if (typeof window === 'undefined') return '';
   return localStorage.getItem(IDENTITY_SECRET) || '';
-}
+};
 
-function deriveKeyMaterial(): string {
+const deriveKeyMaterial = ():  string => {
   if (typeof window === 'undefined') return '';
 
   const secret = readIdentitySecret();
@@ -120,9 +120,9 @@ function deriveKeyMaterial(): string {
   }
 
   return getOrCreateIdentitySecret();
-}
+};
 
-function xorCipher(value: string, keyMaterial: string): string {
+const xorCipher = (value: string, keyMaterial: string):  string => {
   if (!value) return '';
   const valueBytes = new TextEncoder().encode(value);
   const keyBytes = new TextEncoder().encode(keyMaterial);
@@ -131,9 +131,9 @@ function xorCipher(value: string, keyMaterial: string): string {
     out[i] = valueBytes[i] ^ keyBytes[i % keyBytes.length];
   }
   return bytesToBase64(out);
-}
+};
 
-function xorDecipher(value: string, keyMaterial: string): string {
+const xorDecipher = (value: string, keyMaterial: string):  string => {
   if (!value) return '';
   const inBytes = base64ToBytes(value);
   const keyBytes = new TextEncoder().encode(keyMaterial);
@@ -142,9 +142,9 @@ function xorDecipher(value: string, keyMaterial: string): string {
     out[i] = inBytes[i] ^ keyBytes[i % keyBytes.length];
   }
   return new TextDecoder().decode(out);
-}
+};
 
-function emptyIdentityState(): IdentityState {
+const emptyIdentityState = ():  IdentityState => {
   return {
     userIdToName: {},
     userNameToId: {},
@@ -153,11 +153,10 @@ function emptyIdentityState(): IdentityState {
     userIdUpdatedAt: {},
     roomIdUpdatedAt: {},
   };
-}
+};
 
-function sanitizeState(
-  raw: Partial<IdentityState> | null | undefined,
-): IdentityState {
+const sanitizeState = (
+  raw: Partial<IdentityState> | null | undefined,):  IdentityState => {
   const next = emptyIdentityState();
   if (!raw) {
     return next;
@@ -182,9 +181,9 @@ function sanitizeState(
   }
 
   return next;
-}
+};
 
-function saveState(state: IdentityState) {
+const saveState = (state: IdentityState) => {
   if (typeof window === 'undefined') return;
   const payload = JSON.stringify(state);
   const keyMaterial = deriveKeyMaterial();
@@ -193,9 +192,9 @@ function saveState(state: IdentityState) {
   if (!readIdentitySecret()) {
     getOrCreateIdentitySecret();
   }
-}
+};
 
-function loadState(): IdentityState {
+const loadState = ():  IdentityState => {
   if (typeof window === 'undefined') return emptyIdentityState();
   if (identityCache) {
     return identityCache;
@@ -225,16 +224,16 @@ function loadState(): IdentityState {
   getOrCreateIdentitySecret();
   saveState(identityCache);
   return identityCache;
-}
+};
 
-function createLocalId(prefix: string): string {
+const createLocalId = (prefix: string):  string => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return `${prefix}:${crypto.randomUUID()}`;
   }
   return `${prefix}:${Date.now()}:${randomHex(16)}`;
-}
+};
 
-export function storeIdentityDirectories(data: IdentityDirectories) {
+export const storeIdentityDirectories = (data: IdentityDirectories) => {
   if (typeof window === 'undefined') return;
 
   const state = loadState();
@@ -317,62 +316,62 @@ export function storeIdentityDirectories(data: IdentityDirectories) {
 
   identityCache = state;
   saveState(state);
-}
+};
 
-export function getUserIdByUsername(username: string): string | undefined {
+export const getUserIdByUsername = (username: string):  string | undefined => {
   if (!username || typeof window === 'undefined') return undefined;
   return loadState().userNameToId[username];
-}
+};
 
-export function getRoomIdByName(roomName: string): string | undefined {
+export const getRoomIdByName = (roomName: string):  string | undefined => {
   if (!roomName || typeof window === 'undefined') return undefined;
   return loadState().roomNameToId[roomName];
-}
+};
 
-export function getUsernameByUserId(userId: string): string | undefined {
+export const getUsernameByUserId = (userId: string):  string | undefined => {
   if (!userId || typeof window === 'undefined') return undefined;
   return loadState().userIdToName[userId];
-}
+};
 
-export function getRoomNameByRoomId(roomId: string): string | undefined {
+export const getRoomNameByRoomId = (roomId: string):  string | undefined => {
   if (!roomId || typeof window === 'undefined') return undefined;
   return loadState().roomIdToName[roomId];
-}
+};
 
-export function getCurrentUserId(): string | undefined {
+export const getCurrentUserId = ():  string | undefined => {
   if (typeof window === 'undefined') return undefined;
   return loadState().currentUserId;
-}
+};
 
-export function getUserDirectorySnapshot(): Record<string, string> {
+export const getUserDirectorySnapshot = ():  Record<string, string> => {
   if (typeof window === 'undefined') {
     return {};
   }
   return { ...loadState().userIdToName };
-}
+};
 
-export function getRoomDirectorySnapshot(): Record<string, string> {
+export const getRoomDirectorySnapshot = ():  Record<string, string> => {
   if (typeof window === 'undefined') {
     return {};
   }
   return { ...loadState().roomIdToName };
-}
+};
 
-export function getUserDirectoryTimestampSnapshot(): Record<string, number> {
+export const getUserDirectoryTimestampSnapshot = ():  Record<string, number> => {
   if (typeof window === 'undefined') {
     return {};
   }
   return { ...loadState().userIdUpdatedAt };
-}
+};
 
-export function getRoomDirectoryTimestampSnapshot(): Record<string, number> {
+export const getRoomDirectoryTimestampSnapshot = ():  Record<string, number> => {
   if (typeof window === 'undefined') {
     return {};
   }
   return { ...loadState().roomIdUpdatedAt };
-}
+};
 
-export function requireUserIdByUsername(username: string): string {
+export const requireUserIdByUsername = (username: string):  string => {
   const existing = getUserIdByUsername(username);
   if (existing) {
     return existing;
@@ -390,9 +389,9 @@ export function requireUserIdByUsername(username: string): string {
   identityCache = state;
   saveState(state);
   return userId;
-}
+};
 
-export function requireRoomIdByName(roomName: string): string {
+export const requireRoomIdByName = (roomName: string):  string => {
   if (!roomName || typeof window === 'undefined') {
     throw new Error(`Missing roomId mapping for room: ${roomName}`);
   }
@@ -412,4 +411,4 @@ export function requireRoomIdByName(roomName: string): string {
   }
 
   throw new Error(`Missing roomId mapping for room: ${roomName}`);
-}
+};

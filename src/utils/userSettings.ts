@@ -12,15 +12,14 @@ type BlockedUserExport = {
   blockedBy: string[];
 };
 
-function getCurrentLocalUsername(): string | null {
+const getCurrentLocalUsername = ():  string | null => {
   if (typeof window === 'undefined') return null;
   return localStorage.getItem('gpg_username');
-}
+};
 
-function isBlockedForUser(
+const isBlockedForUser = (
   entry: UserPublicKeyEntry | undefined,
-  localUsername: string | null,
-): boolean {
+  localUsername: string | null,):  boolean => {
   if (!entry) return false;
   if (!localUsername) return !!entry.blocked;
 
@@ -30,9 +29,9 @@ function isBlockedForUser(
 
   // If no per-user list is present, use the entry-level blocked flag.
   return !!entry.blocked;
-}
+};
 
-function readUserKeyEntries(): Record<string, UserPublicKeyEntry> {
+const readUserKeyEntries = ():  Record<string, UserPublicKeyEntry> => {
   if (typeof window === 'undefined') return {};
 
   const stored = localStorage.getItem(USER_PUBLIC_KEYS_KEY);
@@ -78,31 +77,30 @@ function readUserKeyEntries(): Record<string, UserPublicKeyEntry> {
   } catch {
     return {};
   }
-}
+};
 
-function writeUserKeyEntries(
-  entries: Record<string, UserPublicKeyEntry>,
-): void {
+const writeUserKeyEntries = (
+  entries: Record<string, UserPublicKeyEntry>,):  void => {
   if (typeof window === 'undefined') return;
   localStorage.setItem(USER_PUBLIC_KEYS_KEY, JSON.stringify(entries));
-}
+};
 
-export function getBlockedUsers(): string[] {
+export const getBlockedUsers = ():  string[] => {
   const entries = readUserKeyEntries();
   const currentLocalUsername = getCurrentLocalUsername();
   return Object.entries(entries)
     .filter(([, entry]) => isBlockedForUser(entry, currentLocalUsername))
     .map(([username]) => username);
-}
+};
 
-export function isUserBlocked(username: string): boolean {
+export const isUserBlocked = (username: string):  boolean => {
   if (!username) return false;
   const entries = readUserKeyEntries();
   const currentLocalUsername = getCurrentLocalUsername();
   return isBlockedForUser(entries[username], currentLocalUsername);
-}
+};
 
-export function blockUser(username: string): void {
+export const blockUser = (username: string):  void => {
   if (typeof window === 'undefined' || !username) return;
   const entries = readUserKeyEntries();
   const existing = entries[username] || { publicKey: '' };
@@ -118,9 +116,9 @@ export function blockUser(username: string): void {
     blockedBy: Array.from(blockedBy),
   };
   writeUserKeyEntries(entries);
-}
+};
 
-export function unblockUser(username: string): number | undefined {
+export const unblockUser = (username: string):  number | undefined => {
   if (typeof window === 'undefined' || !username) return undefined;
   const entries = readUserKeyEntries();
   if (!entries[username]) {
@@ -142,12 +140,12 @@ export function unblockUser(username: string): number | undefined {
   };
   writeUserKeyEntries(entries);
   return blockedAt;
-}
+};
 
-export function getBlockedUserExportsForCurrentUser(): Record<
+export const getBlockedUserExportsForCurrentUser = ():  Record<
   string,
   BlockedUserExport
-> {
+> => {
   const entries = readUserKeyEntries();
   const currentLocalUsername = getCurrentLocalUsername();
   const exported: Record<string, BlockedUserExport> = {};
@@ -170,4 +168,4 @@ export function getBlockedUserExportsForCurrentUser(): Record<
   }
 
   return exported;
-}
+};

@@ -6,9 +6,17 @@ import (
 )
 
 func TestGetIdentityMapsForSaveAndSaveState(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "chat-state.json")
+	storePath := filepath.Join(t.TempDir(), "chat-state.sqlite3")
+	store, err := NewSQLiteStore(storePath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
 	server := &ChatServer{
-		store: NewFileStore(storePath),
+		store: store,
 		roomIDs: map[string]string{
 			"general": "room-general",
 			"alpha":   "room-alpha",
@@ -58,7 +66,7 @@ func TestGetIdentityMapsForSaveAndSaveState(t *testing.T) {
 		t.Fatalf("unexpected loaded rooms: %+v", loadedRooms)
 	}
 	if loadedUsers["user-1"] != "alice" || loadedUserPubKeys["user-1"] != "pubkey" {
-		t.Fatalf("unexpected loaded users: %+v %+v", loadedUsers, loadedUserPubKeys)
+		t.Fatalf("unexpected loaded users/pubkeys: %+v %+v", loadedUsers, loadedUserPubKeys)
 	}
 	if loadedUserPubKeysUpdatedAt["user-1"] != 123 || loadedUserIDs["user-1"] != "" {
 		t.Fatalf("unexpected loaded pubkey timestamps or user IDs: %+v %+v", loadedUserPubKeysUpdatedAt, loadedUserIDs)

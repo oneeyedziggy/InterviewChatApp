@@ -1,6 +1,10 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -10,6 +14,109 @@ import (
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 	"github.com/google/uuid"
 )
+
+// generateInviteCode returns a random, URL-safe, single-use invite token.
+// Only its hash is ever persisted (see hashInviteCode), never the plaintext.
+func generateInviteCode() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func hashInviteCode(code string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(code)))
+	return hex.EncodeToString(sum[:])
+}
+
+// handleCreateInvite lets any authenticated existing member mint a
+// time-limited, single-use invite code for this server.
+func (cs *ChatServer) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(CreateInviteResponse{Error: "Method not allowed"})
+		return
+	}
+
+	var req CreateInviteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		json.NewEncoder(w).Encode(CreateInviteResponse{Error: "Invalid request format"})
+		return
+	}
+
+	if req.SessionID == "" || !cs.isSessionAuthorizedForUser(req.SessionID, req.UserID) {
+		log.Printf("[handleCreateInvite] ✗ Invalid session for user: %s", req.UserID)
+		json.NewEncoder(w).Encode(CreateInviteResponse{Error: "Invalid session"})
+		return
+	}
+
+	code, err := generateInviteCode()
+	if err != nil {
+		log.Printf("[handleCreateInvite] ✗ Failed to generate invite code: %v", err)
+		json.NewEncoder(w).Encode(CreateInviteResponse{Error: "Failed to generate invite"})
+		return
+	}
+
+	now := time.Now().Unix()
+	expiresAt := time.Now().Add(InviteTTL).Unix()
+	if err := cs.store.CreateInvite(hashInviteCode(code), req.UserID, now, expiresAt); err != nil {
+		log.Printf("[handleCreateInvite] ✗ Failed to persist invite: %v", err)
+		json.NewEncoder(w).Encode(CreateInviteResponse{Error: "Failed to create invite"})
+		return
+	}
+
+	log.Printf("[handleCreateInvite] ✓ Invite created by user: %s", req.UserID)
+	json.NewEncoder(w).Encode(CreateInviteResponse{Code: code, ExpiresAt: expiresAt})
+}
+
+func (cs *ChatServer) handleListInvites(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	invites, err := cs.store.ListInvites()
+	if err != nil {
+		http.Error(w, "failed to list invites", http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(invites)
+}
+
+func (cs *ChatServer) handleRevokeInvite(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var request ManageInviteRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.UserID == "" || request.SessionID == "" || request.InviteID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid request"})
+		return
+	}
+	if !cs.isSessionAuthorizedForUser(request.SessionID, request.UserID) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid session"})
+		return
+	}
+	if err := cs.store.RevokeInvite(request.InviteID); err != nil {
+		http.Error(w, "failed to revoke invite", http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
 
 // handleGetServerPublicKey returns the server's public key
 func (cs *ChatServer) handleGetServerPublicKey(w http.ResponseWriter, r *http.Request) {
@@ -34,6 +141,20 @@ func (cs *ChatServer) handleGetServerPublicKey(w http.ResponseWriter, r *http.Re
 	}
 
 	json.NewEncoder(w).Encode(response)
+}
+
+func (cs *ChatServer) handleServerStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	hasUsers, err := cs.store.HasAnyUsers()
+	if err != nil {
+		http.Error(w, "failed to inspect server", http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"requiresInvite": hasUsers, "alias": cs.alias})
 }
 
 // handleAuth is a single auth endpoint used on page load to validate an
@@ -253,6 +374,31 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		hasUsers, err := cs.store.HasAnyUsers()
+		if err != nil {
+			log.Printf("[handleLogin] ✗ Failed to check existing users: %v", err)
+			json.NewEncoder(w).Encode(LoginResponse{Error: "Failed to process registration"})
+			return
+		}
+		var invitedByUserID string
+		if hasUsers {
+			if strings.TrimSpace(req.InviteCode) == "" {
+				json.NewEncoder(w).Encode(LoginResponse{Error: "A valid invite is required to join this server."})
+				return
+			}
+			createdBy, ok, err := cs.store.ConsumeInvite(hashInviteCode(req.InviteCode), time.Now().Unix())
+			if err != nil {
+				log.Printf("[handleLogin] ✗ Failed to validate invite: %v", err)
+				json.NewEncoder(w).Encode(LoginResponse{Error: "Failed to process registration"})
+				return
+			}
+			if !ok {
+				json.NewEncoder(w).Encode(LoginResponse{Error: "This invite has expired, or this was never a valid server."})
+				return
+			}
+			invitedByUserID = createdBy
+		}
+
 		// Store the user's public key
 		cs.mu.Lock()
 		cs.userPubKeys[req.UserID] = req.PublicKey
@@ -260,6 +406,10 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 			cs.userPubKeysUpdatedAt = make(map[string]int64)
 		}
 		cs.userPubKeysUpdatedAt[req.UserID] = time.Now().UTC().UnixMilli()
+		if cs.userJoinedAt == nil {
+			cs.userJoinedAt = make(map[string]int64)
+		}
+		cs.userJoinedAt[req.UserID] = time.Now().UTC().Unix()
 		cs.usernameHashes[req.UsernameHash] = req.UserID
 		cs.usernameCiphertexts[req.UserID] = req.UsernameCiphertext
 		if req.UsernameCiphertext != "" {
@@ -314,6 +464,12 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 			roomIDsCopy := cs.getIdentityMapsForSave()
 			if err := cs.store.SaveWithIdentity(messagesCopy, roomsCopy, usersCopy, userPubKeysCopy, userPubKeysUpdatedAtCopy, nil, roomIDsCopy, roomNameHashesCopy, roomNameCiphertextsCopy, usernameCiphertextsCopy, userDirectoryUpdatedAtCopy, roomDirectoryUpdatedAtCopy); err != nil {
 				log.Printf("[handleLogin] ✗ Failed to save state: %v", err)
+				return
+			}
+			if invitedByUserID != "" {
+				if err := cs.store.SetInvitedBy(req.UserID, invitedByUserID); err != nil {
+					log.Printf("[handleLogin] ✗ Failed to record invited_by for %s: %v", req.UserID, err)
+				}
 			}
 		}()
 
@@ -323,7 +479,7 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		cs.sessionCache.Set(sessionID, userID)
 		cs.setUser(req.UserID, sessionID)
 
-		log.Printf("[handleLogin] ✓ New user registered: %s", req.UserID)
+		log.Printf("[handleLogin] ✓ New user registered: %s (sessionId=%s)", req.UserID, sessionIDPreview(sessionID))
 		json.NewEncoder(w).Encode(LoginResponse{
 			SessionID:       sessionID,
 			UserID:          userID,
@@ -443,7 +599,7 @@ func (cs *ChatServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		cs.sessionCache.Delete("challenge_" + req.UserID) // Clean up challenge
 		cs.setUser(req.UserID, sessionID)
 
-		log.Printf("[handleLogin] ✓ Authentication successful for user: %s", req.UserID)
+		log.Printf("[handleLogin] ✓ Authentication successful for user: %s (sessionId=%s)", req.UserID, sessionIDPreview(sessionID))
 		json.NewEncoder(w).Encode(LoginResponse{
 			SessionID: sessionID,
 			UserID:    userID,

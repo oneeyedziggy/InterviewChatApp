@@ -62,7 +62,7 @@ describe('LoginDialog component', () => {
     user: ReturnType<typeof userEvent.setup>,
   ) => {
     const usernameInput = screen.getByLabelText(/username/i);
-    const passwordInput = screen.getByLabelText(/password/i);
+    const passwordInput = screen.getByLabelText('password:');
     await user.type(usernameInput, 'validusername');
     await user.type(passwordInput, 'StrongPass1!');
   };
@@ -143,7 +143,7 @@ describe('LoginDialog component', () => {
       />,
     );
 
-    const passwordInput = screen.getByLabelText(/password/i);
+    const passwordInput = screen.getByLabelText('password:');
     await user.type(passwordInput, 'StrongPass1!');
 
     await waitFor(() => {
@@ -312,7 +312,7 @@ describe('LoginDialog component', () => {
     );
 
     const usernameInput = screen.getByLabelText(/username/i);
-    const passwordInput = screen.getByLabelText(/password/i);
+    const passwordInput = screen.getByLabelText('password:');
     await user.type(usernameInput, 'testuser');
     await user.type(passwordInput, 'StrongPass1!');
     const submitButton = screen.getByRole('button', { name: /login/i });

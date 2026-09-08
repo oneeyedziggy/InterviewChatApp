@@ -10,11 +10,11 @@ type UseHomeAutoDecryptArgs = {
   setChatValues: Dispatch<SetStateAction<Messages>>;
 };
 
-export function useHomeAutoDecrypt({
+export const useHomeAutoDecrypt = ({
   chatValues,
   username,
   setChatValues,
-}: UseHomeAutoDecryptArgs) {
+}: UseHomeAutoDecryptArgs) => {
   // Track attempted decryptions to avoid infinite retries for the same message.
   const decryptionAttemptsRef = useRef<Set<string>>(new Set());
 
@@ -164,4 +164,4 @@ export function useHomeAutoDecrypt({
       cancelled = true;
     };
   }, [chatValues, username, setChatValues]);
-}
+};

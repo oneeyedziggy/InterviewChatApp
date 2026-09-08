@@ -14,7 +14,7 @@ describe('appPaths', () => {
     expect(appPaths.withBasePath('/')).toBe('/chatApp/');
     expect(appPaths.withBasePath('logout')).toBe('/chatApp/logout');
     expect(appPaths.apiPath('login')).toBe('/chatApp/api/login');
-    expect(appPaths.socketIoPath()).toBe('/chatApp/socket.io/');
+    expect(appPaths.websocketPath()).toBe('/chatApp/ws/');
   });
 
   it('returns plain routes without a base path', async () => {
@@ -24,6 +24,6 @@ describe('appPaths', () => {
     expect(appPaths.appBasePath).toBe('');
     expect(appPaths.withBasePath('/logout/')).toBe('/logout/');
     expect(appPaths.apiPath('/api/auth')).toBe('/api/auth');
-    expect(appPaths.socketIoPath()).toBe('/socket.io/');
+    expect(appPaths.websocketPath()).toBe('/ws/');
   });
 });

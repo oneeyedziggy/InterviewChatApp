@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { type Socket } from 'socket.io-client';
+import { type Socket } from '../../utils/websocketClient';
 import { type Messages } from '../../types/types';
 import { SOCKET_EVENTS } from '../../constants';
 import {
@@ -32,19 +32,19 @@ type EncryptedStoredRoomPrefs = {
   ciphertext: string;
 };
 
-function roomPrefsStorageKey(username: string): string {
+const roomPrefsStorageKey = (username: string): string => {
   return `home_room_prefs_${username}`;
-}
+};
 
-function roomNotificationsStorageKey(username: string): string {
+const roomNotificationsStorageKey = (username: string): string => {
   return `home_room_notifications_${username}`;
-}
+};
 
-function hiddenDmBaselineStorageKey(username: string): string {
+const hiddenDmBaselineStorageKey = (username: string): string => {
   return `home_hidden_dm_unread_baseline_${username}`;
-}
+};
 
-function normalizeRoomNotifications(raw: unknown): Record<string, number> {
+const normalizeRoomNotifications = (raw: unknown): Record<string, number> => {
   if (!raw || typeof raw !== 'object') {
     return {};
   }
@@ -61,16 +61,16 @@ function normalizeRoomNotifications(raw: unknown): Record<string, number> {
   }
 
   return normalized;
-}
+};
 
-function normalizeStoredRoomKey(room: string): string {
+const normalizeStoredRoomKey = (room: string): string => {
   if (!room) {
     return room;
   }
   return getRoomNameByRoomId(room) || room;
-}
+};
 
-export function useHomePageState(): HomePageState {
+export const useHomePageState = (): HomePageState => {
   const socketRef = useRef<Socket | undefined>(undefined);
   const [chatValues, setChatValuesState] = useState<Messages>({});
   const [, setUserList] = useState<string[]>([]);
@@ -88,6 +88,7 @@ export function useHomePageState(): HomePageState {
 
   const [authToken, setAuthTokenState] = useState<string>('');
   const [username, setUsernameState] = useState<string>('');
+  const [isSwitchingServer, setIsSwitchingServer] = useState(false);
   const [userLastSeen, setUserLastSeen] = useState<Record<string, number>>({});
   const [, setRoomMembers] = useState<Record<string, Set<string>>>({});
   const [activeJoinRequests, setActiveJoinRequests] = useState<JoinRequest[]>(
@@ -170,6 +171,7 @@ export function useHomePageState(): HomePageState {
     setUserLastSeen,
     setRoomMembers,
     setActiveJoinRequests,
+    setIsSwitchingServer,
     onForceReauth: forceReauthToLogin,
     getSocket,
     getLeftRooms,
@@ -472,6 +474,9 @@ export function useHomePageState(): HomePageState {
     getSocket,
     setSocket,
     setCurrentRoom: (room: string) => {
+      if (room === currentRoomRef.current) {
+        return;
+      }
       setCurrentRoomState(room);
 
       if (!room) {
@@ -509,9 +514,10 @@ export function useHomePageState(): HomePageState {
     setBlockedUsersState,
     setAuthTokenState,
     setUsernameState,
+    isSwitchingServer,
     setReplyingToState,
     setEditingMessageTimestampState,
     setEditingMessageIdState,
     setUserDraftMessageState,
   };
-}
+};

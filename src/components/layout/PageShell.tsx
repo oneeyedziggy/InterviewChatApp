@@ -5,7 +5,7 @@ type PageShellProps = PropsWithChildren<{
   className?: string;
 }>;
 
-export function PageShell({ className, children }: PageShellProps) {
+export const PageShell = ({ className, children }: PageShellProps) => {
   return (
     <main
       className={cn(
@@ -16,9 +16,9 @@ export function PageShell({ className, children }: PageShellProps) {
       {children}
     </main>
   );
-}
+};
 
-export function AuthCard({ className, children }: PageShellProps) {
+export const AuthCard = ({ className, children }: PageShellProps) => {
   return (
     <div
       className={cn(
@@ -29,4 +29,4 @@ export function AuthCard({ className, children }: PageShellProps) {
       {children}
     </div>
   );
-}
+};

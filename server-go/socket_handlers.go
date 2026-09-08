@@ -12,9 +12,10 @@ import (
 	"strings"
 	"time"
 
+	wsrt "chat-server-go/websocket"
+
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 	"github.com/google/uuid"
-	socketio "github.com/karagenc/socket.io-go"
 )
 
 const (
@@ -315,7 +316,7 @@ func (cs *ChatServer) markReplayLocked(replayKey string, now time.Time) bool {
 }
 
 func (cs *ChatServer) verifySignedMutation(
-	socket socketio.ServerSocket,
+	socket wsrt.ServerSocket,
 	raw map[string]interface{},
 	expectedEvent string,
 	requiredClaims []string,
@@ -374,7 +375,7 @@ func (cs *ChatServer) verifySignedMutation(
 
 	if !cs.isSessionAuthorizedForUser(auth.SessionID, auth.UserID) {
 		code, message := cs.getSessionAuthFailure(auth.SessionID, auth.UserID)
-		log.Printf("[%s] ✗ Signed request session mismatch for %s (%s)", socketIDStr, expectedEvent, code)
+		log.Printf("[%s] ✗ Signed request session mismatch for %s (userId=%s, sessionId=%s): %s", socketIDStr, expectedEvent, auth.UserID, sessionIDPreview(auth.SessionID), code)
 		emitActionResult(socket, expectedEvent, false, code, message)
 		return socketMutationAuth{}, false
 	}
@@ -628,6 +629,57 @@ func buildScopedMessagesForUser(all Messages, userID, defaultRoom, currentRoom s
 	return result
 }
 
+const defaultMessageWindowSize = 100
+
+func paginateMessagesBefore(messages []Message, userID string, joinedAt int64, limit int, beforeTimestamp int64, beforeMessageID string) ([]Message, bool) {
+	if limit <= 0 || limit > 500 {
+		limit = defaultMessageWindowSize
+	}
+	visible := filterMessagesForJoinTime(messages, userID, joinedAt)
+	filtered := make([]Message, 0, len(visible))
+	for _, message := range visible {
+		// When beforeMessageID is unknown, exclude the whole equal-timestamp
+		// boundary to avoid re-returning the same message forever.
+		if beforeTimestamp > 0 && (message.Timestamp > beforeTimestamp ||
+			(message.Timestamp == beforeTimestamp && (beforeMessageID == "" || message.ID >= beforeMessageID))) {
+			continue
+		}
+		filtered = append(filtered, message)
+	}
+	if len(filtered) <= limit {
+		return filtered, false
+	}
+	return filtered[len(filtered)-limit:], true
+}
+
+func filterMessagesForJoinTime(messages []Message, userID string, joinedAt int64) []Message {
+	visible := filterMessagesByVisibility(messages, userID)
+	joinMessageIndex := -1
+	joinMarker := fmt.Sprintf("%s %s", formatSystemUserRef(userID), UserJoined)
+	for index, message := range visible {
+		if message.UserID == SystemUserID && message.Content == joinMarker {
+			joinMessageIndex = index
+			break
+		}
+	}
+	if joinMessageIndex < 0 && joinedAt <= 0 {
+		return []Message{}
+	}
+	filtered := make([]Message, 0, len(visible))
+	for index, message := range visible {
+		if joinMessageIndex >= 0 {
+			if index <= joinMessageIndex {
+				filtered = append(filtered, message)
+			}
+			continue
+		}
+		if message.Timestamp >= joinedAt {
+			filtered = append(filtered, message)
+		}
+	}
+	return filtered
+}
+
 func isRoomVisibleToUser(all Messages, room, userID string) bool {
 	if userID == "" {
 		return false
@@ -832,15 +884,18 @@ func (cs *ChatServer) emitDebouncedLeave(userID string, deadlineUnixNano int64) 
 
 func (cs *ChatServer) getSessionAuthFailure(sessionID, userID string) (string, string) {
 	if sessionID == "" || userID == "" {
+		log.Printf("[auth] ✗ Missing session auth fields: sessionId=%s userId=%q", sessionIDPreview(sessionID), userID)
 		return "invalid_request", "Missing authentication fields"
 	}
 
 	storedUserID, exists := cs.sessionCache.Get(sessionID)
 	if !exists || storedUserID == "" {
+		log.Printf("[auth] ✗ Unknown/expired session: sessionId=%s claimedUserId=%q (session cache size=%d)", sessionIDPreview(sessionID), userID, cs.sessionCache.Len())
 		return "session_expired", "Session expired"
 	}
 
 	if storedUserID != userID {
+		log.Printf("[auth] ✗ Session/user mismatch: sessionId=%s belongsToUserId=%q claimedUserId=%q — the client is presenting a sessionId that was issued for a different account (stale/cross-account localStorage?)", sessionIDPreview(sessionID), storedUserID, userID)
 		return "unauthorized", "Unauthorized"
 	}
 
@@ -848,7 +903,7 @@ func (cs *ChatServer) getSessionAuthFailure(sessionID, userID string) (string, s
 }
 
 func emitActionResult(
-	socket socketio.ServerSocket,
+	socket wsrt.ServerSocket,
 	action string,
 	success bool,
 	code string,
@@ -862,7 +917,7 @@ func emitActionResult(
 	})
 }
 
-func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
+func (cs *ChatServer) setupSocketHandlers(sio *wsrt.Server) {
 	log.Println("===== SETTING UP SOCKET HANDLERS =====")
 
 	// Get the default namespace
@@ -873,11 +928,11 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 	cs.mu.Unlock()
 
 	// Duplicate namespace-scoped handlers were removed.
-	// The socket.io library path used by this server requires per-socket registrations,
+	// The websocket transport used by this server requires per-socket registrations,
 	// which are defined below in OnConnection and are the canonical handlers.
 
 	// Register per-socket connection handler
-	defaultNsp.OnConnection(func(socket socketio.ServerSocket) {
+	defaultNsp.OnConnection(func(socket wsrt.ServerSocket) {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("✗ PANIC in OnConnection handler: %v", r)
@@ -889,11 +944,11 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 		// Targeted sends use namespace room addressing by socket ID.
 		// Explicitly join this room so sendToUsers can reliably route DM events.
-		socket.Join(socketio.Room(socketIDStr))
+		socket.Join(wsrt.Room(socketIDStr))
 		log.Printf("[%s] ✓ Joined personal delivery room", socketIDStr)
 
 		// Register disconnect handler for this socket
-		socket.OnDisconnect(func(reason socketio.Reason) {
+		socket.OnDisconnect(func(reason wsrt.Reason) {
 			log.Printf("[%s] ===== CLIENT DISCONNECTED ======", socketIDStr)
 			log.Printf("[%s] Reason: %s", socketIDStr, string(reason))
 
@@ -1617,7 +1672,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			cs.mu.Unlock()
 
 			if len(acceptedRoomCiphertexts) == 0 && len(acceptedUserCiphertexts) == 0 {
-				emitActionResult(socket, "identityRefresh", false, "invalid_request", "No valid directory updates accepted")
+				emitActionResult(socket, "identityRefresh", true, "noop", "No new directory updates")
 				return
 			}
 
@@ -1748,6 +1803,13 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			if currentRoom == "" {
 				currentRoom = defaultRoom
 			}
+			cs.mu.RLock()
+			if mappedRoomID := cs.roomIDs[currentRoom]; mappedRoomID != "" {
+				if mappedRoomName := cs.roomsByID[mappedRoomID]; mappedRoomName != "" {
+					currentRoom = mappedRoomName
+				}
+			}
+			cs.mu.RUnlock()
 			if len(openRooms) == 0 {
 				openRooms = []string{defaultRoom}
 			}
@@ -1769,7 +1831,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			if !cs.isSessionAuthorizedForUser(sessionID, requestUserID) {
 				code, message := cs.getSessionAuthFailure(sessionID, requestUserID)
-				log.Printf("[%s] ✗ Rejected initial data request by %s (%s)", socketIDStr, username, code)
+				log.Printf("[%s] ✗ Rejected initial data request by %s (userId=%s, sessionId=%s): %s", socketIDStr, username, requestUserID, sessionIDPreview(sessionID), code)
 				emitActionResult(socket, "initialData", false, code, message)
 				return
 			}
@@ -1778,7 +1840,18 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			cs.registerUserFromAuth(requestUserID, socketIDStr)
 
 			cs.mu.RLock()
-			messagesCopy := buildScopedMessagesForUser(cs.messages, requestUserID, defaultRoom, currentRoom, openRooms)
+			selectedRoom := currentRoom
+			if selectedRoom == "" {
+				selectedRoom = cs.roomNameForIDLocked(cs.oldestExtantRoomIDLocked())
+			}
+			if selectedRoom == "" {
+				selectedRoom = defaultRoom
+			}
+			selectedMessages, hasMore := paginateMessagesBefore(cs.messages[selectedRoom], requestUserID, cs.userJoinedAt[requestUserID], defaultMessageWindowSize, 0, "")
+			messagesCopy := make(Messages)
+			if len(selectedMessages) > 0 {
+				messagesCopy[selectedRoom] = selectedMessages
+			}
 			roomsCopy := cloneStringSlice(cs.rooms)
 			roomsCopy = filterRoomsForUser(roomsCopy, cs.messages, requestUserID)
 			userPubKeysCopy := cloneStringMap(cs.userPubKeys)
@@ -1813,6 +1886,11 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				"currentUserId":          requestUserID,
 				"roomNameCiphertexts":    cs.roomNameCiphertextsForRooms(roomsCopy),
 				"roomDirectoryUpdatedAt": cs.roomDirectoryUpdatedAtForRooms(roomsCopy),
+				"messageWindow": map[string]interface{}{
+					"room": selectedRoom,
+					"hasMore": hasMore,
+					"limit": defaultMessageWindowSize,
+				},
 			}
 			cs.attachIdentityDirectories(initialData)
 			cs.emitSocketSigned(socket, EventInitialData, initialData)
@@ -1934,7 +2012,11 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 
 			cs.mu.RLock()
 			roomMessages := cs.messages[room]
-			visible := filterMessagesByVisibility(roomMessages, requestUserID)
+			visible := filterMessagesForJoinTime(
+				roomMessages,
+				requestUserID,
+				cs.userJoinedAt[requestUserID],
+			)
 			cs.mu.RUnlock()
 
 			delta := make(Messages)
@@ -1959,6 +2041,56 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 			cs.emitSocketSigned(socket, EventServerMessage, response)
 			emitActionResult(socket, "roomData", true, "ok", "Room data sent")
 			log.Printf("[%s] ✓ Sent lazy room data to %s for room %s (%d messages)", socketIDStr, username, room, len(visible))
+		})
+
+		socket.OnEvent(EventClientRequestRoomWindow, func(data interface{}) {
+			payload, ok := data.(map[string]interface{})
+			if !ok {
+				return
+			}
+			requestUserID := parseStringField(payload, "userId")
+			sessionID := parseStringField(payload, "sessionId")
+			roomID := parseStringField(payload, "roomId")
+			room := cs.resolveRoomFromPayload(payload, "roomId")
+			if room == "" {
+				room = parseStringField(payload, "room")
+			}
+			if requestUserID == "" || sessionID == "" || roomID == "" {
+				emitActionResult(socket, "roomWindow", false, "invalid_request", "Missing userId, sessionId, or roomId")
+				return
+			}
+			if !cs.isSessionAuthorizedForUser(sessionID, requestUserID) {
+				code, message := cs.getSessionAuthFailure(sessionID, requestUserID)
+				emitActionResult(socket, "roomWindow", false, code, message)
+				return
+			}
+			if room == "" || !isRoomVisibleToUser(cs.messages, room, requestUserID) {
+				emitActionResult(socket, "roomWindow", false, "unauthorized", "Unauthorized room access")
+				return
+			}
+
+			limit := defaultMessageWindowSize
+			if rawLimit, ok := payload["limit"].(float64); ok {
+				limit = int(rawLimit)
+			}
+			beforeTimestamp := int64(0)
+			if rawTimestamp, ok := payload["beforeTimestamp"].(float64); ok {
+				beforeTimestamp = int64(rawTimestamp)
+			}
+			beforeMessageID := parseStringField(payload, "beforeMessageId")
+
+			cs.mu.RLock()
+			window, hasMore := paginateMessagesBefore(cs.messages[room], requestUserID, cs.userJoinedAt[requestUserID], limit, beforeTimestamp, beforeMessageID)
+			cs.mu.RUnlock()
+			response := map[string]interface{}{
+				"messages": Messages{room: window},
+				"roomId": roomID,
+				"hasMore": hasMore,
+				"messageWindowDirection": "older",
+			}
+			cs.attachIdentityDirectories(response)
+			cs.emitSocketSigned(socket, EventServerMessage, response)
+			emitActionResult(socket, "roomWindow", true, "ok", "Room window sent")
 		})
 
 		// Register CLIENT_DISCONNECTING handler
@@ -2005,6 +2137,36 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				log.Printf("[%s] ✗ Missing originalSender identity in requestAccess", socketIDStr)
 				return
 			}
+			originalRoomID := parseStringField(requestAccess, "originalRoomId")
+			if originalRoomID == "" {
+				emitActionResult(socket, "accessRequest", false, "invalid_request", "Missing original room identity")
+				return
+			}
+			var messageTimestamp int64
+			switch ts := requestAccess["messageTimestamp"].(type) {
+			case float64:
+				messageTimestamp = int64(ts)
+			case int64:
+				messageTimestamp = ts
+			case int:
+				messageTimestamp = int64(ts)
+			}
+			if messageTimestamp <= 0 {
+				emitActionResult(socket, "accessRequest", false, "invalid_request", "Missing message timestamp")
+				return
+			}
+			cs.mu.RLock()
+			_, roomKnown := cs.roomsByID[originalRoomID]
+			cs.mu.RUnlock()
+			if !roomKnown {
+				emitActionResult(socket, "accessRequest", false, "invalid_request", "Unknown room identity")
+				return
+			}
+			if err := cs.store.QueueAccessGrantRequest(requestingUserID, originalSenderID, originalRoomID, messageTimestamp, time.Now().Unix()); err != nil {
+				log.Printf("[%s] Failed to persist access request: %v", socketIDStr, err)
+				emitActionResult(socket, "accessRequest", false, "server_error", "Unable to queue access request")
+				return
+			}
 
 			log.Printf("[%s] Forwarding access request from %s to %s", socketIDStr, requestingUser, originalSender)
 
@@ -2021,25 +2183,12 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 				dmRoom := buildCanonicalDMRoom(requestingUserID, originalSenderID)
 
 				// Find the original message to get its content for quoting
-				originalRoomID := parseStringField(requestAccess, "originalRoomId")
-				if originalRoomID == "" {
-					log.Printf("[%s] ✗ Missing originalRoomId in requestAccess", socketIDStr)
-					return
-				}
 				cs.mu.RLock()
 				originalRoom := cs.roomsByID[originalRoomID]
 				cs.mu.RUnlock()
 				if strings.TrimSpace(originalRoom) == "" {
 					log.Printf("[%s] ✗ Unknown originalRoomId in requestAccess", socketIDStr)
 					return
-				}
-				var messageTimestamp int64
-				if ts, ok := requestAccess["messageTimestamp"].(float64); ok {
-					messageTimestamp = int64(ts)
-				} else if ts, ok := requestAccess["messageTimestamp"].(int64); ok {
-					messageTimestamp = ts
-				} else if ts, ok := requestAccess["messageTimestamp"].(int); ok {
-					messageTimestamp = int64(ts)
 				}
 
 				cs.mu.Lock()
@@ -3209,7 +3358,7 @@ func (cs *ChatServer) setupSocketHandlers(sio *socketio.Server) {
 		go func() {
 			time.Sleep(50 * time.Millisecond) // Small delay to ensure connection is ready
 
-			socket.Emit(EventStatus, "Hello from Socket.io")
+			socket.Emit(EventStatus, "Hello from WebSocket")
 			log.Printf("[%s] ✓ STATUS ping sent; awaiting initial data request", socketIDStr)
 		}()
 	})

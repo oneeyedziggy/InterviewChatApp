@@ -1,0 +1,171 @@
+.page {
+  min-height: 100vh;
+  padding: 32px clamp(16px, 3vw, 40px) 48px;
+  color: var(--app-fg);
+}
+
+.header {
+  margin: 0 auto 20px;
+  max-width: 1440px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--app-panel) 80%, white),
+    var(--app-surface)
+  );
+  border: 1px solid var(--app-border);
+  border-radius: 16px;
+  padding: 18px clamp(14px, 3vw, 24px);
+  box-shadow: 0 20px 30px rgba(9, 30, 66, 0.08);
+}
+
+.kicker {
+  color: var(--brand-cyan);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin-top: 4px;
+  font-size: clamp(1.4rem, 2.8vw, 2.1rem);
+  color: var(--brand-blue);
+}
+
+.subtitle {
+  margin-top: 10px;
+  color: var(--app-muted);
+  max-width: 82ch;
+}
+
+.legend {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.legendBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--app-border);
+  background: var(--app-surface);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.82rem;
+}
+
+.diagramShell {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: grid;
+  gap: 18px;
+}
+
+.diagramCard {
+  border: 1px solid var(--app-border);
+  border-radius: 18px;
+  overflow: hidden;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--app-surface) 86%, white),
+    color-mix(in srgb, var(--app-surface) 96%, var(--app-panel))
+  );
+  box-shadow: 0 18px 40px rgba(7, 20, 40, 0.12);
+}
+
+.diagramHost {
+  width: 100%;
+  min-height: min(78vh, 920px);
+  height: min(78vh, 920px);
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.summaryCard,
+.relationshipCard {
+  border: 1px solid var(--app-border);
+  border-radius: 16px;
+  background: var(--app-surface);
+  box-shadow: 0 12px 22px rgba(7, 20, 40, 0.08);
+  padding: 16px;
+}
+
+.summaryCard h2,
+.relationshipCard h2 {
+  color: var(--brand-blue);
+  font-size: 1rem;
+}
+
+.summaryCard ul,
+.relationshipCard ul {
+  margin-top: 12px;
+  list-style: none;
+}
+
+.summaryCard li {
+  display: grid;
+  grid-template-columns: 1.15fr 1.5fr 0.85fr;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--app-border) 60%, transparent);
+  font-size: 0.84rem;
+}
+
+.summaryCard li:last-child {
+  border-bottom: 0;
+}
+
+.summaryCard li span:nth-child(1) {
+  font-weight: 700;
+}
+
+.summaryCard li span:nth-child(2) {
+  color: var(--app-muted);
+  font-family: 'Consolas', 'Courier New', monospace;
+}
+
+.summaryCard li span:nth-child(3) {
+  color: var(--brand-cyan);
+  font-weight: 700;
+  text-align: right;
+}
+
+.relationshipCard li {
+  padding: 6px 0;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--app-border) 60%, transparent);
+  color: var(--app-fg);
+  font-size: 0.84rem;
+  font-family: 'Consolas', 'Courier New', monospace;
+}
+
+.relationshipCard li:last-child {
+  border-bottom: 0;
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding-top: 20px;
+    padding-bottom: 28px;
+  }
+
+  .diagramHost {
+    min-height: 68vh;
+    height: 68vh;
+  }
+
+  .summaryCard li {
+    grid-template-columns: 1fr;
+  }
+
+  .summaryCard li span:nth-child(3) {
+    text-align: left;
+  }
+}

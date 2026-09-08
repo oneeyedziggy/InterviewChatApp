@@ -5,16 +5,16 @@ export const SCRYPT_R = 8;
 export const SCRYPT_P = 1;
 export const SCRYPT_DK_LEN = 32;
 
-function toPlainUint8Array(input: Uint8Array): Uint8Array {
+const toPlainUint8Array = (input: Uint8Array): Uint8Array => {
   return new Uint8Array(
     input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength),
   );
-}
+};
 
-export async function deriveAes256KeyFromPassword(
+export const deriveAes256KeyFromPassword = async (
   password: string,
   salt: Uint8Array,
-): Promise<CryptoKey> {
+): Promise<CryptoKey> => {
   const passwordBytes = toPlainUint8Array(new TextEncoder().encode(password));
   const saltBytes = toPlainUint8Array(salt);
   const keyBytes = await scryptAsync(passwordBytes, saltBytes, {
@@ -31,4 +31,4 @@ export async function deriveAes256KeyFromPassword(
     false,
     ['encrypt', 'decrypt'],
   );
-}
+};

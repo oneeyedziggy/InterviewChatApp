@@ -1,5 +1,5 @@
 import { type Dispatch, type KeyboardEvent, type SetStateAction } from 'react';
-import { type Socket } from 'socket.io-client';
+import { type Socket } from '../../utils/websocketClient';
 import { type Messages } from '../../types/types';
 
 export type JoinRequest = {
@@ -12,6 +12,7 @@ export type JoinRequest = {
 
 export type HomeAuthContextValue = {
   authToken: string;
+  isSwitchingServer: boolean;
 };
 
 export type HomeRoomsContextValue = {
@@ -83,7 +84,10 @@ export type HomePresenceContextValue = {
   activeJoinRequests: JoinRequest[];
   currentRoom: string;
   handleMessageUser: (targetUser: string) => void;
-  handleSendPublicKeyToUser: (targetUser: string) => void;
+  handleSendPublicKeyToUser: (
+    targetUser: string,
+    password: string,
+  ) => Promise<boolean>;
   handleImportTransferredAccount: (
     fromUser: string,
     encryptedPackage: string,
@@ -103,6 +107,7 @@ export type HomePresenceContextValue = {
 export type HomePageState = {
   authToken: string;
   username: string;
+  isSwitchingServer: boolean;
   roomList: string[];
   leftRooms: Set<string>;
   roomNotifications: Record<string, number>;

@@ -63,6 +63,14 @@ func (c *Cache) Delete(key string) {
 	delete(c.items, key)
 }
 
+// Len returns the current number of (possibly expired, not-yet-swept) entries.
+// Intended for diagnostic logging only.
+func (c *Cache) Len() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.items)
+}
+
 func (c *Cache) cleanup() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()

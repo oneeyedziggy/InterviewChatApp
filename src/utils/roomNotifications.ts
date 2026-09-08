@@ -1,10 +1,10 @@
 import { type Messages } from '../types/types';
 
-export function computeRoomNotifications(
+export const computeRoomNotifications = (
   oldChatValues: Messages,
   chatValues: Messages,
   currentRoom: string,
-): Record<string, string> {
+): Record<string, string> => {
   return Object.fromEntries(
     Object.keys(oldChatValues).map((roomName: string) => {
       return chatValues[roomName]?.length > oldChatValues[roomName]?.length &&
@@ -16,4 +16,4 @@ export function computeRoomNotifications(
         : [roomName, ''];
     }),
   );
-}
+};

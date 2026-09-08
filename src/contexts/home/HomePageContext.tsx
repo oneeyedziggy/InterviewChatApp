@@ -3,6 +3,7 @@ import {
   type HomeAuthContextValue,
   type HomeComposerContextValue,
   type HomePresenceContextValue,
+  type HomePageState,
   type HomeRoomsContextValue,
 } from './homePageTypes';
 import { useHomePageActions } from '../../hooks/home/useHomePageActions';
@@ -18,11 +19,12 @@ const HomePresenceContext = createContext<HomePresenceContextValue | null>(
 );
 
 export function HomePageProvider({ children }: { children: ReactNode }) {
-  const state = useHomePageState();
+  const state: HomePageState = useHomePageState();
   const actions = useHomePageActions(state);
 
   const authValue: HomeAuthContextValue = {
     authToken: state.authToken,
+    isSwitchingServer: state.isSwitchingServer,
   };
 
   const roomsValue: HomeRoomsContextValue = {

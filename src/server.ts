@@ -1,10 +1,9 @@
-import express, { Express, Request, Response } from 'express';
+import express, { Express } from 'express';
 import * as http from 'http';
 import next, { NextApiHandler } from 'next';
-import * as socketio from 'socket.io';
+import { WebSocketServer, WebSocket } from 'ws';
 
 import { setupSocketHandlers } from './socket';
-import { setUser } from './socket';
 
 const port: number = parseInt(process.env.PORT || '3000', 10);
 const dev: boolean = process.env.NODE_ENV !== 'production';
@@ -16,21 +15,84 @@ nextApp
   .then(async () => {
     const app: Express = express();
     const server: http.Server = http.createServer(app);
-    const io: socketio.Server = new socketio.Server();
-    io.use((socket, next) => {
-      const token = socket.handshake.auth.token;
-      const username = socket.handshake.auth.username;
-      // this is a bit of a hack to bypass some seemingly recent issues with the latest version of nextjs breaking the
-      // sharing of data between the custom server and api routes
-      setUser(username, token);
-      if (true) {
-        next();
-      }
-    });
-    io.attach(server);
-    console.log('Connected io to server');
 
-    setupSocketHandlers(io);
+    type WireEnvelope = { event: string; payload?: unknown };
+    type SocketLike = {
+      on: (event: string, handler: (payload: unknown) => void) => void;
+      emit: (event: string, payload: unknown) => void;
+    };
+    type SocketServerLike = {
+      on: (event: 'connection', handler: (socket: SocketLike) => void) => void;
+      emit: (event: string, payload: unknown) => void;
+    };
+
+    const sockets = new Set<WebSocket>();
+    const connectionHandlers: Array<(socket: SocketLike) => void> = [];
+
+    const io: SocketServerLike = {
+      on: (_event, handler) => {
+        connectionHandlers.push(handler);
+      },
+      emit: (event, payload) => {
+        const message = JSON.stringify({
+          event,
+          payload,
+        } satisfies WireEnvelope);
+        for (const ws of sockets) {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(message);
+          }
+        }
+      },
+    };
+
+    const wss = new WebSocketServer({ server, path: '/ws/' });
+    wss.on('connection', (ws) => {
+      sockets.add(ws);
+      const handlers = new Map<string, Array<(payload: unknown) => void>>();
+
+      const socket: SocketLike = {
+        on: (event, handler) => {
+          const list = handlers.get(event) || [];
+          list.push(handler);
+          handlers.set(event, list);
+        },
+        emit: (event, payload) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ event, payload } satisfies WireEnvelope));
+          }
+        },
+      };
+
+      for (const handler of connectionHandlers) {
+        handler(socket);
+      }
+
+      ws.on('message', (raw) => {
+        try {
+          const parsed = JSON.parse(String(raw)) as WireEnvelope;
+          if (!parsed?.event) return;
+          const list = handlers.get(parsed.event) || [];
+          for (const handler of list) {
+            handler(parsed.payload);
+          }
+        } catch (error) {
+          console.error('[ws] failed to parse message', error);
+        }
+      });
+
+      ws.on('close', () => {
+        const disconnectHandlers = handlers.get('disconnect') || [];
+        for (const handler of disconnectHandlers) {
+          handler('closed');
+        }
+        sockets.delete(ws);
+      });
+    });
+
+    console.log('Connected ws server');
+
+    setupSocketHandlers(io as any);
 
     app.all('*', (req: any, res: any) => nextHandler(req, res));
 
@@ -44,6 +106,4 @@ nextApp
 
 /* props to partial implementations:
 https://blog.logrocket.com/implementing-websocket-communication-next-js/
-https://stackoverflow.com/questions/24793255/socket-io-cant-get-it-to-work-having-404s-on-some-kind-of-polling-call
-https://wallis.dev/blog/socketio-with-nextjs-and-es6-import
 */

@@ -1,5 +1,5 @@
 import { type Dispatch, type SetStateAction } from 'react';
-import { type Socket } from 'socket.io-client';
+import { type Socket } from './websocketClient';
 import { MESSAGE_LIMITS, SOCKET_EVENTS } from '../constants';
 import { type Message, type Messages } from '../types/types';
 import { getUtf8ByteLength } from './messages';
@@ -19,7 +19,7 @@ import {
 
 type SetMessages = Dispatch<SetStateAction<Messages>>;
 
-export async function doSendAction({
+export const doSendAction = async ({
   socket,
   userDraftMessage,
   currentRoom,
@@ -45,7 +45,7 @@ export async function doSendAction({
   setEditingMessageId: Dispatch<SetStateAction<string | undefined>>;
   setUserDraftMessage: Dispatch<SetStateAction<string>>;
   setReplyingTo: Dispatch<SetStateAction<number | undefined>>;
-}) {
+}) => {
   console.log('[doSend] ===== SENDING MESSAGE =====');
   console.log('[doSend] Socket exists:', !!socket);
   console.log('[doSend] Socket connected:', socket?.connected);
@@ -264,9 +264,9 @@ export async function doSendAction({
     messageData.replyTo || 'none',
   );
   setUserDraftMessage('');
-}
+};
 
-export async function requestAccessAction({
+export const requestAccessAction = async ({
   socket,
   username,
   chatValues,
@@ -280,7 +280,7 @@ export async function requestAccessAction({
   messageUserId: string;
   room: string;
   messageTimestamp: number;
-}) {
+}) => {
   if (!socket || !username) return;
 
   console.log('[RequestAccess] ===== REQUESTING ACCESS TO MESSAGE =====');
@@ -288,16 +288,11 @@ export async function requestAccessAction({
   console.log('[RequestAccess] Room:', room);
   console.log('[RequestAccess] Message timestamp:', messageTimestamp);
 
-  // Create a private room name for the access request (format: @requestingUser)
-  const requestRoom = `@${username}`;
-
   let requestingUserId: string;
-  let requestRoomId: string;
   let originalRoomId: string;
   let originalSenderId: string;
   try {
     requestingUserId = requireUserIdByUsername(username);
-    requestRoomId = requireRoomIdByName(requestRoom);
     originalRoomId = requireRoomIdByName(room);
     originalSenderId = messageUserId;
   } catch (error) {
@@ -382,12 +377,8 @@ export async function requestAccessAction({
 
   const requestMessage = {
     userId: requestingUserId,
-    room: requestRoom,
-    roomId: requestRoomId,
-    content: `Access request for room ${room} (timestamp: ${messageTimestamp})`,
     requestAccess: {
       requestingUserId,
-      originalRoom: room,
       originalRoomId,
       messageTimestamp,
       originalSenderId,
@@ -419,13 +410,13 @@ export async function requestAccessAction({
     },
   });
   console.log('[RequestAccess] ✓ Access request sent');
-}
+};
 
 // Grant access to a message (re-encrypt for requesting user)
 // IMPORTANT: This function looks up the original message by timestamp in the original room
 // and uses the original author's locally stored plaintext (which they already have decrypted)
 
-export async function grantAccessAction({
+export const grantAccessAction = async ({
   socket,
   username,
   chatValues,
@@ -443,7 +434,7 @@ export async function grantAccessAction({
   requestingUserId: string;
   originalRoom: string;
   messageTimestamp: number;
-}) {
+}) => {
   let actorUserId: string;
   try {
     actorUserId = requireUserIdByUsername(username);
@@ -495,11 +486,11 @@ export async function grantAccessAction({
     const io = (activeSocket as any).io;
     if (io) {
       console.log(
-        '[GrantAccess] Socket.IO engine state:',
+        '[GrantAccess] WebSocket engine state:',
         io.engine?.readyState,
       );
       console.log(
-        '[GrantAccess] Socket.IO transport:',
+        '[GrantAccess] WebSocket transport:',
         io.engine?.transport?.name,
       );
     }
@@ -915,11 +906,11 @@ export async function grantAccessAction({
         const io = (activeSocket as any).io;
         if (io && io.engine) {
           const readyState = io.engine.readyState;
-          console.log('[GrantAccess] Socket.IO engine readyState:', readyState);
+          console.log('[GrantAccess] WebSocket engine readyState:', readyState);
           // readyState: 'opening' = 0, 'open' = 1, 'closing' = 2, 'closed' = 3
           if (readyState !== 'open' && readyState !== 1) {
             console.error(
-              '[GrantAccess] ✗ Socket.IO engine not ready! readyState:',
+              '[GrantAccess] ✗ WebSocket engine not ready! readyState:',
               readyState,
             );
             alert(
@@ -1020,9 +1011,9 @@ export async function grantAccessAction({
     console.error('[GrantAccess] ✗ Failed to grant access:', error);
     console.error('[GrantAccess] Error details:', error);
   }
-}
+};
 
-export function leaveRoomAction({
+export const leaveRoomAction = ({
   socket,
   username,
   currentRoom,
@@ -1040,7 +1031,7 @@ export function leaveRoomAction({
   setLeftRooms: Dispatch<SetStateAction<Set<string>>>;
   setCurrentRoom: Dispatch<SetStateAction<string>>;
   room: string;
-}) {
+}) => {
   if (!socket || !username) return;
 
   setLeftRooms((prev) => {
@@ -1066,9 +1057,9 @@ export function leaveRoomAction({
     roomId: requireRoomIdByName(room),
   });
   console.log('[LeaveRoom] Left room:', room);
-}
+};
 
-export function rejoinRoomAction({
+export const rejoinRoomAction = ({
   socket,
   username,
   setLeftRooms,
@@ -1080,7 +1071,7 @@ export function rejoinRoomAction({
   setLeftRooms: Dispatch<SetStateAction<Set<string>>>;
   setCurrentRoom: Dispatch<SetStateAction<string>>;
   room: string;
-}) {
+}) => {
   if (!socket || !username) return;
 
   setLeftRooms((prev) => {
@@ -1097,9 +1088,9 @@ export function rejoinRoomAction({
   });
   setCurrentRoom(room);
   console.log('[RejoinRoom] Rejoined room:', room);
-}
+};
 
-export async function selectVersionAction({
+export const selectVersionAction = async ({
   socket,
   username,
   chatValues,
@@ -1115,7 +1106,7 @@ export async function selectVersionAction({
   room: string;
   messageTimestamp: number;
   versionIndex: number;
-}) {
+}) => {
   if (!socket || !username) return;
   const viewerUserId = requireUserIdByUsername(username);
 
@@ -1190,4 +1181,4 @@ export async function selectVersionAction({
     'for message',
     messageTimestamp,
   );
-}
+};

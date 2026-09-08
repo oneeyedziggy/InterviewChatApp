@@ -18,6 +18,7 @@ import {
   loadStoredKeyMetadataForUser,
   loadUserPublicKeyEntries,
   redirectToLogout,
+  unlockStoredPrivateKeyForUser,
 } from '../../utils/gpg';
 import {
   blockUser,
@@ -58,6 +59,11 @@ export function useHomePageActions(state: HomePageState) {
   const currentUserId = state.username
     ? getUserIdByUsername(state.username) || ''
     : '';
+
+  const roomNameExists = (roomName: string) =>
+    state.roomList.some(
+      (room) => room.trim().toLowerCase() === roomName.trim().toLowerCase(),
+    );
 
   const doSend = async () => {
     if (
@@ -128,6 +134,16 @@ export function useHomePageActions(state: HomePageState) {
       return;
     }
 
+    if (
+      e.key === 'Escape' &&
+      (state.replyingTo !== undefined ||
+        state.editingMessageTimestamp !== undefined)
+    ) {
+      e.preventDefault();
+      handleCancelReplyOrEdit();
+      return;
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (isDraftOverLimit) {
@@ -140,9 +156,19 @@ export function useHomePageActions(state: HomePageState) {
   const makeNewRoom = async () => {
     const socket = state.getSocket();
     const roomName = state.newRoomName.trim();
-    const keys = await loadKeysAsync();
-    if (!socket || roomName === '' || !state.username || !keys?.sessionId)
+    if (
+      !socket ||
+      roomName === '' ||
+      !state.username ||
+      roomNameExists(roomName)
+    )
       return;
+
+    const keys = await loadKeysAsync();
+    const sessionId = state.authToken || keys?.sessionId;
+    if (!keys || !sessionId) {
+      return;
+    }
 
     const userId = requireUserIdByUsername(state.username);
 
@@ -167,23 +193,28 @@ export function useHomePageActions(state: HomePageState) {
       return;
     }
 
-    void emitSignedMutation(socket, {
-      event: SOCKET_EVENTS.CLIENT_NEW_ROOM,
-      payload: {
-        roomNameCiphertext,
-        roomNameHash: normalizedRoomNameHash,
-        roomDirectoryUpdatedAt,
+    try {
+      await emitSignedMutation(socket, {
+        event: SOCKET_EVENTS.CLIENT_NEW_ROOM,
+        payload: {
+          roomNameCiphertext,
+          roomNameHash: normalizedRoomNameHash,
+          roomDirectoryUpdatedAt,
+          userId,
+          sessionId,
+        },
         userId,
-        sessionId: keys.sessionId,
-      },
-      userId,
-      sessionId: keys.sessionId,
-      claims: {
-        roomNameCiphertext,
-        roomNameHash: normalizedRoomNameHash,
-        roomDirectoryUpdatedAt: String(roomDirectoryUpdatedAt),
-      },
-    });
+        sessionId,
+        claims: {
+          roomNameCiphertext,
+          roomNameHash: normalizedRoomNameHash,
+          roomDirectoryUpdatedAt: String(roomDirectoryUpdatedAt),
+        },
+      });
+      state.setNewRoomName('');
+    } catch (error) {
+      console.error('[RoomCreate] Failed to submit room creation', error);
+    }
   };
 
   const onNewRoomKeyDownHandler = (
@@ -301,18 +332,30 @@ export function useHomePageActions(state: HomePageState) {
     }
   };
 
-  const handleSendPublicKeyToUser = (targetUser: string) => {
-    void (async () => {
-      const keys = await loadKeysAsync();
-      const activeSocket = (window as any).__socket || state.getSocket();
-      if (!keys?.publicKey || !activeSocket || !state.username) return;
+  const handleSendPublicKeyToUser = async (
+    targetUser: string,
+    password: string,
+  ): Promise<boolean> => {
+    const keys = await loadKeysAsync();
+    const activeSocket = (window as any).__socket || state.getSocket();
+    if (!keys?.publicKey || !activeSocket || !state.username) return false;
 
-      const storedMetadata = loadStoredKeyMetadataForUser(state.username);
-      if (!storedMetadata?.privateKeyEncrypted) {
-        alert('Missing encrypted private key for this account.');
-        return;
-      }
+    const storedMetadata = loadStoredKeyMetadataForUser(state.username);
+    if (!storedMetadata?.privateKeyEncrypted) {
+      alert('Missing encrypted private key for this account.');
+      return false;
+    }
 
+    const passwordIsValid = await unlockStoredPrivateKeyForUser(
+      state.username,
+      password,
+    );
+    if (!passwordIsValid) {
+      alert('Incorrect password.');
+      return false;
+    }
+
+    try {
       const targetUserId = getUsernameByUserId(targetUser)
         ? targetUser
         : requireUserIdByUsername(targetUser);
@@ -323,7 +366,7 @@ export function useHomePageActions(state: HomePageState) {
         alert(
           `Missing public key for ${targetUser}. Ask them to reconnect first.`,
         );
-        return;
+        return false;
       }
 
       const blockedUsers = getBlockedUserExportsForCurrentUser();
@@ -344,7 +387,7 @@ export function useHomePageActions(state: HomePageState) {
 
       if (!keys.sessionId) {
         alert('Session expired. Please log in again.');
-        return;
+        return false;
       }
 
       const fromUserId = requireUserIdByUsername(state.username);
@@ -366,13 +409,15 @@ export function useHomePageActions(state: HomePageState) {
         },
       });
       console.log('[UserList] Sent encrypted account package to', targetUserId);
-    })().catch((error) => {
+      return true;
+    } catch (error) {
       console.error(
         '[UserList] Failed to send encrypted account package:',
         error,
       );
       alert('Failed to encrypt account bundle for recipient.');
-    });
+      return false;
+    }
   };
 
   const handleBlockUser = (targetUser: string) => {
@@ -582,6 +627,9 @@ export function useHomePageActions(state: HomePageState) {
   };
 
   const handleCancelReplyOrEdit = () => {
+    if (state.editingMessageTimestamp !== undefined) {
+      state.setUserDraftMessageState('');
+    }
     state.setReplyingToState(undefined);
     state.setEditingMessageTimestampState(undefined);
     state.setEditingMessageIdState(undefined);

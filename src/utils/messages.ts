@@ -2,17 +2,16 @@ import type { Message } from '../types/types';
 import { getCurrentUserId, getUsernameByUserId } from './identityMap';
 import { isUserBlocked } from './userSettings';
 
-export function getUtf8ByteLength(value: string): number {
+export const getUtf8ByteLength = (value: string):  number => {
   if (typeof TextEncoder !== 'undefined') {
     return new TextEncoder().encode(value).length;
   }
   return value.length;
-}
+};
 
-export function canUserViewMessage(
+export const canUserViewMessage = (
   message: Message,
-  viewerUsername?: string,
-): boolean {
+  viewerUsername?: string,):  boolean => {
   const viewerUserId = getCurrentUserId();
   const authorUsername =
     (message.userId ? getUsernameByUserId(message.userId) : undefined) ||
@@ -69,4 +68,4 @@ export function canUserViewMessage(
   }
 
   return true;
-}
+};

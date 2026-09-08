@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-async function loadUserSettings() {
+const loadUserSettings = async () => {
   return import('./userSettings');
-}
+};
 
 describe('userSettings', () => {
   beforeEach(() => {

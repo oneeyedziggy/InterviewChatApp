@@ -3,18 +3,17 @@ package main
 import (
 	"fmt"
 	"os"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-	"unsafe"
+
+	wsrt "chat-server-go/websocket"
 
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 	"github.com/ProtonMail/gopenpgp/v2/helper"
 	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/google/uuid"
-	socketio "github.com/karagenc/socket.io-go"
 )
 
 type emittedEvent struct {
@@ -23,23 +22,23 @@ type emittedEvent struct {
 }
 
 type fakeServerSocket struct {
-	id                socketio.SocketID
+	id                wsrt.SocketID
 	connected         bool
 	events            map[string]any
-	disconnectHandler socketio.ServerSocketDisconnectFunc
+	disconnectHandler wsrt.ServerSocketDisconnectFunc
 	emitted           []emittedEvent
 	mu                sync.Mutex
 }
 
 func newFakeServerSocket(id string) *fakeServerSocket {
 	return &fakeServerSocket{
-		id:        socketio.SocketID(id),
+		id:        wsrt.SocketID(id),
 		connected: true,
 		events:    make(map[string]any),
 	}
 }
 
-func (f *fakeServerSocket) ID() socketio.SocketID { return f.id }
+func (f *fakeServerSocket) ID() wsrt.SocketID { return f.id }
 
 func (f *fakeServerSocket) Connected() bool { return f.connected }
 
@@ -53,8 +52,8 @@ func (f *fakeServerSocket) Emit(eventName string, v ...any) {
 	f.emitted = append(f.emitted, emittedEvent{event: eventName, args: cloned})
 }
 
-func (f *fakeServerSocket) Timeout(timeout time.Duration) socketio.Emitter {
-	return socketio.Emitter{}
+func (f *fakeServerSocket) Timeout(timeout time.Duration) wsrt.Emitter {
+	return wsrt.Emitter{}
 }
 
 func (f *fakeServerSocket) OnEvent(eventName string, handler any) {
@@ -74,55 +73,55 @@ func (f *fakeServerSocket) OffAll() {
 	f.disconnectHandler = nil
 }
 
-func (f *fakeServerSocket) OnError(fn socketio.ServerSocketErrorFunc) {}
+func (f *fakeServerSocket) OnError(fn wsrt.ServerSocketErrorFunc) {}
 
-func (f *fakeServerSocket) OnceError(fn socketio.ServerSocketErrorFunc) {}
+func (f *fakeServerSocket) OnceError(fn wsrt.ServerSocketErrorFunc) {}
 
-func (f *fakeServerSocket) OffError(fn ...socketio.ServerSocketErrorFunc) {}
+func (f *fakeServerSocket) OffError(fn ...wsrt.ServerSocketErrorFunc) {}
 
-func (f *fakeServerSocket) OnDisconnecting(fn socketio.ServerSocketDisconnectingFunc) {}
+func (f *fakeServerSocket) OnDisconnecting(fn wsrt.ServerSocketDisconnectingFunc) {}
 
-func (f *fakeServerSocket) OnceDisconnecting(fn socketio.ServerSocketDisconnectingFunc) {}
+func (f *fakeServerSocket) OnceDisconnecting(fn wsrt.ServerSocketDisconnectingFunc) {}
 
-func (f *fakeServerSocket) OffDisconnecting(fn ...socketio.ServerSocketDisconnectingFunc) {}
+func (f *fakeServerSocket) OffDisconnecting(fn ...wsrt.ServerSocketDisconnectingFunc) {}
 
-func (f *fakeServerSocket) OnDisconnect(fn socketio.ServerSocketDisconnectFunc) {
+func (f *fakeServerSocket) OnDisconnect(fn wsrt.ServerSocketDisconnectFunc) {
 	f.disconnectHandler = fn
 }
 
-func (f *fakeServerSocket) OnceDisconnect(fn socketio.ServerSocketDisconnectFunc) {
+func (f *fakeServerSocket) OnceDisconnect(fn wsrt.ServerSocketDisconnectFunc) {
 	f.disconnectHandler = fn
 }
 
-func (f *fakeServerSocket) OffDisconnect(fn ...socketio.ServerSocketDisconnectFunc) {
+func (f *fakeServerSocket) OffDisconnect(fn ...wsrt.ServerSocketDisconnectFunc) {
 	f.disconnectHandler = nil
 }
 
-func (f *fakeServerSocket) Server() *socketio.Server { return nil }
+func (f *fakeServerSocket) Server() *wsrt.Server { return nil }
 
-func (f *fakeServerSocket) Namespace() *socketio.Namespace { return nil }
+func (f *fakeServerSocket) Namespace() *wsrt.Namespace { return nil }
 
-func (f *fakeServerSocket) Join(room ...socketio.Room) {}
+func (f *fakeServerSocket) Join(room ...wsrt.Room) {}
 
-func (f *fakeServerSocket) Leave(room socketio.Room) {}
+func (f *fakeServerSocket) Leave(room wsrt.Room) {}
 
-func (f *fakeServerSocket) Rooms() mapset.Set[socketio.Room] { return mapset.NewSet[socketio.Room]() }
+func (f *fakeServerSocket) Rooms() mapset.Set[wsrt.Room] { return mapset.NewSet[wsrt.Room]() }
 
 func (f *fakeServerSocket) Use(fn any) {}
 
-func (f *fakeServerSocket) To(room ...socketio.Room) *socketio.BroadcastOperator { return nil }
+func (f *fakeServerSocket) To(room ...wsrt.Room) *wsrt.BroadcastOperator { return nil }
 
-func (f *fakeServerSocket) In(room ...socketio.Room) *socketio.BroadcastOperator { return nil }
+func (f *fakeServerSocket) In(room ...wsrt.Room) *wsrt.BroadcastOperator { return nil }
 
-func (f *fakeServerSocket) Except(room ...socketio.Room) *socketio.BroadcastOperator { return nil }
+func (f *fakeServerSocket) Except(room ...wsrt.Room) *wsrt.BroadcastOperator { return nil }
 
-func (f *fakeServerSocket) Local() *socketio.BroadcastOperator { return nil }
+func (f *fakeServerSocket) Local() *wsrt.BroadcastOperator { return nil }
 
-func (f *fakeServerSocket) Broadcast() *socketio.BroadcastOperator { return nil }
+func (f *fakeServerSocket) Broadcast() *wsrt.BroadcastOperator { return nil }
 
 func (f *fakeServerSocket) Disconnect(close bool) {
 	if f.disconnectHandler != nil {
-		f.disconnectHandler(socketio.ReasonServerShuttingDown)
+		f.disconnectHandler(wsrt.ReasonServerShuttingDown)
 	}
 }
 
@@ -150,23 +149,11 @@ func (f *fakeServerSocket) lastEmitFor(event string) (emittedEvent, bool) {
 	return emittedEvent{}, false
 }
 
-func unsafeValue(v reflect.Value) reflect.Value {
-	return reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem()
-}
-
-func invokeFirstOnConnectionHandler(t *testing.T, nsp *socketio.Namespace, socket socketio.ServerSocket) {
+func invokeFirstOnConnectionHandler(t *testing.T, nsp *wsrt.Namespace, socket wsrt.ServerSocket) {
 	t.Helper()
-
-	nspValue := reflect.ValueOf(nsp).Elem()
-	connectionHandlersField := unsafeValue(nspValue.FieldByName("connectionHandlers"))
-	handlerStoreValue := unsafeValue(connectionHandlersField.Elem())
-	funcs := unsafeValue(handlerStoreValue.FieldByName("funcs"))
-	if funcs.Len() == 0 {
+	if !nsp.InvokeConnectionHandlerForTest(0, socket) {
 		t.Fatal("no registered OnConnection handler found")
 	}
-	handlerPtr := funcs.Index(0)
-	handler := handlerPtr.Elem()
-	handler.Call([]reflect.Value{reflect.ValueOf(socket)})
 }
 
 type testUserSigner struct {
@@ -300,7 +287,14 @@ func newIntegrationTestServer(t *testing.T) *ChatServer {
 	t.Helper()
 
 	serverSigner := newTestUserSigner(t, "server-signer", "server-session")
-	storePath := t.TempDir() + "\\chat-state.json"
+	storePath := t.TempDir() + "\\chat-state.sqlite3"
+	store, err := NewSQLiteStore(storePath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
 
 	return &ChatServer{
 		sessionCache:           NewCache(SessionTTL),
@@ -315,7 +309,7 @@ func newIntegrationTestServer(t *testing.T) *ChatServer {
 		roomsByID:              make(map[string]string),
 		serverKeyRing:          serverSigner.privateRing,
 		serverPublicKey:        serverSigner.publicKey,
-		store:                  NewFileStore(storePath),
+		store:                  store,
 		joinRequests:           make(map[string]*JoinRequest),
 		userLastSeen:           make(map[string]int64),
 		roomMembers:            make(map[string]map[string]bool),
@@ -335,10 +329,10 @@ func newIntegrationTestServer(t *testing.T) *ChatServer {
 	}
 }
 
-func newRegisteredFakeSocket(t *testing.T, cs *ChatServer) (*fakeServerSocket, *socketio.Server, *socketio.Namespace) {
+func newRegisteredFakeSocket(t *testing.T, cs *ChatServer) (*fakeServerSocket, *wsrt.Server, *wsrt.Namespace) {
 	t.Helper()
 
-	sio := socketio.NewServer(nil)
+	sio := wsrt.NewServer(nil)
 	t.Cleanup(func() {
 		_ = sio.Close()
 	})

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-function createWorkerMock(
+const createWorkerMock = (
   responder: (request: any) => any,
-): ServiceWorker & { postMessage: ReturnType<typeof vi.fn> } {
+): ServiceWorker & { postMessage: ReturnType<typeof vi.fn> } => {
   return {
     postMessage: vi.fn((request: any, ports?: MessagePort[]) => {
       const responsePort = ports?.[0];
@@ -11,7 +11,7 @@ function createWorkerMock(
       }
     }),
   } as unknown as ServiceWorker & { postMessage: ReturnType<typeof vi.fn> };
-}
+};
 
 describe('privateKeyBroker', () => {
   beforeEach(() => {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -236,9 +235,6 @@ func TestRoomSelectionHelpers(t *testing.T) {
 	}
 	if got := parseSystemUserRef(" user-123 "); got != "user-123" {
 		t.Fatalf("unexpected passthrough system ref: %s", got)
-	}
-	if got := resolveStateFilePath(); !strings.HasSuffix(got, string(filepath.Separator)+"server-go"+string(filepath.Separator)+"chat-state.json") {
-		t.Fatalf("unexpected state path: %s", got)
 	}
 }
 
