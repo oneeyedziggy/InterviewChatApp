@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { styled } from 'styled-components';
 import { ScrollableDiv } from './styled/ScrollableDiv';
@@ -151,7 +151,7 @@ const UserListEntry = ({
       <MenuButton
         type="button"
         aria-label={`Actions for ${user}`}
-        onClick={(e) => {
+        onClick={(e: MouseEvent<HTMLButtonElement>) => {
           e.stopPropagation();
           const anchor = (
             e.currentTarget as HTMLElement
@@ -175,7 +175,7 @@ const UserListEntry = ({
             $left={Math.max(8, menuAnchor.right - 140)}
             $zIndex={12010}
             $minWidth={150}
-            onMouseDown={(e) => e.stopPropagation()}
+            onMouseDown={(e: MouseEvent<HTMLElement>) => e.stopPropagation()}
           >
             <ContextMenuItem
               type="button"
@@ -189,7 +189,9 @@ const UserListEntry = ({
             <ContextMenuItem
               type="button"
               title="Send a copy of your account keys/settings so this user can import and log into it on any device they use."
-              onClick={(e) => openConfirm('sendKey', e)}
+              onClick={(e: MouseEvent<HTMLButtonElement>) =>
+                openConfirm('sendKey', e)
+              }
             >
               Send private key
             </ContextMenuItem>
@@ -207,7 +209,9 @@ const UserListEntry = ({
               <ContextMenuItem
                 type="button"
                 $danger
-                onClick={(e) => openConfirm('block', e)}
+                onClick={(e: MouseEvent<HTMLButtonElement>) =>
+                  openConfirm('block', e)
+                }
               >
                 Block
               </ContextMenuItem>

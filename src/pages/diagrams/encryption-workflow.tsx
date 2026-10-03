@@ -129,7 +129,7 @@ const EncryptionWorkflowPage = () => (
             <li>
               Envelope shape: <code>version</code> = <code>msg-v2</code>,{' '}
               <code>iv</code>, <code>ciphertext</code>, and{' '}
-              <code>keyEnvelopes</code> keyed by user id.
+              <code>keyEnvelopes</code> keyed by opaque recipient indexes.
             </li>
             <li>
               Legacy fallback: if the payload does not parse as{' '}

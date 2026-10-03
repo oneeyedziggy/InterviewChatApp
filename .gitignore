@@ -5,6 +5,9 @@ node_modules/
 
 # Testing
 /coverage
+/performance/.data/
+/performance/results/
+/performance/bin/
 
 # Next.js
 /.next/
@@ -57,3 +60,5 @@ server-go/cover
 # State and Backup files
 chat-state.json.backup.*
 server-go/chat-state.json
+server-go/servers/*.sqlite3*
+backupChatStateJson/

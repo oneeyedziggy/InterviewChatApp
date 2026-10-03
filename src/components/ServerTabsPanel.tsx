@@ -86,6 +86,8 @@ export const ServerTabsPanel = () => {
           serverId: created.serverId,
           alias: created.alias,
           label: created.label,
+          username: created.username,
+          userId: created.userId,
         },
         { sessionId: created.sessionId, username: created.username },
       );

@@ -1,0 +1,57 @@
+name: Performance smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/performance-smoke.yml'
+      - 'performance/**'
+      - 'server-go/**'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.8'
+          cache-dependency-path: |
+            server-go/go.sum
+            performance/xk6-signedauth/go.sum
+
+      - name: Run Go tests
+        working-directory: server-go
+        run: go test ./... -count=1
+
+      - name: Build signed k6
+        run: |
+          chmod +x performance/build-k6.sh performance/run.sh performance/lib/safety.sh performance/lib/safety_test.sh
+          performance/lib/safety_test.sh
+          performance/build-k6.sh
+
+      - name: Run isolated protocol smoke
+        env:
+          SCENARIO: message-write
+          ACTORS: '1'
+          DURATION: 1s
+          RATE: '1'
+          PREALLOCATED_VUS: '1'
+          MAX_VUS: '1'
+          PORT: '3311'
+          DIAGNOSTICS_PORT: '6311'
+        run: performance/run.sh ci-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: performance/results/
+          if-no-files-found: error
+          retention-days: 7

@@ -146,7 +146,6 @@ export const doSendAction = async ({
         userDraftMessage,
         filteredKeys,
         keys.publicKey,
-        username,
       );
       console.log('[doSend] ✓ Edit message encrypted for all users');
     } catch (error) {
@@ -201,7 +200,6 @@ export const doSendAction = async ({
       userDraftMessage,
       filteredKeys,
       keys.publicKey,
-      username,
     );
     console.log('[doSend] ✓ Message encrypted for all users');
   } catch (error) {
@@ -830,7 +828,6 @@ export const grantAccessAction = async ({
     );
 
     // Encrypt for all users including the sender
-    // encryptForAllUsers will use senderPublicKey and senderUsername parameters to ensure sender is included
     const filteredKeys = filterPubKeysForEncryption(userPubKeys, {
       room: originalRoom,
       blockedUsers,
@@ -839,7 +836,6 @@ export const grantAccessAction = async ({
       plaintext,
       filteredKeys,
       keys.publicKey,
-      username,
     );
 
     console.log('[GrantAccess] ===== RE-ENCRYPTION COMPLETE =====');
@@ -1011,83 +1007,6 @@ export const grantAccessAction = async ({
     console.error('[GrantAccess] ✗ Failed to grant access:', error);
     console.error('[GrantAccess] Error details:', error);
   }
-};
-
-export const leaveRoomAction = ({
-  socket,
-  username,
-  currentRoom,
-  roomList,
-  leftRooms,
-  setLeftRooms,
-  setCurrentRoom,
-  room,
-}: {
-  socket: Socket | undefined;
-  username: string;
-  currentRoom: string;
-  roomList: string[];
-  leftRooms: Set<string>;
-  setLeftRooms: Dispatch<SetStateAction<Set<string>>>;
-  setCurrentRoom: Dispatch<SetStateAction<string>>;
-  room: string;
-}) => {
-  if (!socket || !username) return;
-
-  setLeftRooms((prev) => {
-    const newSet = new Set(prev);
-    newSet.add(room);
-    return newSet;
-  });
-
-  // If leaving current room, switch to another
-  if (currentRoom === room) {
-    const availableRooms = roomList.filter(
-      (r) => !leftRooms.has(r) && r !== room,
-    );
-    if (availableRooms.length > 0) {
-      setCurrentRoom(availableRooms[0]);
-    }
-  }
-
-  socket.emit(SOCKET_EVENTS.CLIENT_LEAVE_ROOM, {
-    username,
-    userId: requireUserIdByUsername(username),
-    room,
-    roomId: requireRoomIdByName(room),
-  });
-  console.log('[LeaveRoom] Left room:', room);
-};
-
-export const rejoinRoomAction = ({
-  socket,
-  username,
-  setLeftRooms,
-  setCurrentRoom,
-  room,
-}: {
-  socket: Socket | undefined;
-  username: string;
-  setLeftRooms: Dispatch<SetStateAction<Set<string>>>;
-  setCurrentRoom: Dispatch<SetStateAction<string>>;
-  room: string;
-}) => {
-  if (!socket || !username) return;
-
-  setLeftRooms((prev) => {
-    const newSet = new Set(prev);
-    newSet.delete(room);
-    return newSet;
-  });
-
-  socket.emit(SOCKET_EVENTS.CLIENT_REJOIN_ROOM, {
-    username,
-    userId: requireUserIdByUsername(username),
-    room,
-    roomId: requireRoomIdByName(room),
-  });
-  setCurrentRoom(room);
-  console.log('[RejoinRoom] Rejoined room:', room);
 };
 
 export const selectVersionAction = async ({

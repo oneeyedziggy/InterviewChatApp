@@ -48,7 +48,6 @@ export default defineConfig({
         'src/socket.ts',
         'src/cache.ts',
       ],
-      all: false,
       thresholds: {
         lines: 80,
         functions: 80,

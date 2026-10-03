@@ -1,5 +1,5 @@
 ﻿'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type SyntheticEvent } from 'react';
 import { apiPath, withBasePath } from '@/utils/appPaths';
 import { Input } from '../components/Input';
 import { buildOpaqueUsernameEnvelope } from '../utils/gpg';
@@ -488,7 +488,7 @@ const LoginPage = () => {
 
         const opaqueIdentity = await buildOpaqueUsernameEnvelope(
           username,
-          keys.serverPublicKey,
+          keys.publicKey,
         );
         const loginPath = withServerQuery(
           apiPath('/api/login'),
@@ -692,7 +692,7 @@ const LoginPage = () => {
       const userId = requireUserIdByUsername(usernameToDelete);
       const opaqueIdentity = await buildOpaqueUsernameEnvelope(
         usernameToDelete,
-        storedKeys.serverPublicKey,
+        storedKeys.publicKey,
       );
       const loginResponse = await fetch(apiPath('/api/login'), {
         method: 'POST',
@@ -934,7 +934,7 @@ const LoginPage = () => {
           open={isDeleteDialogOpen}
           aria-labelledby="delete-account-title"
           aria-describedby="delete-account-description"
-          onCancel={(event) => {
+          onCancel={(event: SyntheticEvent<HTMLDialogElement>) => {
             event.preventDefault();
             closeDeleteDialog();
           }}

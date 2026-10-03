@@ -179,3 +179,43 @@ export const restoreSession = async ({
     }
   }
 };
+
+// The server slides a session's idle window on every authenticated call, so a
+// foreground check only needs to run after the tab has been idle for a while.
+export const SESSION_REVALIDATE_INTERVAL_MS = 5 * 60 * 1000;
+
+let lastSessionRevalidationAt = 0;
+
+export const resetSessionRevalidationThrottle = (): void => {
+  lastSessionRevalidationAt = 0;
+};
+
+/**
+ * Re-confirm the stored session when the user returns to the tab.
+ *
+ * Throttled so returning focus repeatedly costs no extra requests; an invalid
+ * session falls back to auto-relogin and finally to the login page.
+ */
+export const revalidateSessionIfStale = async (options: {
+  isCancelled: () => boolean;
+  initializeSession: InitializeSession;
+  onForceReauth: () => void;
+  now?: number;
+}): Promise<void> => {
+  const now = options.now ?? Date.now();
+  if (now - lastSessionRevalidationAt < SESSION_REVALIDATE_INTERVAL_MS) {
+    return;
+  }
+  lastSessionRevalidationAt = now;
+
+  const storedKeys = await loadKeysAsync();
+  if (!storedKeys?.sessionId) {
+    return;
+  }
+
+  await restoreSession({
+    isCancelled: options.isCancelled,
+    initializeSession: options.initializeSession,
+    onForceReauth: options.onForceReauth,
+  });
+};

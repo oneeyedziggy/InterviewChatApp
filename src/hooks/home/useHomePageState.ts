@@ -9,7 +9,6 @@ import {
 import { useHomeAutoDecrypt } from './useHomeAutoDecrypt';
 import { useHomeSessionLifecycle } from './useHomeSessionLifecycle';
 import {
-  decryptJsonForCurrentUser,
   encryptJsonForCurrentUser,
   forceReauthToLogin,
   loadKeysAsync,
@@ -20,21 +19,12 @@ import {
   requireRoomIdByName,
   requireUserIdByUsername,
 } from '../../utils/identityMap';
-
-type StoredRoomPrefs = {
-  leftRooms?: string[];
-  currentRoom?: string;
-  openRooms?: string[];
-};
-
-type EncryptedStoredRoomPrefs = {
-  version: 'enc-v1';
-  ciphertext: string;
-};
-
-const roomPrefsStorageKey = (username: string): string => {
-  return `home_room_prefs_${username}`;
-};
+import {
+  decodeStoredRoomPrefs,
+  roomPrefsStorageKey,
+  type EncryptedStoredRoomPrefs,
+  type StoredRoomPrefs,
+} from '../../utils/roomPrefs';
 
 const roomNotificationsStorageKey = (username: string): string => {
   return `home_room_notifications_${username}`;
@@ -232,23 +222,7 @@ export const useHomePageState = (): HomePageState => {
       }
 
       try {
-        const parsed = JSON.parse(raw) as
-          | StoredRoomPrefs
-          | EncryptedStoredRoomPrefs;
-        let prefs: StoredRoomPrefs = {};
-
-        if (
-          parsed &&
-          typeof parsed === 'object' &&
-          (parsed as EncryptedStoredRoomPrefs).version === 'enc-v1' &&
-          typeof (parsed as EncryptedStoredRoomPrefs).ciphertext === 'string'
-        ) {
-          prefs = await decryptJsonForCurrentUser<StoredRoomPrefs>(
-            (parsed as EncryptedStoredRoomPrefs).ciphertext,
-          );
-        } else {
-          prefs = parsed as StoredRoomPrefs;
-        }
+        const prefs = await decodeStoredRoomPrefs(raw);
 
         if (cancelled) {
           return;

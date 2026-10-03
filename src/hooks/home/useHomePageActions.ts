@@ -185,7 +185,6 @@ export function useHomePageActions(state: HomePageState) {
         roomName,
         filteredPubKeys,
         keys.publicKey,
-        state.username,
       );
       normalizedRoomNameHash = await roomNameHash(roomName);
     } catch (error) {

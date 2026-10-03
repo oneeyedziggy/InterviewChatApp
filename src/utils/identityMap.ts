@@ -1,3 +1,5 @@
+import { base64ToBytes, bytesToBase64 } from './crypto/base64';
+
 type IdentityDirectories = {
   userDirectory?: Record<string, string>; // userId -> username
   roomDirectory?: Record<string, string>; // roomId -> roomName
@@ -21,7 +23,7 @@ const IDENTITY_SECRET = 'identity_secret_v1';
 
 let identityCache: IdentityState | null = null;
 
-const safeParseMap = (raw: string | null):  Record<string, string> => {
+const safeParseMap = (raw: string | null): Record<string, string> => {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -37,7 +39,7 @@ const safeParseMap = (raw: string | null):  Record<string, string> => {
   }
 };
 
-const safeParseNumberMap = (raw: string | null):  Record<string, number> => {
+const safeParseNumberMap = (raw: string | null): Record<string, number> => {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -62,24 +64,7 @@ const safeParseNumberMap = (raw: string | null):  Record<string, number> => {
   }
 };
 
-const bytesToBase64 = (bytes: Uint8Array):  string => {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += 1) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-};
-
-const base64ToBytes = (value: string):  Uint8Array => {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-};
-
-const randomHex = (bytes = 16):  string => {
+const randomHex = (bytes = 16): string => {
   if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
     throw new Error('Secure randomness unavailable');
   }
@@ -90,7 +75,7 @@ const randomHex = (bytes = 16):  string => {
     .join('');
 };
 
-const getOrCreateIdentitySecret = ():  string => {
+const getOrCreateIdentitySecret = (): string => {
   if (typeof window === 'undefined') return '';
 
   const existing = localStorage.getItem(IDENTITY_SECRET);
@@ -106,12 +91,12 @@ const getOrCreateIdentitySecret = ():  string => {
   return secret;
 };
 
-const readIdentitySecret = ():  string => {
+const readIdentitySecret = (): string => {
   if (typeof window === 'undefined') return '';
   return localStorage.getItem(IDENTITY_SECRET) || '';
 };
 
-const deriveKeyMaterial = ():  string => {
+const deriveKeyMaterial = (): string => {
   if (typeof window === 'undefined') return '';
 
   const secret = readIdentitySecret();
@@ -122,7 +107,7 @@ const deriveKeyMaterial = ():  string => {
   return getOrCreateIdentitySecret();
 };
 
-const xorCipher = (value: string, keyMaterial: string):  string => {
+const xorCipher = (value: string, keyMaterial: string): string => {
   if (!value) return '';
   const valueBytes = new TextEncoder().encode(value);
   const keyBytes = new TextEncoder().encode(keyMaterial);
@@ -133,7 +118,7 @@ const xorCipher = (value: string, keyMaterial: string):  string => {
   return bytesToBase64(out);
 };
 
-const xorDecipher = (value: string, keyMaterial: string):  string => {
+const xorDecipher = (value: string, keyMaterial: string): string => {
   if (!value) return '';
   const inBytes = base64ToBytes(value);
   const keyBytes = new TextEncoder().encode(keyMaterial);
@@ -144,7 +129,7 @@ const xorDecipher = (value: string, keyMaterial: string):  string => {
   return new TextDecoder().decode(out);
 };
 
-const emptyIdentityState = ():  IdentityState => {
+const emptyIdentityState = (): IdentityState => {
   return {
     userIdToName: {},
     userNameToId: {},
@@ -156,7 +141,8 @@ const emptyIdentityState = ():  IdentityState => {
 };
 
 const sanitizeState = (
-  raw: Partial<IdentityState> | null | undefined,):  IdentityState => {
+  raw: Partial<IdentityState> | null | undefined,
+): IdentityState => {
   const next = emptyIdentityState();
   if (!raw) {
     return next;
@@ -194,7 +180,7 @@ const saveState = (state: IdentityState) => {
   }
 };
 
-const loadState = ():  IdentityState => {
+const loadState = (): IdentityState => {
   if (typeof window === 'undefined') return emptyIdentityState();
   if (identityCache) {
     return identityCache;
@@ -226,7 +212,7 @@ const loadState = ():  IdentityState => {
   return identityCache;
 };
 
-const createLocalId = (prefix: string):  string => {
+const createLocalId = (prefix: string): string => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return `${prefix}:${crypto.randomUUID()}`;
   }
@@ -318,60 +304,60 @@ export const storeIdentityDirectories = (data: IdentityDirectories) => {
   saveState(state);
 };
 
-export const getUserIdByUsername = (username: string):  string | undefined => {
+export const getUserIdByUsername = (username: string): string | undefined => {
   if (!username || typeof window === 'undefined') return undefined;
   return loadState().userNameToId[username];
 };
 
-export const getRoomIdByName = (roomName: string):  string | undefined => {
+export const getRoomIdByName = (roomName: string): string | undefined => {
   if (!roomName || typeof window === 'undefined') return undefined;
   return loadState().roomNameToId[roomName];
 };
 
-export const getUsernameByUserId = (userId: string):  string | undefined => {
+export const getUsernameByUserId = (userId: string): string | undefined => {
   if (!userId || typeof window === 'undefined') return undefined;
   return loadState().userIdToName[userId];
 };
 
-export const getRoomNameByRoomId = (roomId: string):  string | undefined => {
+export const getRoomNameByRoomId = (roomId: string): string | undefined => {
   if (!roomId || typeof window === 'undefined') return undefined;
   return loadState().roomIdToName[roomId];
 };
 
-export const getCurrentUserId = ():  string | undefined => {
+export const getCurrentUserId = (): string | undefined => {
   if (typeof window === 'undefined') return undefined;
   return loadState().currentUserId;
 };
 
-export const getUserDirectorySnapshot = ():  Record<string, string> => {
+export const getUserDirectorySnapshot = (): Record<string, string> => {
   if (typeof window === 'undefined') {
     return {};
   }
   return { ...loadState().userIdToName };
 };
 
-export const getRoomDirectorySnapshot = ():  Record<string, string> => {
+export const getRoomDirectorySnapshot = (): Record<string, string> => {
   if (typeof window === 'undefined') {
     return {};
   }
   return { ...loadState().roomIdToName };
 };
 
-export const getUserDirectoryTimestampSnapshot = ():  Record<string, number> => {
+export const getUserDirectoryTimestampSnapshot = (): Record<string, number> => {
   if (typeof window === 'undefined') {
     return {};
   }
   return { ...loadState().userIdUpdatedAt };
 };
 
-export const getRoomDirectoryTimestampSnapshot = ():  Record<string, number> => {
+export const getRoomDirectoryTimestampSnapshot = (): Record<string, number> => {
   if (typeof window === 'undefined') {
     return {};
   }
   return { ...loadState().roomIdUpdatedAt };
 };
 
-export const requireUserIdByUsername = (username: string):  string => {
+export const requireUserIdByUsername = (username: string): string => {
   const existing = getUserIdByUsername(username);
   if (existing) {
     return existing;
@@ -391,7 +377,7 @@ export const requireUserIdByUsername = (username: string):  string => {
   return userId;
 };
 
-export const requireRoomIdByName = (roomName: string):  string => {
+export const requireRoomIdByName = (roomName: string): string => {
   if (!roomName || typeof window === 'undefined') {
     throw new Error(`Missing roomId mapping for room: ${roomName}`);
   }

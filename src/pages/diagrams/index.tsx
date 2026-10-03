@@ -24,7 +24,7 @@ const DIAGRAM_LINKS: DiagramLink[] = [
       'The msg-v2 envelope: per-message AES-256-GCM content keys wrapped per recipient with OpenPGP, what the server stores, and the legacy direct-PGP decryption fallback.',
   },
   {
-    href: '/database',
+    href: '/diagrams/database',
     title: 'Database schema',
     description:
       'Interactive entity relationship diagram of the per-server SQLite schema, including invites, access grant requests, and the message history trigger.',

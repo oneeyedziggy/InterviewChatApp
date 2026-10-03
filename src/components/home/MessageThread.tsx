@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { type MouseEvent } from 'react';
 import { VariableSizeList } from 'react-window';
 import { type Socket } from '../../utils/websocketClient';
 import { getRoomIdByName, getRoomNameByRoomId } from '../../utils/identityMap';
@@ -1064,7 +1065,7 @@ const MessageWithReplies = ({
               $left={Math.max(8, userContextMenuAnchor.left)}
               $zIndex={12010}
               $minWidth={165}
-              onMouseDown={(e) => e.stopPropagation()}
+              onMouseDown={(e: MouseEvent<HTMLElement>) => e.stopPropagation()}
             >
               <ContextMenuItem
                 type="button"
@@ -1241,7 +1242,9 @@ const MessageWithReplies = ({
                     $left={Math.max(8, actionMenuAnchor.right - 152)}
                     $zIndex={12000}
                     $minWidth={152}
-                    onMouseDown={(e) => e.stopPropagation()}
+                    onMouseDown={(e: MouseEvent<HTMLElement>) =>
+                      e.stopPropagation()
+                    }
                   >
                     {!isSystemMessage && onReply && (
                       <ContextMenuItem

@@ -87,17 +87,33 @@ const sendBrokerRequest = async (
 
   return new Promise<BrokerResponse>((resolve) => {
     const channel = new MessageChannel();
-    const timeout = window.setTimeout(() => {
-      resolve({ ok: false, error: 'Broker request timed out' });
+    let settled = false;
+    let timeout = 0;
+
+    const finish = (response: BrokerResponse) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      channel.port1.onmessage = null;
+      channel.port1.close();
+      channel.port2.close();
+      resolve(response);
+    };
+
+    timeout = window.setTimeout(() => {
+      finish({ ok: false, error: 'Broker request timed out' });
     }, 2000);
 
     channel.port1.onmessage = (event) => {
-      window.clearTimeout(timeout);
       const data = (event.data || {}) as BrokerResponse;
-      resolve(data);
+      finish(data);
     };
 
-    worker.postMessage(request, [channel.port2]);
+    try {
+      worker.postMessage(request, [channel.port2]);
+    } catch (error) {
+      finish({ ok: false, error: formatRegistrationError(error) });
+    }
   });
 };
 

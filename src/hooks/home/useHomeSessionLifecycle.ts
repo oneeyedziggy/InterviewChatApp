@@ -1,7 +1,7 @@
 import { useEffect, type Dispatch, type SetStateAction } from 'react';
 import { type Socket } from '../../utils/websocketClient';
 import { type Messages } from '../../types/types';
-import { restoreSession } from '../../utils/homeSession';
+import { restoreSession, revalidateSessionIfStale } from '../../utils/homeSession';
 import { initializeHomeSocket } from '../../utils/homeSocketInitializer';
 import { getBlockedUsers } from '../../utils/userSettings';
 import { type JoinRequest } from '../../contexts/home/homePageTypes';
@@ -15,6 +15,19 @@ type TenantSnapshot = {
 };
 
 const tenantSnapshots = new Map<string, TenantSnapshot>();
+const MAX_TENANT_SNAPSHOTS = 5;
+
+const storeTenantSnapshot = (serverKey: string, snapshot: TenantSnapshot) => {
+  tenantSnapshots.delete(serverKey);
+  tenantSnapshots.set(serverKey, snapshot);
+  while (tenantSnapshots.size > MAX_TENANT_SNAPSHOTS) {
+    const oldestServerKey = tenantSnapshots.keys().next().value as
+      | string
+      | undefined;
+    if (!oldestServerKey) return;
+    tenantSnapshots.delete(oldestServerKey);
+  }
+};
 
 const routeServerKey = (): string =>
   typeof window === 'undefined'
@@ -131,6 +144,17 @@ export const useHomeSessionLifecycle = ({
     };
 
     void restore();
+
+    const revalidateOnForeground = () => {
+      if (cancelled || document.visibilityState !== 'visible') return;
+      void revalidateSessionIfStale({
+        isCancelled: () => cancelled,
+        initializeSession,
+        onForceReauth,
+      });
+    };
+    window.addEventListener('focus', revalidateOnForeground);
+    document.addEventListener('visibilitychange', revalidateOnForeground);
     const handleServerNavigation = (event: Event) => {
       const handoff = (
         event as CustomEvent<{
@@ -156,7 +180,7 @@ export const useHomeSessionLifecycle = ({
           currentRoom: getCurrentRoom(),
           roomNotifications: getRoomNotifications(),
         };
-        tenantSnapshots.set(lastServerKey, snapshot);
+        storeTenantSnapshot(lastServerKey, snapshot);
         publishTenantUnreadCount(lastServerKey, snapshot.roomNotifications);
       }
       const nextSnapshot = tenantSnapshots.get(nextServerKey);
@@ -189,6 +213,8 @@ export const useHomeSessionLifecycle = ({
     return () => {
       cancelled = true;
       window.removeEventListener('popstate', handleServerNavigation);
+      window.removeEventListener('focus', revalidateOnForeground);
+      document.removeEventListener('visibilitychange', revalidateOnForeground);
     };
     // initializeSession intentionally omitted to preserve mount-only behavior
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -199,6 +225,8 @@ export const useHomeSessionLifecycle = ({
   }, [setBlockedUsers]);
 
   useEffect(() => {
+    let effectDisposed = false;
+    let disposeSocket: (() => void) | undefined;
     console.log(
       '[Home] useEffect triggered, authToken:',
       authToken,
@@ -208,7 +236,7 @@ export const useHomeSessionLifecycle = ({
     if (authToken) {
       setIsSwitchingServer(false);
       console.log('[Home] Calling socketInitializer');
-      initializeHomeSocket({
+      void initializeHomeSocket({
         authToken,
         username,
         setAuthToken,
@@ -232,10 +260,21 @@ export const useHomeSessionLifecycle = ({
         getRoomList,
         setSocket,
         setHiddenDmUnreadBaseline,
+      }).then((dispose) => {
+        if (effectDisposed) {
+          dispose();
+          return;
+        }
+        disposeSocket = dispose;
       });
     } else {
       console.log('[Home] No authToken, skipping socket initialization');
     }
+
+    return () => {
+      effectDisposed = true;
+      disposeSocket?.();
+    };
     // Match previous dependency semantics (authToken-only trigger)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authToken]);

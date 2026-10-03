@@ -21,6 +21,23 @@ go mod download
 The server can be configured using environment variables:
 
 - `PORT` - Server port (default: `3001`)
+- `SERVER_DATA_DIR` - Tenant registry and SQLite root (use a disposable directory for performance tests)
+- `DIAGNOSTICS_ADDR` - Optional loopback diagnostics listener, for example `127.0.0.1:6060`
+- `LOG_LEVEL` - JSON log threshold: `debug`, `info` (default), `warn`, or `error`
+
+When diagnostics are enabled, the listener exposes:
+
+- `/health/live` and `/health/ready`
+- `/debug/metrics` for Go runtime and aggregate WebSocket counters
+- `/debug/pprof/` for CPU, heap, goroutine, mutex, and block profiles
+
+`DIAGNOSTICS_ADDR` must use `127.0.0.1`, `localhost`, or `[::1]`; diagnostics are never added to the public application listener.
+
+Run the SQLite history-scaling benchmark with:
+
+```bash
+go test ./internal/server -run '^$' -bench BenchmarkSQLiteStoreSaveWithIdentityHistorySize -benchmem
+```
 
 ## Building
 

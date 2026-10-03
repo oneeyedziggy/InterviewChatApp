@@ -1,0 +1,14 @@
+{
+  "servers": [
+    {
+      "id": "default",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/chat-state.sqlite3",
+      "alias": "default"
+    },
+    {
+      "id": "41f6603d-7d9d-44de-a5a1-eb9aa73abc8f",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/41f6603d-7d9d-44de-a5a1-eb9aa73abc8f.sqlite3",
+      "alias": "cherry-star-lilac-forge"
+    }
+  ]
+}

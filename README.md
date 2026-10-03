@@ -4,6 +4,8 @@ This repo started with the below prompt as an interview take-home assignment to 
 
 Since then I've picked it back up and done some fairly heavy refactors and feature addition with various LLMs to both explore various AI tooling, and as a learning project got Go, to which I (or rather AI) ported the existing server component. I also added end-to-end encryption, a better (if not gorgrous) theme/styling, build/deploy tooling, and finished up some originally intended features where I had to cut corners to get a whole chat app done in a week.
 
+Historical planning documents are archived in `docs/archive/`.
+
 ## Second Challenge: Real-Time Chat Application
 
 ### Create a real-time chat application with the following features:

@@ -387,7 +387,6 @@ const buildIdentityDirectoryRefreshPayload = async (
         roomName,
         recipients,
         keys.publicKey,
-        keys.username,
       );
     } catch (error) {
       console.warn(
@@ -407,7 +406,6 @@ const buildIdentityDirectoryRefreshPayload = async (
         username,
         recipients,
         keys.publicKey,
-        keys.username,
       );
     } catch (error) {
       console.warn(
@@ -524,7 +522,6 @@ const maybeGrantNewMemberAccess = async (args: {
           message.content,
           { ...recipients, [newUserId]: recipients[newUserId] },
           keys.publicKey,
-          username,
         );
         await emitSignedMutation(socket, {
           event: SOCKET_EVENTS.CLIENT_GRANT_ACCESS,
@@ -602,7 +599,6 @@ const ensureDefaultRoomExists = async (args: {
       DEFAULT_ROOM,
       recipients,
       keys.publicKey,
-      username,
     );
   } catch (error) {
     console.warn('[Socket] Failed to bootstrap default room ciphertext', error);
@@ -1351,7 +1347,7 @@ export const initializeHomeSocket = async ({
   getRoomList,
   setHiddenDmUnreadBaseline,
   setSocket,
-}: InitSocketArgs) => {
+}: InitSocketArgs): Promise<() => void> => {
   const forcedRoomPayloads = new Set<string>();
   let preferredRoomFromPrefs = '';
   let socket = getSocket();
@@ -1392,6 +1388,48 @@ export const initializeHomeSocket = async ({
   });
 
   const activeSocket = socket;
+
+  const listenerEvents = [
+    'disconnect',
+    'connect_error',
+    'reconnect',
+    'reconnect_attempt',
+    'reconnect_error',
+    'reconnect_failed',
+    'error',
+    SOCKET_EVENTS.SERVER_ACTION_RESULT,
+    SOCKET_EVENTS.INITIAL_DATA,
+    SOCKET_EVENTS.SERVER_MESSAGE,
+    SOCKET_EVENTS.SERVER_NEW_ROOM,
+    SOCKET_EVENTS.SERVER_IDENTITY_DIRECTORY_REFRESH,
+    SOCKET_EVENTS.SERVER_USER_LIST_UPDATE,
+    SOCKET_EVENTS.SERVER_JOIN_REQUEST,
+    SOCKET_EVENTS.SERVER_JOIN_APPROVED,
+    SOCKET_EVENTS.SERVER_JOIN_DENIED,
+    SOCKET_EVENTS.SERVER_ACCESS_REQUEST,
+    SOCKET_EVENTS.SERVER_ACCESS_DENIED,
+    SOCKET_EVENTS.SERVER_VOTE_UPDATE,
+    SOCKET_EVENTS.DISCONNECTING,
+    SOCKET_EVENTS.STATUS,
+    SOCKET_EVENTS.SERVER_PUBLIC_KEY_RECEIVED,
+    SOCKET_EVENTS.CONNECT,
+  ];
+
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    for (const event of listenerEvents) {
+      activeSocket.off(event);
+    }
+    activeSocket.disconnect();
+    if ((window as any).__socket === activeSocket) {
+      (window as any).__socket = undefined;
+    }
+    if (getSocket() === activeSocket) {
+      setSocket(undefined);
+    }
+  };
 
   setSocket(activeSocket);
 
@@ -3349,4 +3387,6 @@ export const initializeHomeSocket = async ({
     'id:',
     activeSocket.id,
   );
+
+  return dispose;
 };

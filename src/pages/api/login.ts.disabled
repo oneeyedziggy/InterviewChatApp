@@ -1,0 +1,3 @@
+// Note: API routes are not supported in static export mode.
+// The /api/login endpoint is handled by the Go server instead.
+// This reference is intentionally excluded from Next route discovery.

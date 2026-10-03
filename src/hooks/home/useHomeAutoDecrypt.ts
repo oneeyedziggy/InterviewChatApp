@@ -21,6 +21,20 @@ export const useHomeAutoDecrypt = ({
   useEffect(() => {
     let cancelled = false;
 
+    const currentMessageKeys = new Set<string>();
+    for (const [room, messages] of Object.entries(chatValues)) {
+      for (const msg of messages) {
+        currentMessageKeys.add(
+          `${room}:${msg.id || `${msg.timestamp}:${msg.userId}`}`,
+        );
+      }
+    }
+    for (const attemptedKey of decryptionAttemptsRef.current) {
+      if (!currentMessageKeys.has(attemptedKey)) {
+        decryptionAttemptsRef.current.delete(attemptedKey);
+      }
+    }
+
     void (async () => {
       const keys = await loadKeysAsync();
       if (!keys || !username || cancelled) return;
@@ -43,7 +57,7 @@ export const useHomeAutoDecrypt = ({
             continue;
           }
 
-          const messageKey = `${room}:${msg.timestamp}`;
+          const messageKey = `${room}:${msg.id || `${msg.timestamp}:${msg.userId}`}`;
 
           if (decryptionAttemptsRef.current.has(messageKey)) {
             continue;

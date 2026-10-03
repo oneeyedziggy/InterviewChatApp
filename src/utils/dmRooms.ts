@@ -4,9 +4,10 @@ import {
   getUsernameByUserId,
   requireUserIdByUsername,
 } from './identityMap';
+import { isUuidLike } from './uuid';
 
 /** Canonical DM room id: @dmid:<userIdA>|<userIdB> (sorted user IDs). */
-const userIdsEquivalent = (a: string, b: string):  boolean => {
+const userIdsEquivalent = (a: string, b: string): boolean => {
   const left = a.trim();
   const right = b.trim();
   if (!left || !right) {
@@ -15,17 +16,12 @@ const userIdsEquivalent = (a: string, b: string):  boolean => {
   return left === right;
 };
 
-const looksLikeUserId = (value: string):  boolean => {
+const looksLikeUserId = (value: string): boolean => {
   const normalized = value.trim();
-  if (!normalized) {
-    return false;
-  }
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    normalized,
-  );
+  return !!normalized && isUuidLike(normalized);
 };
 
-const resolveUserId = (userOrId: string):  string => {
+const resolveUserId = (userOrId: string): string => {
   const normalized = userOrId.trim();
   if (!normalized) {
     return normalized;
@@ -48,7 +44,7 @@ const resolveUserId = (userOrId: string):  string => {
   return requireUserIdByUsername(normalized);
 };
 
-const resolveUsernameForDisplay = (userId: string):  string | null => {
+const resolveUsernameForDisplay = (userId: string): string | null => {
   const normalized = userId.trim();
   if (!normalized) {
     return null;
@@ -57,7 +53,7 @@ const resolveUsernameForDisplay = (userId: string):  string | null => {
   return getUsernameByUserId(normalized) || null;
 };
 
-export const getDmRoomId = (userA: string, userB: string):  string => {
+export const getDmRoomId = (userA: string, userB: string): string => {
   const userAId = resolveUserId(userA);
   const userBId = resolveUserId(userB);
   const [first, second] = [userAId, userBId].sort((a, b) =>
@@ -66,18 +62,19 @@ export const getDmRoomId = (userA: string, userB: string):  string => {
   return `@dmid:${first}|${second}`;
 };
 
-const resolveEffectiveRoomName = (room: string):  string => {
+const resolveEffectiveRoomName = (room: string): string => {
   return getRoomNameByRoomId(room) || room;
 };
 
-export const isDmRoom = (room: string):  boolean => {
+export const isDmRoom = (room: string): boolean => {
   return resolveEffectiveRoomName(room).startsWith('@dmid:');
 };
 
 /** Other participant's username for display in the room list */
 export const getDmDisplayName = (
   room: string,
-  currentUser: string,):  string | null => {
+  currentUser: string,
+): string | null => {
   if (!isDmRoom(room)) return null;
   if (!currentUser) return null;
   const participants = getDmParticipants(room);
@@ -111,7 +108,7 @@ export const getDmDisplayName = (
   return null;
 };
 
-export const getDmParticipants = (room: string):  string[] | null => {
+export const getDmParticipants = (room: string): string[] | null => {
   if (!isDmRoom(room)) return null;
   const rest = resolveEffectiveRoomName(room).slice('@dmid:'.length);
 
@@ -120,7 +117,7 @@ export const getDmParticipants = (room: string):  string[] | null => {
   return [first, second];
 };
 
-export const isUserInDmRoom = (room: string, username: string):  boolean => {
+export const isUserInDmRoom = (room: string, username: string): boolean => {
   const participants = getDmParticipants(room);
   if (!participants) return false;
   if (!username) return false;
@@ -137,7 +134,8 @@ export const isUserInDmRoom = (room: string, username: string):  boolean => {
 
 export const filterRoomsForUser = (
   rooms: string[],
-  username: string,):  string[] => {
+  username: string,
+): string[] => {
   if (!username) return rooms;
 
   return rooms.filter((room) => {
@@ -146,7 +144,10 @@ export const filterRoomsForUser = (
   });
 };
 
-export const getRoomDisplayLabel = (room: string, currentUser: string):  string => {
+export const getRoomDisplayLabel = (
+  room: string,
+  currentUser: string,
+): string => {
   const effectiveRoom = resolveEffectiveRoomName(room);
   const dmName = getDmDisplayName(effectiveRoom, currentUser);
   if (dmName) {

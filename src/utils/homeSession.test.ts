@@ -4,6 +4,12 @@ const gpgMock = vi.hoisted(() => ({
   attemptAutoRelogin: vi.fn(),
   hasValidStoredKeys: vi.fn(),
   loadKeysAsync: vi.fn(),
+  fetchServerPublicKey: vi.fn(async () => 'server-pub'),
+  updateStoredSessionForUser: vi.fn(async () => {}),
+}));
+
+const serverRegistryMock = vi.hoisted(() => ({
+  loadServerMembershipsAsync: vi.fn(async () => []),
 }));
 
 const identityMapMock = vi.hoisted(() => ({
@@ -12,9 +18,15 @@ const identityMapMock = vi.hoisted(() => ({
 
 vi.mock('./gpg', () => gpgMock);
 vi.mock('./identityMap', () => identityMapMock);
+vi.mock('./serverRegistry', () => serverRegistryMock);
 
 import { apiPath } from './appPaths';
-import { restoreSession } from './homeSession';
+import {
+  restoreSession,
+  revalidateSessionIfStale,
+  resetSessionRevalidationThrottle,
+  SESSION_REVALIDATE_INTERVAL_MS,
+} from './homeSession';
 
 describe('homeSession', () => {
   beforeEach(() => {
@@ -225,5 +237,74 @@ describe('homeSession', () => {
 
     expect(initializeSession).toHaveBeenCalledWith('session-a', 'alice');
     expect(identityMapMock.storeIdentityDirectories).not.toHaveBeenCalled();
+  });
+
+  describe('revalidateSessionIfStale', () => {
+    beforeEach(() => {
+      resetSessionRevalidationThrottle();
+    });
+
+    it('revalidates once and throttles immediate repeat checks', async () => {
+      gpgMock.loadKeysAsync.mockResolvedValue({
+        sessionId: 'session-a',
+        username: 'alice',
+      });
+      gpgMock.hasValidStoredKeys.mockResolvedValue(true);
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ valid: true, userId: 'user-a' }),
+      }) as any;
+
+      const options = {
+        isCancelled: () => false,
+        initializeSession: vi.fn(),
+        onForceReauth: vi.fn(),
+      };
+
+      await revalidateSessionIfStale({ ...options, now: 1_000_000 });
+      await revalidateSessionIfStale({ ...options, now: 1_000_500 });
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('revalidates again once the throttle window elapses', async () => {
+      gpgMock.loadKeysAsync.mockResolvedValue({
+        sessionId: 'session-a',
+        username: 'alice',
+      });
+      gpgMock.hasValidStoredKeys.mockResolvedValue(true);
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ valid: true, userId: 'user-a' }),
+      }) as any;
+
+      const options = {
+        isCancelled: () => false,
+        initializeSession: vi.fn(),
+        onForceReauth: vi.fn(),
+      };
+
+      await revalidateSessionIfStale({ ...options, now: 2_000_000 });
+      await revalidateSessionIfStale({
+        ...options,
+        now: 2_000_000 + SESSION_REVALIDATE_INTERVAL_MS + 1,
+      });
+
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('does nothing when no session is stored', async () => {
+      gpgMock.loadKeysAsync.mockResolvedValue({ username: 'alice' });
+      global.fetch = vi.fn() as any;
+
+      await revalidateSessionIfStale({
+        isCancelled: () => false,
+        initializeSession: vi.fn(),
+        onForceReauth: vi.fn(),
+        now: 3_000_000,
+      });
+
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
   });
 });

@@ -5,6 +5,7 @@ import {
   SCRYPT_P,
   SCRYPT_R,
 } from './passwordKeyDerivation';
+import { base64ToBytes, bytesToBase64 } from './base64';
 
 export const PRIVATE_KEY_ENVELOPE_VERSION = 'enc-v1';
 export const PRIVATE_KEY_ALGORITHM = 'AES-256-GCM';
@@ -25,24 +26,7 @@ export type EncryptedPrivateKeyEnvelope = {
   ciphertext: string;
 };
 
-const bytesToBase64 = (bytes: Uint8Array):  string => {
-  let binary = '';
-  for (const b of bytes) {
-    binary += String.fromCharCode(b);
-  }
-  return btoa(binary);
-};
-
-const base64ToBytes = (value: string):  Uint8Array => {
-  const binary = atob(value);
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    out[i] = binary.charCodeAt(i);
-  }
-  return out;
-};
-
-const randomBytes = (length: number):  Uint8Array => {
+const randomBytes = (length: number): Uint8Array => {
   if (typeof crypto === 'undefined' || !crypto.getRandomValues) {
     throw new Error('Web Crypto random source unavailable');
   }
@@ -52,7 +36,7 @@ const randomBytes = (length: number):  Uint8Array => {
   return out;
 };
 
-export const isEncryptedPrivateKeyEnvelope = (value: string):  boolean => {
+export const isEncryptedPrivateKeyEnvelope = (value: string): boolean => {
   if (!value || value[0] !== '{') {
     return false;
   }
@@ -74,7 +58,8 @@ export const isEncryptedPrivateKeyEnvelope = (value: string):  boolean => {
 
 export const encryptPrivateKeyWithPassword = async (
   privateKeyArmored: string,
-  password: string,):  Promise<string> => {
+  password: string,
+): Promise<string> => {
   const salt = randomBytes(PRIVATE_KEY_SALT_BYTES);
   const iv = randomBytes(PRIVATE_KEY_IV_BYTES);
   const key = await deriveAes256KeyFromPassword(password, salt);
@@ -104,7 +89,8 @@ export const encryptPrivateKeyWithPassword = async (
 
 export const decryptPrivateKeyWithPassword = async (
   encryptedPayload: string,
-  password: string,):  Promise<string> => {
+  password: string,
+): Promise<string> => {
   if (!isEncryptedPrivateKeyEnvelope(encryptedPayload)) {
     throw new Error('Stored private key is not in encrypted format');
   }

@@ -2,16 +2,26 @@ import type { Message } from '../types/types';
 import { getCurrentUserId, getUsernameByUserId } from './identityMap';
 import { isUserBlocked } from './userSettings';
 
-export const getUtf8ByteLength = (value: string):  number => {
+export const getUtf8ByteLength = (value: string): number => {
   if (typeof TextEncoder !== 'undefined') {
     return new TextEncoder().encode(value).length;
   }
   return value.length;
 };
 
+export const isPlaceholderContent = (content: string | undefined): boolean => {
+  const trimmed = content?.trim() ?? '';
+  return (
+    !trimmed ||
+    trimmed.includes('🔒') ||
+    trimmed.includes('[Encrypted message]')
+  );
+};
+
 export const canUserViewMessage = (
   message: Message,
-  viewerUsername?: string,):  boolean => {
+  viewerUsername?: string,
+): boolean => {
   const viewerUserId = getCurrentUserId();
   const authorUsername =
     (message.userId ? getUsernameByUserId(message.userId) : undefined) ||
@@ -32,12 +42,7 @@ export const canUserViewMessage = (
     return false;
   }
 
-  const content = message.content?.trim() ?? '';
-  if (
-    content &&
-    !content.includes('🔒') &&
-    !content.includes('[Encrypted message]')
-  ) {
+  if (!isPlaceholderContent(message.content)) {
     return true;
   }
 

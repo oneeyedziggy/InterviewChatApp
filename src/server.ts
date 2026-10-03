@@ -1,6 +1,6 @@
 import express, { Express } from 'express';
 import * as http from 'http';
-import next, { NextApiHandler } from 'next';
+import next from 'next';
 import { WebSocketServer, WebSocket } from 'ws';
 
 import { setupSocketHandlers } from './socket';
@@ -8,7 +8,7 @@ import { setupSocketHandlers } from './socket';
 const port: number = parseInt(process.env.PORT || '3000', 10);
 const dev: boolean = process.env.NODE_ENV !== 'production';
 const nextApp = next({ dev });
-const nextHandler: NextApiHandler = nextApp.getRequestHandler();
+const nextHandler = nextApp.getRequestHandler();
 
 nextApp
   .prepare()

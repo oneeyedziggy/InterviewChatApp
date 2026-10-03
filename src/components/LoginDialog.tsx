@@ -178,7 +178,7 @@ export const LoginDialog = ({
       const userId = keys.userId || requireUserIdByUsername(username);
       const opaqueIdentity = await buildOpaqueUsernameEnvelope(
         username,
-        keys.serverPublicKey,
+        keys.publicKey,
       );
 
       // First login attempt - send opaque identity and public key

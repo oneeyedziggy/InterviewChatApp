@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,6 +70,30 @@ type incomingEnvelope struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
+type Stats struct {
+	UpgradeAttempts   int64 `json:"upgradeAttempts"`
+	UpgradeFailures   int64 `json:"upgradeFailures"`
+	ActiveConnections int64 `json:"activeConnections"`
+	PeakConnections   int64 `json:"peakConnections"`
+	FramesReceived    int64 `json:"framesReceived"`
+	FramesSent        int64 `json:"framesSent"`
+	BytesReceived     int64 `json:"bytesReceived"`
+	BytesSent         int64 `json:"bytesSent"`
+	WriteFailures     int64 `json:"writeFailures"`
+}
+
+type counters struct {
+	upgradeAttempts   atomic.Int64
+	upgradeFailures   atomic.Int64
+	activeConnections atomic.Int64
+	peakConnections   atomic.Int64
+	framesReceived    atomic.Int64
+	framesSent        atomic.Int64
+	bytesReceived     atomic.Int64
+	bytesSent         atomic.Int64
+	writeFailures     atomic.Int64
+}
+
 type Server struct {
 	upgrader gws.Upgrader
 
@@ -76,6 +101,7 @@ type Server struct {
 	sockets    map[SocketID]*wrappedSocket
 	rooms      map[Room]map[SocketID]struct{}
 	namespaces map[string]*Namespace
+	metrics    counters
 }
 
 func NewServer(_ any) *Server {
@@ -114,13 +140,16 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.metrics.upgradeAttempts.Add(1)
 	if !gws.IsWebSocketUpgrade(r) {
+		s.metrics.upgradeFailures.Add(1)
 		http.Error(w, "websocket upgrade required", http.StatusBadRequest)
 		return
 	}
 
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		s.metrics.upgradeFailures.Add(1)
 		return
 	}
 
@@ -130,6 +159,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.sockets[sock.id] = sock
 	s.mu.Unlock()
+	active := s.metrics.activeConnections.Add(1)
+	for {
+		peak := s.metrics.peakConnections.Load()
+		if active <= peak || s.metrics.peakConnections.CompareAndSwap(peak, active) {
+			break
+		}
+	}
 
 	sock.Emit("connect", map[string]interface{}{"id": string(sock.id)})
 	nsp.invokeConnectionHandlers(sock)
@@ -140,12 +176,30 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) removeSocket(id SocketID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, exists := s.sockets[id]; !exists {
+		return
+	}
 	delete(s.sockets, id)
+	s.metrics.activeConnections.Add(-1)
 	for room, members := range s.rooms {
 		delete(members, id)
 		if len(members) == 0 {
 			delete(s.rooms, room)
 		}
+	}
+}
+
+func (s *Server) Stats() Stats {
+	return Stats{
+		UpgradeAttempts:   s.metrics.upgradeAttempts.Load(),
+		UpgradeFailures:   s.metrics.upgradeFailures.Load(),
+		ActiveConnections: s.metrics.activeConnections.Load(),
+		PeakConnections:   s.metrics.peakConnections.Load(),
+		FramesReceived:    s.metrics.framesReceived.Load(),
+		FramesSent:        s.metrics.framesSent.Load(),
+		BytesReceived:     s.metrics.bytesReceived.Load(),
+		BytesSent:         s.metrics.bytesSent.Load(),
+		WriteFailures:     s.metrics.writeFailures.Load(),
 	}
 }
 
@@ -173,11 +227,16 @@ func (s *Server) leave(id SocketID, room Room) {
 
 func (s *Server) sendToSocketIDs(ids map[SocketID]struct{}, event string, data interface{}) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sockets := make([]*wrappedSocket, 0, len(ids))
 	for id := range ids {
 		if sock := s.sockets[id]; sock != nil {
-			sock.Emit(event, data)
+			sockets = append(sockets, sock)
 		}
+	}
+	s.mu.RUnlock()
+
+	for _, sock := range sockets {
+		sock.Emit(event, data)
 	}
 }
 
@@ -244,12 +303,19 @@ func (n *Namespace) invokeConnectionHandlers(socket ServerSocket) {
 }
 
 type BroadcastOperator struct {
-	server       *Server
-	includeRooms []Room
+	server           *Server
+	includeRooms     []Room
+	excludeSocketIDs map[SocketID]struct{}
 }
 
 func (b *BroadcastOperator) Emit(event string, data interface{}) {
-	ids := b.server.roomSocketIDs(b.includeRooms)
+	ids := b.server.allSocketIDs()
+	if len(b.includeRooms) > 0 {
+		ids = b.server.roomSocketIDs(b.includeRooms)
+	}
+	for id := range b.excludeSocketIDs {
+		delete(ids, id)
+	}
 	b.server.sendToSocketIDs(ids, event, data)
 }
 
@@ -258,6 +324,7 @@ type wrappedSocket struct {
 	server    *Server
 	namespace *Namespace
 	conn      *gws.Conn
+	writeMu   sync.Mutex
 
 	mu                    sync.RWMutex
 	connected             bool
@@ -297,9 +364,22 @@ func (w *wrappedSocket) Emit(eventName string, v ...any) {
 	} else if len(v) > 1 {
 		payload = v
 	}
-	if err := w.conn.WriteJSON(envelope{Event: eventName, Payload: payload}); err != nil {
+	message, err := json.Marshal(envelope{Event: eventName, Payload: payload})
+	if err != nil {
+		w.server.metrics.writeFailures.Add(1)
 		w.notifyError(err)
+		return
 	}
+	w.writeMu.Lock()
+	err = w.conn.WriteMessage(gws.TextMessage, message)
+	w.writeMu.Unlock()
+	if err != nil {
+		w.server.metrics.writeFailures.Add(1)
+		w.notifyError(err)
+		return
+	}
+	w.server.metrics.framesSent.Add(1)
+	w.server.metrics.bytesSent.Add(int64(len(message)))
 }
 
 func (w *wrappedSocket) Timeout(timeout time.Duration) Emitter {
@@ -428,8 +508,8 @@ func (w *wrappedSocket) In(room ...Room) *BroadcastOperator {
 }
 
 func (w *wrappedSocket) Except(room ...Room) *BroadcastOperator {
-	_ = room
-	return &BroadcastOperator{server: w.server}
+	excluded := w.server.roomSocketIDs(room)
+	return &BroadcastOperator{server: w.server, excludeSocketIDs: excluded}
 }
 
 func (w *wrappedSocket) Local() *BroadcastOperator {
@@ -437,7 +517,10 @@ func (w *wrappedSocket) Local() *BroadcastOperator {
 }
 
 func (w *wrappedSocket) Broadcast() *BroadcastOperator {
-	return &BroadcastOperator{server: w.server}
+	return &BroadcastOperator{
+		server:           w.server,
+		excludeSocketIDs: map[SocketID]struct{}{w.id: {}},
+	}
 }
 
 func (w *wrappedSocket) Disconnect(close bool) {
@@ -452,6 +535,8 @@ func (w *wrappedSocket) readLoop() {
 		if err != nil {
 			return
 		}
+		w.server.metrics.framesReceived.Add(1)
+		w.server.metrics.bytesReceived.Add(int64(len(msg)))
 		var incoming incomingEnvelope
 		if err := json.Unmarshal(msg, &incoming); err != nil {
 			w.notifyError(err)

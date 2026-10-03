@@ -14,6 +14,7 @@ export type CreatedServer = {
   label: string;
   sessionId: string;
   username: string;
+  userId: string;
 };
 
 export class ServerCreationError extends Error {}
@@ -62,7 +63,7 @@ export const createServerForCurrentUser = async (
   }
   const opaqueIdentity = await buildOpaqueUsernameEnvelope(
     keys.username,
-    capabilityData.serverPublicKey,
+    keys.publicKey,
   );
   const signature = await signDetachedText(
     `server-create:v1:${capabilityData.capability}`,
@@ -120,5 +121,6 @@ export const createServerForCurrentUser = async (
     label,
     sessionId: data.sessionId,
     username: keys.username,
+    userId: data.userId || userId,
   };
 };

@@ -7,6 +7,7 @@ import {
   encryptPrivateKeyWithPassword,
   isEncryptedPrivateKeyEnvelope,
 } from './crypto/privateKeyEnvelope';
+import { base64ToBytes, bytesToBase64 } from './crypto/base64';
 import {
   brokerClearAllPrivateKeys,
   brokerClearPrivateKey,
@@ -903,6 +904,7 @@ export const clearKeys = (): void => {
 
   const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
 
+  unlockedPrivateKeyCache.clear();
   if (username) {
     void clearCachedPrivateKey(username);
   }
@@ -977,15 +979,25 @@ const bytesToHex = (bytes: Uint8Array): string => {
 
 export const buildOpaqueUsernameEnvelope = async (
   username: string,
-  serverPublicKey: string,
+  ownerPublicKey: string,
 ): Promise<{ usernameHash: string; usernameCiphertext: string }> => {
+  if (!ownerPublicKey || ownerPublicKey.trim() === '') {
+    throw new Error(
+      'Refusing to build a username envelope without the account public key',
+    );
+  }
+
   const encoder = new TextEncoder();
   const digest = await crypto.subtle.digest(
     'SHA-256',
     encoder.encode(username),
   );
   const usernameHash = bytesToHex(new Uint8Array(digest));
-  const usernameCiphertext = await encryptForServer(username, serverPublicKey);
+  const usernameCiphertext = await encryptForAllUsers(
+    username,
+    {},
+    ownerPublicKey,
+  );
   return { usernameHash, usernameCiphertext };
 };
 
@@ -1386,18 +1398,8 @@ type MessageEnvelopeV2 = {
   keyEnvelopes: Record<string, string>;
 };
 
-const bytesToBase64 = (bytes: Uint8Array): string => {
-  let binary = '';
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return btoa(binary);
-};
-
-const base64ToBytes = (value: string): Uint8Array => {
-  const binary = atob(value);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-};
+const toOwnedBytes = (value: ArrayLike<number>): Uint8Array =>
+  Uint8Array.from(value);
 
 const parseMessageEnvelope = (value: string): MessageEnvelopeV2 | null => {
   try {
@@ -1422,14 +1424,18 @@ export const encryptForAllUsers = async (
   plaintext: string,
   userPubKeys: Record<string, string>,
   senderPublicKey?: string,
-  senderUsername?: string,
 ): Promise<string> => {
-  const recipients = new Map<string, string>(Object.entries(userPubKeys));
-  if (senderPublicKey && senderUsername) {
-    recipients.set(senderUsername, senderPublicKey);
+  const recipientKeys = new Set<string>();
+  for (const armoredKey of Object.values(userPubKeys)) {
+    if (typeof armoredKey === 'string' && armoredKey.trim() !== '') {
+      recipientKeys.add(armoredKey);
+    }
+  }
+  if (senderPublicKey && senderPublicKey.trim() !== '') {
+    recipientKeys.add(senderPublicKey);
   }
 
-  if (recipients.size === 0) {
+  if (recipientKeys.size === 0) {
     throw new Error('No encryption recipients available');
   }
 
@@ -1449,15 +1455,17 @@ export const encryptForAllUsers = async (
   );
 
   const keyEnvelopes: Record<string, string> = {};
-  for (const [recipientId, armoredKey] of recipients) {
+  let envelopeIndex = 0;
+  for (const armoredKey of recipientKeys) {
     const encryptionKey = await openpgp.readKey({ armoredKey });
     const keyMessage = await openpgp.createMessage({
       text: bytesToBase64(contentKey),
     });
-    keyEnvelopes[recipientId] = await openpgp.encrypt({
+    keyEnvelopes[String(envelopeIndex)] = await openpgp.encrypt({
       message: keyMessage,
       encryptionKeys: encryptionKey,
     });
+    envelopeIndex += 1;
   }
 
   const envelope: MessageEnvelopeV2 = {
@@ -1504,7 +1512,7 @@ export const decryptMessageForUser = async (
       }
       if (!rawContentKey)
         throw new Error('Message is not encrypted for this user');
-      const contentKey =
+      const contentKey = toOwnedBytes(
         typeof rawContentKey === 'string'
           ? base64ToBytes(rawContentKey)
           : ArrayBuffer.isView(rawContentKey)
@@ -1513,7 +1521,8 @@ export const decryptMessageForUser = async (
                 rawContentKey.byteOffset,
                 rawContentKey.byteLength,
               )
-            : new Uint8Array(rawContentKey as unknown as ArrayBuffer);
+            : new Uint8Array(rawContentKey as unknown as ArrayBuffer),
+      );
       if (contentKey.byteLength !== 32) {
         throw new Error('Message key envelope contained an invalid key length');
       }
@@ -1525,9 +1534,9 @@ export const decryptMessageForUser = async (
         ['decrypt'],
       );
       const plaintext = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv: base64ToBytes(envelope.iv) },
+        { name: 'AES-GCM', iv: toOwnedBytes(base64ToBytes(envelope.iv)) },
         aesKey,
-        base64ToBytes(envelope.ciphertext),
+        toOwnedBytes(base64ToBytes(envelope.ciphertext)),
       );
       return new TextDecoder().decode(plaintext);
     }
@@ -1560,9 +1569,8 @@ export const encryptJsonForCurrentUser = async (
 
   return encryptForAllUsers(
     JSON.stringify(value),
-    { [keys.username]: keys.publicKey },
+    {},
     keys.publicKey,
-    keys.username,
   );
 };
 
@@ -1626,7 +1634,7 @@ const attemptAutoReloginInternal = async (): Promise<string | null> => {
     }
     const opaqueIdentity = await buildOpaqueUsernameEnvelope(
       keys.username,
-      serverPublicKey,
+      keys.publicKey,
     );
 
     // Step 1: Send userId and public key to server
