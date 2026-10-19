@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getAllLocalUsers,
   importSharedAccountPackage,
@@ -16,6 +16,11 @@ const openpgpMock = vi.hoisted(() => ({
 
 vi.mock('openpgp', () => openpgpMock);
 
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
 describe('shared account import', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -26,6 +31,10 @@ describe('shared account import', () => {
       'sender-private-key',
       'recipient-local-password',
     );
+    localStorage.setItem('gpg_username', 'recipient');
+    localStorage.setItem('gpg_session_id', 'recipient-session');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
 
     importSharedAccountPackage('recipient', {
       username: 'sender',
@@ -40,9 +49,16 @@ describe('shared account import', () => {
     expect(metadata).toMatchObject({
       username: 'sender',
       publicKey: 'sender-public-key',
-      serverPublicKey: 'server-public-key',
       privateKeyEncrypted: encryptedPrivateKey,
     });
+    expect(metadata).not.toHaveProperty('serverPublicKey');
+    expect(metadata?.sessionId).toBeUndefined();
+    expect(localStorage.getItem('gpg_user_sender_serverPublicKey')).toBeNull();
+    expect(localStorage.getItem('gpg_user_sender_sessionId')).toBeNull();
+    expect(localStorage.getItem('gpg_username')).toBe('recipient');
+    expect(localStorage.getItem('gpg_session_id')).toBe('recipient-session');
+    expect(Object.values(localStorage)).not.toContain('sender-private-key');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ServerMembership } from './serverRegistry';
 
 const gpgMock = vi.hoisted(() => ({
   attemptAutoRelogin: vi.fn(),
@@ -9,7 +10,7 @@ const gpgMock = vi.hoisted(() => ({
 }));
 
 const serverRegistryMock = vi.hoisted(() => ({
-  loadServerMembershipsAsync: vi.fn(async () => []),
+  loadServerMembershipsAsync: vi.fn(async (): Promise<ServerMembership[]> => []),
 }));
 
 const identityMapMock = vi.hoisted(() => ({
@@ -33,6 +34,8 @@ describe('homeSession', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.clearAllMocks();
+    serverRegistryMock.loadServerMembershipsAsync.mockResolvedValue([]);
+    window.history.replaceState({}, '', '/');
   });
 
   afterEach(() => {
@@ -51,6 +54,63 @@ describe('homeSession', () => {
     });
 
     expect(onForceReauth).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers a missing tenant session for a known authoritative membership', async () => {
+    window.history.replaceState({}, '', '/?server=friendly');
+    gpgMock.loadKeysAsync.mockResolvedValue({ username: 'alice', userId: 'account-id' });
+    gpgMock.hasValidStoredKeys.mockResolvedValue(true);
+    serverRegistryMock.loadServerMembershipsAsync.mockResolvedValue([
+      { serverId: 'tenant-id', alias: 'friendly', label: 'Tenant', username: 'alice', userId: 'account-id' },
+    ]);
+    gpgMock.attemptAutoRelogin.mockResolvedValue('recovered-session');
+    const initializeSession = vi.fn();
+    const onForceReauth = vi.fn();
+    await restoreSession({ isCancelled: () => false, initializeSession, onForceReauth });
+    expect(initializeSession).toHaveBeenCalledWith('recovered-session', 'alice');
+    expect(onForceReauth).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-login a missing session for another tenant or account', async () => {
+    window.history.replaceState({}, '', '/?server=tenant-id');
+    gpgMock.loadKeysAsync.mockResolvedValue({ username: 'alice', userId: 'account-id' });
+    gpgMock.hasValidStoredKeys.mockResolvedValue(true);
+    for (const membership of [
+      { serverId: 'other-tenant', label: 'Other', username: 'alice', userId: 'account-id' },
+      { serverId: 'tenant-id', label: 'Tenant', username: 'alice', userId: 'other-account' },
+    ]) {
+      serverRegistryMock.loadServerMembershipsAsync.mockResolvedValue([membership]);
+      const onForceReauth = vi.fn();
+      await restoreSession({ isCancelled: () => false, initializeSession: vi.fn(), onForceReauth });
+      expect(onForceReauth).toHaveBeenCalledOnce();
+    }
+    expect(gpgMock.attemptAutoRelogin).not.toHaveBeenCalled();
+  });
+
+  it('forces reauth after missing-session recovery fails twice', async () => {
+    window.history.replaceState({}, '', '/?server=tenant-id');
+    gpgMock.loadKeysAsync.mockResolvedValue({ username: 'alice', userId: 'account-id' });
+    gpgMock.hasValidStoredKeys.mockResolvedValue(true);
+    serverRegistryMock.loadServerMembershipsAsync.mockResolvedValue([
+      { serverId: 'tenant-id', label: 'Tenant', username: 'alice', userId: 'account-id' },
+    ]);
+    gpgMock.attemptAutoRelogin.mockResolvedValue(null);
+    const onForceReauth = vi.fn();
+    await restoreSession({ isCancelled: () => false, initializeSession: vi.fn(), onForceReauth });
+    expect(gpgMock.attemptAutoRelogin).toHaveBeenCalledTimes(2);
+    expect(onForceReauth).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an unlocked account on the shell when no server is active', async () => {
+    gpgMock.loadKeysAsync.mockResolvedValue({ username: 'alice', userId: 'account-id' });
+    gpgMock.hasValidStoredKeys.mockResolvedValue(true);
+    serverRegistryMock.loadServerMembershipsAsync.mockResolvedValue([
+      { serverId: 'tenant-id', label: 'Tenant', username: 'alice', userId: 'account-id' },
+    ]);
+    const onForceReauth = vi.fn();
+    await restoreSession({ isCancelled: () => false, initializeSession: vi.fn(), onForceReauth });
+    expect(gpgMock.attemptAutoRelogin).not.toHaveBeenCalled();
+    expect(onForceReauth).not.toHaveBeenCalled();
   });
 
   it('restores the session after a successful verification', async () => {

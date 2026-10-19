@@ -2,7 +2,7 @@ import { type Message, type Messages } from '../../../types/types';
 import { SOCKET_EVENTS } from '../../../constants';
 import { loadKeysAsync, storeUserPublicKeys } from '../../gpg';
 import {
-  requireUserIdByUsername,
+  getUserIdByUsername,
   storeIdentityDirectories,
 } from '../../identityMap';
 import { getBlockedUsers } from '../../userSettings';
@@ -66,7 +66,9 @@ const decryptVisibleRoomMessages = async (
 ): Promise<Messages> => {
   const { username, session, getLeftRooms, getRoomList } = ctx;
   const keys = await loadKeysAsync();
-  const currentUserId = username ? requireUserIdByUsername(username) : '';
+  const currentUserId = username
+    ? keys?.userId || getUserIdByUsername(username) || ''
+    : '';
   const decryptedMessages: Messages = {};
   const candidateRooms = buildCandidateRooms(getRoomList());
 
@@ -266,16 +268,16 @@ export const registerServerMessageHandler = (
       }
 
       if (data?.userPubKeys) {
+        storeUserPublicKeys(
+          data.userPubKeys,
+          (data.userPubKeysUpdatedAt as Record<string, number>) || undefined,
+        );
         await maybeSendIdentityDirectoryRefresh({
           socket,
           authToken,
           username,
           incomingUserPubKeys: data.userPubKeys,
         });
-        storeUserPublicKeys(
-          data.userPubKeys,
-          (data.userPubKeysUpdatedAt as Record<string, number>) || undefined,
-        );
       }
     }),
   );

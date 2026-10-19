@@ -6,7 +6,7 @@ export type WebSocketConnectOptions = {
   auth?: Record<string, unknown>;
 };
 
-type EventHandler = (...args: any[]) => void;
+type EventHandler = (...args: any[]) => void | Promise<void>;
 
 type WireEnvelope = {
   event: string;
@@ -41,6 +41,7 @@ class WebSocketClient implements Socket {
   private manuallyClosed = false;
   private reconnectAttempts = 0;
   private readonly pending: WireEnvelope[] = [];
+  private incomingMessages: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly baseUrl: string,
@@ -134,16 +135,20 @@ class WebSocketClient implements Socket {
         if (!parsed || typeof parsed.event !== 'string') {
           return;
         }
-        if (parsed.event === 'connect') {
-          const maybeId =
-            parsed.payload && typeof parsed.payload === 'object'
-              ? (parsed.payload as { id?: unknown }).id
-              : undefined;
-          if (typeof maybeId === 'string' && maybeId.trim() !== '') {
-            this.id = maybeId;
+        this.incomingMessages = this.incomingMessages.then(async () => {
+          if (this.ws !== ws || this.manuallyClosed) return;
+          if (parsed.event === 'connect') {
+            const maybeId =
+              parsed.payload && typeof parsed.payload === 'object'
+                ? (parsed.payload as { id?: unknown }).id
+                : undefined;
+            if (typeof maybeId === 'string' && maybeId.trim() !== '') {
+              this.id = maybeId;
+            }
           }
-        }
-        this.emitLocal(parsed.event, parsed.payload);
+          const handlers = Array.from(this.handlers.get(parsed.event) || []);
+          await Promise.all(handlers.map((handler) => handler(parsed.payload)));
+        }).catch((error) => this.emitLocal('error', error));
       } catch (error) {
         this.emitLocal('error', error);
       }
@@ -158,14 +163,13 @@ class WebSocketClient implements Socket {
     };
 
     ws.onclose = (event) => {
-      const wasConnected = this.connected;
       this.connected = false;
       if (this.io?.engine) {
         this.io.engine.readyState = 'closed';
       }
       this.emitLocal('disconnect', event.reason || 'socket closed');
 
-      if (!wasConnected || this.manuallyClosed) {
+      if (this.manuallyClosed) {
         return;
       }
 

@@ -48,7 +48,6 @@ const registerBrokerServiceWorker = async ():  Promise<ServiceWorkerRegistration
         try {
           const registration =
             await navigator.serviceWorker.register(candidate);
-          await navigator.serviceWorker.ready;
           return registration;
         } catch (error) {
           errors.push(`${candidate} -> ${formatRegistrationError(error)}`);
@@ -72,10 +71,26 @@ const getBrokerWorker = async ():  Promise<ServiceWorker | null> => {
   const registration = await registerBrokerServiceWorker();
   if (!registration) return null;
 
-  const worker =
-    registration.active || registration.waiting || registration.installing;
+  if (registration.active) return registration.active;
+  const worker = registration.waiting || registration.installing;
+  if (!worker) return null;
+  if (worker.state === 'activated') return worker;
+  if (worker.state === 'redundant') return null;
 
-  return worker ?? null;
+  return new Promise<ServiceWorker | null>((resolve) => {
+    const finish = (activeWorker: ServiceWorker | null) => {
+      window.clearTimeout(timeout);
+      worker.removeEventListener('statechange', onStateChange);
+      resolve(activeWorker);
+    };
+    const onStateChange = () => {
+      if (worker.state === 'activated') finish(worker);
+      if (worker.state === 'redundant') finish(null);
+    };
+    const timeout = window.setTimeout(() => finish(null), 2000);
+    worker.addEventListener('statechange', onStateChange);
+    onStateChange();
+  });
 };
 
 const sendBrokerRequest = async (

@@ -46,6 +46,18 @@ export const apiPath = (path: string): string => {
     : resolvedPath;
 };
 
+export const apiPathForServer = (path: string, serverId: string): string => {
+  const resolvedPath = withBasePath(
+    path.startsWith('/api/') ? path : `/api/${path}`,
+  );
+  const url = new URL(
+    resolvedPath,
+    typeof window === 'undefined' ? 'http://localhost' : window.location.origin,
+  );
+  url.searchParams.set('server', serverId);
+  return `${url.pathname}${url.search}${url.hash}`;
+};
+
 export const withServerQuery = (path: string, serverId?: string): string => {
   if (!serverId) return path;
   const separator = path.includes('?') ? '&' : '?';

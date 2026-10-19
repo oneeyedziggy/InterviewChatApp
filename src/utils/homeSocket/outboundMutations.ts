@@ -11,7 +11,7 @@ import {
   getCurrentUserId,
   getRoomIdByName,
   getRoomNameByRoomId,
-  requireUserIdByUsername,
+  getUserIdByUsername,
 } from '../identityMap';
 import { isDmRoom } from '../dmRooms';
 import { normalizeRoomName } from '../unicode';
@@ -33,7 +33,8 @@ export const maybeGrantNewMemberAccess = async (args: {
   const keys = await loadKeysAsync();
   if (!keys?.privateKey || !keys.publicKey || !authToken || !newUserId) return;
 
-  const userId = keys.userId || requireUserIdByUsername(username);
+  const userId = keys.userId || getUserIdByUsername(username);
+  if (!userId) return;
   const recipients = collectEncryptionRecipients(loadUserPublicKeyEntries());
 
   for (const [room, roomMessages] of Object.entries(getChatValues())) {
@@ -136,7 +137,9 @@ export const ensureDefaultRoomExists = async (args: {
   }
 
   const hashedRoomName = await roomNameHash(DEFAULT_ROOM);
-  const userId = getCurrentUserId() || requireUserIdByUsername(username);
+  const userId =
+    keys.userId || getCurrentUserId() || getUserIdByUsername(username);
+  if (!userId) return;
   const roomDirectoryUpdatedAt = Date.now();
 
   try {

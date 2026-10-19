@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { X } from 'lucide-react';
 import { getRoomDisplayLabel, isDmRoom } from '../../utils/dmRooms';
 import {
   SidePanel,
@@ -154,16 +155,21 @@ export function HomeLeftPanel() {
             title="Hide room"
             aria-label={`Hide ${node.label}`}
             style={{
+              display: 'inline-flex',
+              width: '20px',
+              height: '20px',
+              flex: '0 0 20px',
+              alignItems: 'center',
+              justifyContent: 'center',
               border: 'none',
               background: 'transparent',
               color: 'var(--app-muted)',
               cursor: 'pointer',
-              fontWeight: 700,
               lineHeight: 1,
-              padding: '0 2px',
+              padding: 0,
             }}
           >
-            X
+            <X size={14} strokeWidth={2.5} aria-hidden="true" />
           </button>
         </div>
         {(node.children || []).map((child) => renderTreeNode(child, depth + 1))}
@@ -291,8 +297,8 @@ export function HomeLeftPanel() {
                     position: 'absolute',
                     left: 0,
                     right: 0,
-                    top: '100%',
-                    marginTop: '4px',
+                    bottom: '100%',
+                    marginBottom: '4px',
                     zIndex: 50,
                     border: '1px solid var(--app-border)',
                     borderRadius: '8px',

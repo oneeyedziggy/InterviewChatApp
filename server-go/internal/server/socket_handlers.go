@@ -690,6 +690,10 @@ func isRoomVisibleToUser(all Messages, room, userID string) bool {
 	if userID == "" {
 		return false
 	}
+	if strings.HasPrefix(room, "@dmid:") {
+		first, second, valid := parseDMParticipants(room)
+		return valid && (userID == first || userID == second)
+	}
 	messages, exists := all[room]
 	if !exists || len(messages) == 0 {
 		return true

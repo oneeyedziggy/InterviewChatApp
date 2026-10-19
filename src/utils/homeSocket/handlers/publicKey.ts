@@ -6,9 +6,9 @@ import {
 } from '../../gpg';
 import {
   getRoomNameByRoomId,
+  getUserIdByUsername,
   getUsernameByUserId,
   requireRoomIdByName,
-  requireUserIdByUsername,
 } from '../../identityMap';
 import { maybeSendIdentityDirectoryRefresh } from '../identityDirectory';
 import { maybeGrantNewMemberAccess } from '../outboundMutations';
@@ -55,6 +55,11 @@ const surfaceTransferDmRoom = async (
   if (!keys?.sessionId) {
     return;
   }
+  const userId = keys.userId || getUserIdByUsername(username);
+  if (!userId) {
+    console.warn('[Socket] Cannot request transfer DM without a stored identity');
+    return;
+  }
   let roomId: string | undefined;
   try {
     roomId = requireRoomIdByName(transferDmRoom);
@@ -62,7 +67,7 @@ const surfaceTransferDmRoom = async (
     roomId = undefined;
   }
   socket.emit(SOCKET_EVENTS.CLIENT_REQUEST_ROOM_DATA, {
-    userId: requireUserIdByUsername(username),
+    userId,
     sessionId: keys.sessionId,
     room: transferDmRoom,
     ...(roomId ? { roomId } : {}),
@@ -94,16 +99,15 @@ const storeSenderKeyAndOnboard = async (
         : Date.now(),
   });
 
-  if (hadSenderKey) {
-    return;
-  }
-
   await maybeSendIdentityDirectoryRefresh({
     socket,
     authToken,
     username,
     incomingUserPubKeys: nextUserPubKeys,
   });
+  if (hadSenderKey) {
+    return;
+  }
   const grantArgs = {
     socket,
     authToken,

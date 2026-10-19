@@ -1199,6 +1199,8 @@ const MessageWithReplies = ({
             <div
               style={{
                 marginLeft: 'auto',
+                marginTop: '2px',
+                marginRight: '3px',
                 position: 'relative',
                 flexShrink: 0,
               }}
@@ -1213,7 +1215,7 @@ const MessageWithReplies = ({
                   border: '1px solid #b8c8de',
                   borderRadius: '6px',
                   padding: isCompactMessage ? '0 4px' : '0 6px',
-                  height: isCompactMessage ? '18px' : '22px',
+                  height: isCompactMessage ? '16px' : '20px',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',

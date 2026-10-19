@@ -11,16 +11,30 @@ import {
 import { isUserBlocked } from '../utils/userSettings';
 
 const MenuButton = styled.button`
-  border: none;
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 19px;
+  flex: 0 0 21px;
+  border: 1px solid #aab5c5;
+  border-radius: 5px;
+  background: #f3f6fb;
   cursor: pointer;
-  padding: 0 4px;
-  font-size: 14px;
+  padding: 0;
+  font-size: 17px;
+  font-weight: 800;
   line-height: 1;
-  color: var(--app-muted);
+  color: #14253d;
 
   &:hover {
-    color: var(--brand-cyan);
+    background: #d8e4f4;
+    border-color: #14253d;
+  }
+
+  &:focus-visible {
+    outline: 2px solid #14253d;
+    outline-offset: 2px;
   }
 `;
 
@@ -29,7 +43,6 @@ const UserName = styled.span`
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition: color 120ms ease;
 `;
 
 const UserRow = styled.div<{
@@ -40,7 +53,8 @@ const UserRow = styled.div<{
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border: 1px solid ${(p) => (p.$blocked ? '#c8cfd9' : '#556')};
+  border: 0;
+  border-radius: 5px;
   background-color: ${(p) =>
     p.$blocked ? '#f2f4f7' : p.$isSelf ? '#b8ccee' : '#e5edf9'};
   color: ${(p) =>
@@ -58,21 +72,15 @@ const UserRow = styled.div<{
   position: relative;
 
   &:hover {
-    color: ${(p) => (p.$blocked ? '#4e5d73' : 'inherit')};
-
-    ${UserName} {
-      color: ${(p) =>
-        p.$blocked
-          ? 'color-mix(in srgb, var(--app-muted) 72%, var(--app-fg) 28%)'
-          : 'var(--brand-cyan)'};
-    }
+    background-color: ${(p) =>
+      p.$blocked ? '#e6e9ed' : p.$isSelf ? '#a8bfdc' : '#d7e2f1'};
   }
 `;
 
 const SectionLabel = styled.div`
   font-size: 11px;
   color: #666;
-  margin-top: 4px;
+  margin-top: 2px;
   margin-bottom: 2px;
   font-weight: bold;
 `;
@@ -151,6 +159,7 @@ const UserListEntry = ({
       <MenuButton
         type="button"
         aria-label={`Actions for ${user}`}
+        title={`Actions for ${user}`}
         onClick={(e: MouseEvent<HTMLButtonElement>) => {
           e.stopPropagation();
           const anchor = (

@@ -191,6 +191,8 @@ func (cs *ChatServer) handleSendPublicKey(socket wsrt.ServerSocket, data interfa
 		return
 	}
 
+	cs.registerUserFromAuth(auth.UserID, socketIDStr)
+
 	var dmRoomForTransfer string
 	var dmMessagesForTarget []Message
 	var dmMessagesForSender []Message
@@ -497,6 +499,9 @@ func (cs *ChatServer) handleRequestInitialData(socket wsrt.ServerSocket, data in
 	}
 	if selectedRoom == "" {
 		selectedRoom = defaultRoom
+	}
+	if !isRoomVisibleToUser(cs.messages, selectedRoom, requestUserID) {
+		selectedRoom = ""
 	}
 	selectedMessages, hasMore := paginateMessagesBefore(cs.messages[selectedRoom], requestUserID, cs.userJoinedAt[requestUserID], defaultMessageWindowSize, 0, "")
 	messagesCopy := make(Messages)

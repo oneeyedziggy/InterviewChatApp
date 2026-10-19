@@ -13,7 +13,7 @@ import {
   getRoomDirectoryTimestampSnapshot,
   getUserDirectorySnapshot,
   getUserDirectoryTimestampSnapshot,
-  requireUserIdByUsername,
+  getUserIdByUsername,
   storeIdentityDirectories,
 } from '../identityMap';
 import { asRecord, parsePositiveTimestamp } from './payloadGuards';
@@ -282,7 +282,10 @@ const buildIdentityDirectoryRefreshPayload = async (
 
   const userDirectory = getUserDirectorySnapshot();
   const currentUserId =
-    keys.userId || getCurrentUserId() || requireUserIdByUsername(keys.username);
+    keys.userId || getCurrentUserId() || getUserIdByUsername(keys.username);
+  if (!currentUserId) {
+    return null;
+  }
   if (currentUserId && !userDirectory[currentUserId]) {
     userDirectory[currentUserId] = keys.username;
   }
@@ -328,12 +331,17 @@ export const maybeSendIdentityDirectoryRefresh = async (args: {
     return;
   }
 
+  const keys = await loadKeysAsync();
+  const currentUserId =
+    keys?.userId || getCurrentUserId() || getUserIdByUsername(username);
+  if (!currentUserId) {
+    return;
+  }
+
   const newUserIds = Array.from(
     parseUserIdsFromPubKeyPayload(incomingUserPubKeys),
   ).filter(
-    (userId) =>
-      userId !== getCurrentUserId() &&
-      userId !== requireUserIdByUsername(username),
+    (userId) => userId !== currentUserId,
   );
   if (newUserIds.length === 0) {
     return;
@@ -347,7 +355,7 @@ export const maybeSendIdentityDirectoryRefresh = async (args: {
     return;
   }
 
-  const userId = requireUserIdByUsername(username);
+  const userId = currentUserId;
   try {
     await emitSignedMutation(socket, {
       event: SOCKET_EVENTS.CLIENT_IDENTITY_DIRECTORY_REFRESH,

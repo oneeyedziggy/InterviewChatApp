@@ -2,6 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HomeRightPanel } from './HomeRightPanel';
+import { withBasePath } from '@/utils/appPaths';
+
+vi.mock('@/utils/appPaths', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/utils/appPaths')>();
+  return { ...actual, withBasePath: vi.fn(actual.withBasePath) };
+});
 
 const presenceMock = vi.hoisted(() => ({
   useHomePresence: vi.fn(),
@@ -90,4 +96,35 @@ describe('HomeRightPanel', () => {
     await user.click(screen.getByRole('button', { name: /logout/i }));
     expect(presenceState.handleLogout).toHaveBeenCalledTimes(1);
   });
+
+  it('places invite actions before the Users heading in one grouped row', () => {
+    const { container } = render(<HomeRightPanel />);
+    const inviteActions = container.querySelector('.app-invite-actions');
+    const usersHeading = screen.getByText('Users');
+
+    expect(inviteActions).not.toBeNull();
+    expect(inviteActions?.querySelectorAll('button')).toHaveLength(2);
+    expect(
+      inviteActions!.compareDocumentPosition(usersHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it.each(['/diagrams/', '/chatApp/diagrams/'])(
+    'opens %s in a separate tab without logging out',
+    async (href) => {
+      vi.mocked(withBasePath).mockReturnValueOnce(href);
+      render(<HomeRightPanel />);
+
+      const link = screen.getByRole('link', { name: 'Architecture diagrams' });
+      expect(link).toHaveAttribute('href', href);
+      expect(withBasePath).toHaveBeenCalledWith('/diagrams/');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+
+      link.addEventListener('click', (event) => event.preventDefault());
+      await userEvent.setup().click(link);
+      expect(presenceState.handleLogout).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -103,7 +103,7 @@ export const doSendAction = async ({
   let userId: string;
   let roomId: string;
   try {
-    userId = requireUserIdByUsername(username);
+    userId = keys?.userId || requireUserIdByUsername(username);
     roomId = requireRoomIdByName(currentRoom);
   } catch (error) {
     console.error('[doSend] ✗ Missing identity mapping:', error);

@@ -115,18 +115,6 @@ export const useHomeSessionLifecycle = ({
   ) => {
     console.log('[Home] Initializing session for user:', usernameToSet);
 
-    const socket = getSocket();
-    if (socket && socket.connected) {
-      console.log('[Home] Disconnecting existing socket for re-init');
-      socket.disconnect();
-      setSocket(undefined);
-    }
-    if ((window as any).__socket && (window as any).__socket.connected) {
-      console.log('[Home] Disconnecting window socket for re-init');
-      (window as any).__socket.disconnect();
-      (window as any).__socket = undefined;
-    }
-
     setAuthToken(sessionIdToVerify);
     setUsername(usernameToSet);
   };
@@ -233,7 +221,7 @@ export const useHomeSessionLifecycle = ({
       'username:',
       username,
     );
-    if (authToken) {
+    if (authToken && username) {
       setIsSwitchingServer(false);
       console.log('[Home] Calling socketInitializer');
       void initializeHomeSocket({
@@ -275,7 +263,6 @@ export const useHomeSessionLifecycle = ({
       effectDisposed = true;
       disposeSocket?.();
     };
-    // Match previous dependency semantics (authToken-only trigger)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authToken]);
+  }, [authToken, username]);
 };

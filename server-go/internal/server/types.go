@@ -121,6 +121,7 @@ type CreateInviteRequest struct {
 }
 
 type CreateInviteResponse struct {
+	InviteID  string `json:"inviteId,omitempty"`
 	Code      string `json:"code,omitempty"`
 	ExpiresAt int64  `json:"expiresAt,omitempty"`
 	Error     string `json:"error,omitempty"`

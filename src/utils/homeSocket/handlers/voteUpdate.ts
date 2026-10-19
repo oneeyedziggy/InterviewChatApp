@@ -1,7 +1,7 @@
 import { type Message, type Messages } from '../../../types/types';
 import { SOCKET_EVENTS } from '../../../constants';
 import { decryptMessageForUser, loadKeysAsync } from '../../gpg';
-import { requireUserIdByUsername } from '../../identityMap';
+import { getUserIdByUsername } from '../../identityMap';
 import { getBlockedUsers } from '../../userSettings';
 import {
   filterBlockedAuthors,
@@ -49,7 +49,9 @@ export const registerVoteUpdateHandler = (
         return;
       }
       const keys = await loadKeysAsync();
-      const currentUserId = username ? requireUserIdByUsername(username) : '';
+      const currentUserId = username
+        ? keys?.userId || getUserIdByUsername(username) || ''
+        : '';
       const decryptedMessages: Messages = {};
       const candidateRooms = buildCandidateRooms(getRoomList());
 

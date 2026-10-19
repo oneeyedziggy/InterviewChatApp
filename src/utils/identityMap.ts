@@ -382,7 +382,10 @@ export const requireRoomIdByName = (roomName: string): string => {
     throw new Error(`Missing roomId mapping for room: ${roomName}`);
   }
 
-  if (roomName.startsWith('@dmid:')) {
+  if (
+    roomName.startsWith('@dmid:') ||
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(roomName)
+  ) {
     return roomName;
   }
 

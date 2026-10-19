@@ -20,7 +20,7 @@ type RestoreSessionOptions = {
   onForceReauth: () => void;
 };
 
-const sessionIdPreview = (value?: string) =>
+export const sessionIdPreview = (value?: string) =>
   value ? `${value.slice(0, 8)}…(len ${value.length})` : '<empty>';
 
 const activeServerIdFromUrl = () =>
@@ -72,12 +72,30 @@ export const restoreSession = async ({
     // An unlocked account with no server memberships stays on the home shell
     // so the user can create or join a server.
     const memberships = await loadServerMembershipsAsync();
-    if (memberships.length === 0) {
+    const activeServerId = activeServerIdFromUrl().trim();
+    if (memberships.length === 0 || !activeServerId) {
       console.log(
         '[Home] No sessionId and no server memberships yet; staying on home shell',
       );
       return;
     }
+    const membership = memberships.find(
+      (entry) => entry.userId === storedKeys?.userId &&
+        (entry.serverId === activeServerId || entry.alias === activeServerId),
+    );
+    if (membership && storedKeys) {
+      try {
+        const newSessionId = await attemptAutoReloginWithRetry();
+        if (isCancelled()) return;
+        if (newSessionId) {
+          initializeSession(newSessionId, storedKeys.username);
+          return;
+        }
+      } catch (error) {
+        console.warn('[Home] Missing tenant session recovery failed:', error);
+      }
+    }
+    if (isCancelled()) return;
     console.warn(
       '[Home] Forcing re-auth: account has server memberships but no sessionId for this server',
       { activeServerId: activeServerIdFromUrl(), memberships },

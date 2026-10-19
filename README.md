@@ -73,6 +73,61 @@ cd server-go
 
 Note: `out` reflects the most recent build mode. Rebuild with the mode you plan to test or deploy.
 
+### Browser Smoke Test
+
+Requires Node 20.9+ and Go on `PATH` (or an absolute executable in `GO_CMD`).
+On Windows PowerShell, use `npm.cmd` and `npx.cmd` if execution policy blocks the script shims.
+
+```sh
+npm install
+npx playwright install chromium
+npm run test:e2e
+```
+
+The command builds a root-mounted Next static export with `APP_BASE_PATH` empty.
+It uses webpack in a new `.e2e-build-*` workspace, copying current source and build/type-check
+configuration and linking installed dependencies, so the shared `.next` cache is untouched.
+Type checking remains enabled. Playwright serves the generated export from that temporary
+workspace, then removes it after teardown. The existing `out/` export is not replaced.
+
+Playwright runs one scenario with no retries and two independent Chromium contexts, service
+workers enabled, and strict server signature verification unchanged. Alice and Bob create their
+own keys through login UI, join with a real UI-generated invite, exchange messages in an existing
+named room and canonical DM, then reload/unlock and verify plaintext names, authors, and history.
+
+Each worker compiles its own Go binary into a fresh OS temporary directory, uses that directory
+as `SERVER_DATA_DIR`, sets `OUT_DIR` to the temporary export (or root `out/` for the prebuilt command), chooses an unused port, and waits
+for HTTP readiness. It never reuses external servers, real databases, or reset scripts. Teardown
+awaits only its owned process before removing its own data directory, including setup failures.
+On Windows process termination closes database handles; on POSIX SIGTERM permits graceful shutdown.
+
+```sh
+npm run test:e2e:prebuilt
+node --test e2e/fixtures/server.test.mjs
+npx playwright show-report
+```
+
+The prebuilt command explicitly skips building and rejects non-root exports. The Node fixture
+checks also require a root export and Go. Failure traces, screenshots, browser diagnostics, and
+server logs are written under ignored `test-results/` and `playwright-report/`. These artifacts
+contain test-only account and message details; do not publish them as production telemetry.
+
+### Two-User Regression Tests
+
+```sh
+npx vitest run src/utils/gpg-zero-knowledge.test.ts src/utils/homeSocket/two-user-plaintext.test.ts
+cd server-go
+go test ./internal/server -run TwoUser -count=1
+```
+
+These tests need no Next build or external server. The crypto tests use distinct RSA-2048
+keys and check usernames, room names, reciprocal messages, missing recipients, and tampering.
+The client tests use actual encryption, signing, strict server verification, metadata refresh,
+and send/receive/history handlers with serially isolated client storage and simulated transport.
+Go tests cover signed mutations, room IDs, metadata, persistence, and DM participant checks
+against temporary SQLite. Fake sockets do not establish actual network delivery or rendering;
+the browser smoke test covers those paths with real account registration and invitations.
+
 ### Server Key Rotation
 
 Use the root helper script to rotate server GPG keys:

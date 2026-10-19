@@ -69,14 +69,15 @@ func (cs *ChatServer) handleCreateInvite(w http.ResponseWriter, r *http.Request)
 
 	now := time.Now().Unix()
 	expiresAt := time.Now().Add(InviteTTL).Unix()
-	if err := cs.store.CreateInvite(hashInviteCode(code), req.UserID, now, expiresAt); err != nil {
+	inviteID, err := cs.store.CreateInvite(hashInviteCode(code), req.UserID, now, expiresAt)
+	if err != nil {
 		log.Printf("[handleCreateInvite] ✗ Failed to persist invite: %v", err)
 		json.NewEncoder(w).Encode(CreateInviteResponse{Error: "Failed to create invite"})
 		return
 	}
 
 	log.Printf("[handleCreateInvite] ✓ Invite created by user: %s", req.UserID)
-	json.NewEncoder(w).Encode(CreateInviteResponse{Code: code, ExpiresAt: expiresAt})
+	json.NewEncoder(w).Encode(CreateInviteResponse{InviteID: inviteID, Code: code, ExpiresAt: expiresAt})
 }
 
 func (cs *ChatServer) handleListInvites(w http.ResponseWriter, r *http.Request) {

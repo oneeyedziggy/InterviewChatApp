@@ -1,8 +1,8 @@
 import { SOCKET_EVENTS } from '../../../constants';
-import { loadUserPublicKeyEntries, storeUserPublicKeys } from '../../gpg';
+import { loadKeysAsync, loadUserPublicKeyEntries, storeUserPublicKeys } from '../../gpg';
 import {
+  getUserIdByUsername,
   getUsernameByUserId,
-  requireUserIdByUsername,
 } from '../../identityMap';
 import { isSyntheticSystemDmRoom, normalizeRoomListEntries } from '../roomKeys';
 import { withVerifiedPayload } from '../serverSignature';
@@ -25,7 +25,7 @@ export const registerAccessRequestHandlers = (
   // Shows the request in a DM named after the other user.
   on(
     SOCKET_EVENTS.SERVER_ACCESS_REQUEST,
-    withVerifiedPayload(SOCKET_EVENTS.SERVER_ACCESS_REQUEST, (data) => {
+    withVerifiedPayload(SOCKET_EVENTS.SERVER_ACCESS_REQUEST, async (data) => {
       if (!data?.requestAccess) {
         return;
       }
@@ -80,7 +80,9 @@ export const registerAccessRequestHandlers = (
       }
 
       // Only the original sender adds the room here; the requester gets it via SERVER_MESSAGE.
-      if (originalSenderId === requireUserIdByUsername(username)) {
+      const keys = await loadKeysAsync();
+      const currentUserId = keys?.userId || getUserIdByUsername(username);
+      if (currentUserId && originalSenderId === currentUserId) {
         setRoomList((prev) => {
           if (isSyntheticSystemDmRoom(dmRoom) || prev.includes(dmRoom)) {
             return prev;

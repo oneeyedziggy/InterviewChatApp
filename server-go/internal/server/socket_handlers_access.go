@@ -255,7 +255,7 @@ func (cs *ChatServer) handleGrantAccess(socket wsrt.ServerSocket, data interface
 		log.Printf("[%s] ✗ Invalid grant access format", socketIDStr)
 		return
 	}
-	_, verified := cs.verifySignedMutation(socket, grantMap, EventClientGrantAccess, []string{"requestingUserId", "originalRoomId", "messageTimestamp", "encryptedMessage"})
+	auth, verified := cs.verifySignedMutation(socket, grantMap, EventClientGrantAccess, []string{"requestingUserId", "originalRoomId", "messageTimestamp", "encryptedMessage"})
 	if !verified {
 		return
 	}
@@ -298,7 +298,7 @@ func (cs *ChatServer) handleGrantAccess(socket wsrt.ServerSocket, data interface
 	if messages, exists := cs.messages[originalRoom]; exists && messages != nil {
 		log.Printf("[%s] Room %s exists with %d messages", socketIDStr, originalRoom, len(messages))
 		for i := range messages {
-			if messages[i].Timestamp == messageTimestamp {
+			if messages[i].Timestamp == messageTimestamp && messages[i].UserID == auth.UserID {
 				foundTargetMessage = true
 				// Initialize versions array if needed
 				if messages[i].Versions == nil {
@@ -347,7 +347,7 @@ func (cs *ChatServer) handleGrantAccess(socket wsrt.ServerSocket, data interface
 	originalSenderID := ""
 	if messages, exists := cs.messages[originalRoom]; exists {
 		for _, msg := range messages {
-			if msg.Timestamp == messageTimestamp {
+			if msg.Timestamp == messageTimestamp && msg.UserID == auth.UserID {
 				originalSenderForDM = msg.UserID
 				originalSenderID = msg.UserID
 				log.Printf("[%s] ✓ Found original sender: %s", socketIDStr, originalSenderForDM)

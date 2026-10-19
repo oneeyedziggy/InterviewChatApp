@@ -8,10 +8,6 @@ cd "$DIR"
 DEPLOY_BASE_PATH="/chatApp"
 TAR_FILE="dist/deploy.tar.gz"
 
-# Cleanup previous build artifacts to ensure a fresh, clean build
-echo "Cleaning up previous build directories..."
-rm -rf out bin dist/deploy.tar.gz
-
 # ----------------------- Node build -----------------------
 if [ -f package.json ]; then
   if [ "${FORCE_NPM_CI:-0}" = "1" ]; then
@@ -21,6 +17,10 @@ if [ -f package.json ]; then
     echo "Installing/updating Node dependencies without deleting node_modules..."
     npm install --no-audit --no-fund
   fi
+
+  # Keep the last deployable artifact if dependency installation fails.
+  echo "Cleaning up previous build directories..."
+  rm -rf out bin dist/deploy.tar.gz
 
   echo "Running Next.js build for deploy path $DEPLOY_BASE_PATH..."
   APP_BASE_PATH="$DEPLOY_BASE_PATH" node --input-type=module -e "const cfgMod = await import('./next.config.mjs'); const cfg = cfgMod.default ?? cfgMod; console.log('[build] next.config basePath=', cfg.basePath || '<empty>', 'assetPrefix=', cfg.assetPrefix || '<empty>');"

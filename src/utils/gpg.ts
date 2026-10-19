@@ -1,5 +1,5 @@
 import * as openpgp from 'openpgp';
-import { apiPath, withBasePath } from '@/utils/appPaths';
+import { apiPath, apiPathForServer, withBasePath } from '@/utils/appPaths';
 import { getDmParticipants, isDmRoom } from './dmRooms';
 import { getBlockedUsers } from './userSettings';
 import {
@@ -16,7 +16,6 @@ import {
 } from './privateKeyBroker';
 import {
   getUserIdByUsername,
-  requireUserIdByUsername,
   storeIdentityDirectories,
 } from '@/utils/identityMap';
 import {
@@ -66,12 +65,17 @@ const activeServerId = (): string => {
 
 const serverStorageId = (routeValue: string): string => {
   if (!routeValue) return '';
-  return (
-    loadServerMemberships().find(
-      (membership) =>
-        membership.serverId === routeValue || membership.alias === routeValue,
-    )?.serverId || routeValue
+  const memberships = loadServerMemberships();
+  const exact = memberships.find(
+    (membership) => membership.serverId === routeValue,
   );
+  if (exact) return exact.serverId;
+  const matches = new Set(
+    memberships
+      .filter((membership) => membership.alias === routeValue)
+      .map((membership) => membership.serverId),
+  );
+  return matches.size === 1 ? Array.from(matches)[0] : routeValue;
 };
 
 const activeServerStorageId = (): string => {
@@ -408,6 +412,35 @@ export const storeKeysForUser = async (
     }
   }
 
+  const serverId = activeServerStorageId();
+  const unlockedPrivateKey = await getCachedPrivateKey(keys.username);
+  if (keys.sessionId && serverId && unlockedPrivateKey) {
+    const sessions = await readEncryptedServerSessions(
+      keys.username,
+      unlockedPrivateKey,
+    );
+    sessions[serverId] = keys.sessionId;
+    await writeEncryptedServerSessions(
+      keys.username,
+      keys.publicKey,
+      unlockedPrivateKey,
+      sessions,
+    );
+    if (keys.serverPublicKey) {
+      const serverPublicKeys = await readEncryptedServerPublicKeys(
+        keys.username,
+        unlockedPrivateKey,
+      );
+      serverPublicKeys[serverId] = keys.serverPublicKey;
+      await writeEncryptedServerPublicKeys(
+        keys.username,
+        keys.publicKey,
+        unlockedPrivateKey,
+        serverPublicKeys,
+      );
+    }
+  }
+
   // Add to all users list
   const allUsers = getAllLocalUsers();
   if (!allUsers.includes(keys.username)) {
@@ -510,6 +543,7 @@ export const updateStoredSessionForUser = async (params: {
   userId?: string;
   serverPublicKey?: string;
   serverId?: string;
+  makeActive?: boolean;
 }): Promise<void> => {
   if (typeof window === 'undefined') return;
 
@@ -540,21 +574,23 @@ export const updateStoredSessionForUser = async (params: {
       );
     }
   }
-  localStorage.setItem(getUserStorageKey(username, 'sessionId'), sessionId);
-  localStorage.setItem(STORAGE_KEYS.USERNAME, username);
-  localStorage.setItem(STORAGE_KEYS.SESSION_ID, sessionId);
+  if (params.makeActive !== false) {
+    localStorage.setItem(getUserStorageKey(username, 'sessionId'), sessionId);
+    localStorage.setItem(STORAGE_KEYS.USERNAME, username);
+    localStorage.setItem(STORAGE_KEYS.SESSION_ID, sessionId);
 
-  if (metadata) {
-    localStorage.setItem(
-      STORAGE_KEYS.PRIVATE_KEY,
-      metadata.privateKeyEncrypted,
-    );
-    localStorage.setItem(STORAGE_KEYS.PUBLIC_KEY, metadata.publicKey);
-  }
+    if (metadata) {
+      localStorage.setItem(
+        STORAGE_KEYS.PRIVATE_KEY,
+        metadata.privateKeyEncrypted,
+      );
+      localStorage.setItem(STORAGE_KEYS.PUBLIC_KEY, metadata.publicKey);
+    }
 
-  if (userId) {
-    localStorage.setItem(getUserStorageKey(username, 'userId'), userId);
-    localStorage.setItem(STORAGE_KEYS.USER_ID, userId);
+    if (userId) {
+      localStorage.setItem(getUserStorageKey(username, 'userId'), userId);
+      localStorage.setItem(STORAGE_KEYS.USER_ID, userId);
+    }
   }
 };
 
@@ -720,9 +756,7 @@ export const loadKeysForUserAsync = async (
     username,
     privateKey,
   );
-  const sessionId = serverId
-    ? sessions[serverId] || metadata.sessionId
-    : metadata.sessionId;
+  const sessionId = serverId ? sessions[serverId] : metadata.sessionId;
   const serverPublicKey = serverId ? serverPublicKeys[serverId] || '' : '';
   return {
     username,
@@ -788,9 +822,7 @@ export const loadKeysAsync = async (): Promise<StoredKeys | null> => {
     username,
     privateKey,
   );
-  const sessionId = serverId
-    ? sessions[serverId] || metadata.sessionId
-    : metadata.sessionId;
+  const sessionId = serverId ? sessions[serverId] : metadata.sessionId;
   const serverPublicKey = serverId ? serverPublicKeys[serverId] || '' : '';
   return {
     username,
@@ -799,6 +831,35 @@ export const loadKeysAsync = async (): Promise<StoredKeys | null> => {
     publicKey: metadata.publicKey,
     serverPublicKey,
     sessionId,
+  };
+};
+
+export const loadKeysForServerAsync = async (
+  serverId: string,
+): Promise<StoredKeys | null> => {
+  if (typeof window === 'undefined' || !serverId) return null;
+
+  const username = localStorage.getItem(STORAGE_KEYS.USERNAME);
+  if (!username) return null;
+  const metadata = loadStoredKeyMetadataForUser(username);
+  if (!metadata) return null;
+
+  const privateKey = await getCachedPrivateKey(username);
+  if (!privateKey) return null;
+
+  const storageId = explicitServerStorageId(serverId);
+  const sessions = await readEncryptedServerSessions(username, privateKey);
+  const serverPublicKeys = await readEncryptedServerPublicKeys(
+    username,
+    privateKey,
+  );
+  return {
+    username,
+    userId: metadata.userId,
+    privateKey,
+    publicKey: metadata.publicKey,
+    serverPublicKey: serverPublicKeys[storageId] || '',
+    sessionId: sessions[storageId],
   };
 };
 
@@ -962,8 +1023,14 @@ export const deleteUserKeys = (username: string): void => {
 /**
  * Get server's public key from the server
  */
-export const fetchServerPublicKey = async (): Promise<string> => {
-  const response = await fetch(apiPath('/api/server-public-key'));
+export const fetchServerPublicKey = async (
+  serverId?: string,
+): Promise<string> => {
+  const response = await fetch(
+    serverId
+      ? apiPathForServer('/api/server-public-key', serverId)
+      : apiPath('/api/server-public-key'),
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch server public key');
   }
@@ -1005,20 +1072,24 @@ const submitChallengeResponse = async (
   userId: string,
   decryptedUUID: string,
   serverPublicKey: string,
+  serverId?: string,
 ): Promise<{ sessionId?: string; userId: string; error?: string }> => {
   const encryptedResponse = await encryptForServer(
     decryptedUUID,
     serverPublicKey,
   );
 
-  const verifyResponse = await fetch(apiPath('/api/login'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      userId,
-      encryptedUUID: encryptedResponse,
-    }),
-  });
+  const verifyResponse = await fetch(
+    serverId ? apiPathForServer('/api/login', serverId) : apiPath('/api/login'),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        encryptedUUID: encryptedResponse,
+      }),
+    },
+  );
 
   if (!verifyResponse.ok) {
     return { error: 'Challenge-response request failed', userId: '' };
@@ -1040,19 +1111,21 @@ export const verifyChallengeResponseWithKeyRefresh = async (params: {
   userId: string;
   decryptedUUID: string;
   serverPublicKey: string;
+  serverId?: string;
 }): Promise<{
   sessionId?: string;
   userId: string;
   error?: string;
   serverPublicKey: string;
 }> => {
-  const { userId, decryptedUUID } = params;
+  const { userId, decryptedUUID, serverId } = params;
   let currentServerPublicKey = params.serverPublicKey;
 
   const initial = await submitChallengeResponse(
     userId,
     decryptedUUID,
     currentServerPublicKey,
+    serverId,
   );
   if (initial.sessionId) {
     return {
@@ -1063,13 +1136,14 @@ export const verifyChallengeResponseWithKeyRefresh = async (params: {
   }
 
   try {
-    const refreshedServerPublicKey = await fetchServerPublicKey();
+    const refreshedServerPublicKey = await fetchServerPublicKey(serverId);
     if (refreshedServerPublicKey !== currentServerPublicKey) {
       currentServerPublicKey = refreshedServerPublicKey;
       const retried = await submitChallengeResponse(
         userId,
         decryptedUUID,
         currentServerPublicKey,
+        serverId,
       );
       if (retried.sessionId) {
         return {
@@ -1567,11 +1641,7 @@ export const encryptJsonForCurrentUser = async (
     throw new Error('Missing local key material for at-rest encryption');
   }
 
-  return encryptForAllUsers(
-    JSON.stringify(value),
-    {},
-    keys.publicKey,
-  );
+  return encryptForAllUsers(JSON.stringify(value), {}, keys.publicKey);
 };
 
 export const decryptJsonForCurrentUser = async <T>(
@@ -1602,12 +1672,6 @@ const attemptAutoReloginInternal = async (): Promise<string | null> => {
     }
 
     console.log('[GPG] Attempting auto-relogin for user:', keys.username);
-    // Use the authoritative userId from storage. Falling back to the local
-    // identity map (and worse, minting a brand-new random id via
-    // requireUserIdByUsername) here would send the server a userId that
-    // doesn't match this account's real registration, which the server
-    // treats as a distinct/unknown user and rejects with "Username already
-    // exists" — forcing a spurious logout.
     const locallyMappedUserId = getUserIdByUsername(keys.username);
     if (
       keys.userId &&
@@ -1619,10 +1683,13 @@ const attemptAutoReloginInternal = async (): Promise<string | null> => {
         { 'keys.userId': keys.userId, locallyMappedUserId },
       );
     }
-    const userId =
-      keys.userId ||
-      locallyMappedUserId ||
-      requireUserIdByUsername(keys.username);
+    const userId = keys.userId;
+    if (!userId) {
+      console.warn(
+        '[GPG] Auto-relogin requires an authoritative stored userId',
+      );
+      return null;
+    }
     let serverPublicKey = keys.serverPublicKey;
     try {
       const activeServerPublicKey = await fetchServerPublicKey();

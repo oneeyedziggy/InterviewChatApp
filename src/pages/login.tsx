@@ -115,7 +115,7 @@ const LoginPage = () => {
   const inviteServerLabel =
     typeof window === 'undefined'
       ? ''
-      : new URLSearchParams(window.location.search)
+      : new URLSearchParams(window.location.hash.slice(1))
           .get('serverLabel')
           ?.trim() || '';
   const [username, setUsername] = useState<string>('');

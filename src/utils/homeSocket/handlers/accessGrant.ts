@@ -1,8 +1,8 @@
 import { type Message } from '../../../types/types';
 import { decryptMessageForUser, loadKeysAsync } from '../../gpg';
 import {
+  getUserIdByUsername,
   getRoomNameByRoomId,
-  requireUserIdByUsername,
 } from '../../identityMap';
 import { getBlockedUsers } from '../../userSettings';
 import { isDmRoom, isUserInDmRoom } from '../../dmRooms';
@@ -94,7 +94,11 @@ const applyServerGrantedMessages = async (
     console.error('[AccessGrant] No keys available for decryption');
     return;
   }
-  const currentUserId = requireUserIdByUsername(username);
+  const currentUserId = keys.userId || getUserIdByUsername(username);
+  if (!currentUserId) {
+    console.warn('[AccessGrant] Cannot decrypt granted messages without a stored identity');
+    return;
+  }
   const decryptedMessages = await decryptGrantedMessages(
     roomMessages,
     keys.privateKey,

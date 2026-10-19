@@ -24,9 +24,32 @@ import { cn } from '@/utils/cn';
 
 const HORIZONTAL_SPLIT_KEY_LEFT = 'home.layout.leftWidthPct';
 const HORIZONTAL_SPLIT_KEY_RIGHT = 'home.layout.rightWidthPct';
+const HORIZONTAL_SEPARATOR_SPACE = 8;
+const RIGHT_PANEL_MIN_WIDTH = 200;
 
 const clamp = (value: number, min: number, max: number) => {
   return Math.min(max, Math.max(min, value));
+};
+
+const getEffectiveSplit = (left: number, right: number, rootWidth: number) => {
+  const availableWidth = Math.max(0, rootWidth - HORIZONTAL_SEPARATOR_SPACE);
+  const minimumRight =
+    availableWidth > 0 ? (RIGHT_PANEL_MIN_WIDTH / availableWidth) * 100 : 14;
+  const effectiveRight = clamp(
+    right,
+    Math.max(14, minimumRight),
+    Math.max(34, minimumRight),
+  );
+  const effectiveLeft = Math.min(
+    clamp(left, 14, 34),
+    Math.max(0, 68 - effectiveRight),
+  );
+  return {
+    left: effectiveLeft,
+    center: Math.max(0, 100 - effectiveLeft - effectiveRight),
+    right: effectiveRight,
+    availableWidth,
+  };
 };
 
 type HomeMobileCarouselContextValue = {
@@ -151,6 +174,7 @@ export const AppLayoutRow = ({ children }: PropsWithChildren) => {
     24,
   );
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const [rootWidth, setRootWidth] = useState(0);
   const childParts = Children.toArray(children);
   const mobileActiveSlideRef = useRef(1);
   const mobileScrollRafRef = useRef<number | null>(null);
@@ -166,6 +190,23 @@ export const AppLayoutRow = ({ children }: PropsWithChildren) => {
   const [mobileActiveSlide, setMobileActiveSlide] = useState(1);
   const [isCarouselDragging, setIsCarouselDragging] = useState(false);
   const carouselHintId = 'home-panels-carousel-hint';
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const measureRoot = () => setRootWidth(root.getBoundingClientRect().width);
+    measureRoot();
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(measureRoot);
+    observer?.observe(root);
+    window.addEventListener('resize', measureRoot);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', measureRoot);
+    };
+  }, [childParts.length]);
 
   useEffect(() => {
     if (childParts.length !== 3) {
@@ -356,25 +397,45 @@ export const AppLayoutRow = ({ children }: PropsWithChildren) => {
     event: ReactMouseEvent<HTMLDivElement>,
   ) => {
     if (window.innerWidth < 768) return;
+    const root = rootRef.current;
+    if (!root) return;
+    const startRect = root.getBoundingClientRect();
+    const startSplit = getEffectiveSplit(
+      leftWidthPct,
+      rightWidthPct,
+      startRect.width,
+    );
+    if (startSplit.availableWidth <= 0) return;
+    const boundary =
+      side === 'left'
+        ? startRect.left + (startSplit.availableWidth * startSplit.left) / 100
+        : startRect.right -
+          (startSplit.availableWidth * startSplit.right) / 100;
+    const grabOffset = event.clientX - boundary;
     event.preventDefault();
 
     const onMove = (moveEvent: MouseEvent) => {
       const root = rootRef.current;
-      if (!root) return;
+      if (!root || window.innerWidth < 768) return;
       const rect = root.getBoundingClientRect();
-      const nextLeft = ((moveEvent.clientX - rect.left) / rect.width) * 100;
-      const nextRight = ((rect.right - moveEvent.clientX) / rect.width) * 100;
+      const split = getEffectiveSplit(leftWidthPct, rightWidthPct, rect.width);
+      if (split.availableWidth <= 0) return;
+      setRootWidth(rect.width);
+      const pointerBoundary = moveEvent.clientX - grabOffset;
 
       if (side === 'left') {
-        const boundedLeft = clamp(nextLeft, 14, 34);
-        if (100 - boundedLeft - rightWidthPct >= 32) {
-          setLeftWidthPct(boundedLeft);
-        }
+        const nextLeft =
+          ((pointerBoundary - rect.left) / split.availableWidth) * 100;
+        const maximumLeft = Math.min(34, Math.max(0, 68 - split.right));
+        setLeftWidthPct(
+          clamp(nextLeft, Math.min(14, maximumLeft), maximumLeft),
+        );
       } else {
-        const boundedRight = clamp(nextRight, 14, 34);
-        if (100 - leftWidthPct - boundedRight >= 32) {
-          setRightWidthPct(boundedRight);
-        }
+        const nextRight =
+          ((rect.right - pointerBoundary) / split.availableWidth) * 100;
+        setRightWidthPct(
+          getEffectiveSplit(leftWidthPct, nextRight, rect.width).right,
+        );
       }
     };
 
@@ -387,7 +448,12 @@ export const AppLayoutRow = ({ children }: PropsWithChildren) => {
     window.addEventListener('mouseup', onUp);
   };
 
-  const centerWidthPct = 100 - leftWidthPct - rightWidthPct;
+  const effectiveSplit = getEffectiveSplit(
+    leftWidthPct,
+    rightWidthPct,
+    rootWidth,
+  );
+  const centerWidthPct = effectiveSplit.center;
   const goToSlide = (slide: number) => {
     const root = rootRef.current;
     if (!root || !isMobileCarousel) {
@@ -476,9 +542,18 @@ export const AppLayoutRow = ({ children }: PropsWithChildren) => {
   }
 
   const layoutVars = {
-    '--left-panel-width': `${leftWidthPct}%`,
-    '--center-panel-width': `${centerWidthPct}%`,
-    '--right-panel-width': `${rightWidthPct}%`,
+    '--left-panel-width':
+      !isMobileCarousel && rootWidth > HORIZONTAL_SEPARATOR_SPACE
+        ? `${(effectiveSplit.availableWidth * effectiveSplit.left) / 100}px`
+        : `${leftWidthPct}%`,
+    '--center-panel-width':
+      !isMobileCarousel && rootWidth > HORIZONTAL_SEPARATOR_SPACE
+        ? `${(effectiveSplit.availableWidth * centerWidthPct) / 100}px`
+        : `${100 - leftWidthPct - rightWidthPct}%`,
+    '--right-panel-width':
+      !isMobileCarousel && rootWidth > HORIZONTAL_SEPARATOR_SPACE
+        ? `${Math.max(RIGHT_PANEL_MIN_WIDTH, (effectiveSplit.availableWidth * effectiveSplit.right) / 100)}px`
+        : `${rightWidthPct}%`,
   } as CSSProperties;
 
   return (

@@ -354,6 +354,7 @@ a {
 }
 
 .app-layout-pane {
+  box-sizing: border-box;
   min-height: 0;
   min-width: 0;
   width: 100%;
@@ -524,15 +525,31 @@ a {
 }
 
 .app-message-composer {
+  gap: 0;
   margin-top: 8px;
   flex-shrink: 0;
-  align-items: flex-end;
+  align-items: stretch;
 }
 
 .app-composer-input-wrap {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.app-composer-input-wrap .app-composer-textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.app-message-composer .app-composer-send {
+  align-self: stretch;
+  flex: 0 0 auto;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }
 
 .app-message-thread-area {
@@ -577,8 +594,10 @@ a {
 
 .app-left-room-create {
   display: flex;
+  height: 100%;
   min-height: 0;
   flex-direction: column;
+  justify-content: flex-end;
   gap: 6px;
   overflow-y: auto;
   border-top: 1px solid var(--app-border);
@@ -697,6 +716,41 @@ a {
   padding: 22px 24px 20px;
 }
 
+.app-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.app-dialog-close {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  margin: -7px -8px 0 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-muted);
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.app-dialog-close:hover:not(:disabled) {
+  border-color: var(--app-border);
+  background: var(--app-panel);
+  color: var(--app-fg);
+}
+
+.app-dialog-close:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .app-dialog-card--modal {
   margin: 0;
 }
@@ -720,24 +774,166 @@ a {
 }
 
 .app-invite-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  max-height: 45vh;
-  margin: 14px 0 0;
-  overflow-y: auto;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .app-invite-list li {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-width: 0;
+  gap: 8px;
   border: 1px solid var(--app-border);
   border-radius: 6px;
   padding: 9px;
   font-size: 0.82rem;
+}
+
+.app-dialog-card--invites {
+  height: min(80dvh, 560px);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+}
+
+.app-dialog-card--invites .app-dialog-content {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.app-dialog-card--invites .app-dialog-header,
+.app-dialog-card--invites .app-dialog-actions,
+.app-dialog-card--invites .app-invite-error,
+.app-invite-disclosure {
+  flex: 0 0 auto;
+}
+
+.app-dialog-card--invites .app-dialog-actions {
+  margin-top: 0;
+}
+
+.app-invite-main {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.app-invite-archive {
+  display: flex;
+  flex: 0 0 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--app-border);
+  padding-top: 8px;
+}
+
+.app-invite-archive--open {
+  flex: 0 1 45%;
+}
+
+.app-invite-archive-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.app-invite-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--app-fg);
+  padding: 4px 0;
+  text-align: left;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.app-invite-row-meta,
+.app-invite-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.app-invite-row-meta {
+  justify-content: space-between;
+}
+
+.app-invite-row-meta > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.app-invite-row-meta > button {
+  flex-shrink: 0;
+  padding: 5px 8px;
+  font-size: 0.8rem;
+}
+
+.app-invite-url-row > input,
+.app-invite-unavailable {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.app-invite-url-row > input {
+  padding: 7px 8px;
+  font-size: 0.8rem;
+}
+
+.app-invite-unavailable {
+  color: var(--app-muted);
+  overflow-wrap: anywhere;
+}
+
+.app-invite-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface);
+  color: var(--app-fg);
+  cursor: pointer;
+}
+
+.app-invite-copy:hover:not(:disabled) {
+  border-color: var(--brand-cyan);
+  background: var(--app-panel);
+}
+
+.app-invite-copy:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.app-invite-copy:focus-visible,
+.app-invite-disclosure:focus-visible {
+  outline: 2px solid var(--brand-cyan);
+  outline-offset: 2px;
+}
+
+.app-invite-error {
+  margin: 0;
+  color: var(--app-fg);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
 }
 
 .app-server-tabs-panel {
@@ -751,11 +947,7 @@ a {
   min-height: 0;
   flex-direction: column;
   gap: 10px;
-  border: 1px solid var(--app-border);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--app-panel) 94%, var(--app-surface));
-  padding: 8px;
-  box-shadow: 0 14px 32px rgba(5, 18, 34, 0.18);
+  margin-right: 0;
 }
 
 .app-server-tabs-panel--collapsed {
@@ -776,6 +968,7 @@ a {
   color: var(--app-fg);
   cursor: pointer;
   font-weight: 700;
+  flex-shrink: 0;
 }
 
 .app-server-tabs-toggle {
@@ -793,34 +986,81 @@ a {
   overflow-y: auto;
 }
 
+.app-server-tab-row {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.app-server-tab-row:not(.app-server-tab-row--active) {
+  margin-right: 4px;
+}
+
 .app-server-tab {
+  width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
   justify-content: flex-start;
   overflow: hidden;
-  padding: 6px 9px;
+  padding: 6px 33px 6px 9px;
   text-align: left;
+}
+
+.app-server-tab-menu-button {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  z-index: 3;
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(-50%);
+  border: 1px solid var(--app-border);
+  border-radius: 5px;
+  background: var(--app-surface);
+  color: var(--app-fg);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    background-color 120ms ease;
+}
+
+.app-server-tab-row:hover .app-server-tab-menu-button,
+.app-server-tab-row:focus-within .app-server-tab-menu-button {
+  opacity: 1;
+}
+
+.app-server-tab-menu-button:hover {
+  background: var(--app-panel);
+}
+
+.app-server-tab-menu-button:focus-visible {
+  outline: 2px solid var(--brand-cyan);
+  outline-offset: 1px;
+  opacity: 1;
 }
 
 .app-server-tab--active {
   z-index: 2;
-  margin-right: -9px;
-  border-right-color: var(--app-bg);
-  border-radius: 8px 0 0 8px;
-  background: var(--app-bg);
-  box-shadow: 5px 0 0 var(--app-bg);
+  border-width: 2px;
+  border-right-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  margin-right: 0;
+  padding-right: 33px;
+  background: var(--app-panel);
 }
 
-.app-server-tab--active::after {
-  position: absolute;
-  top: -1px;
-  right: -11px;
-  bottom: -1px;
-  width: 12px;
-  border-top: 1px solid var(--app-border);
-  border-right: 1px solid var(--app-border);
-  border-bottom: 1px solid var(--app-border);
-  border-radius: 0 10px 10px 0;
-  background: var(--app-bg);
-  content: '';
+.app-server-tab-row--active .app-server-tab-menu-button {
+  border: 0;
+  border-radius: 0;
+  background: var(--app-panel);
+  color: var(--app-fg);
 }
 
 .app-server-tab--add {
@@ -904,6 +1144,8 @@ a {
 
   .app-layout-pane-right {
     width: var(--right-panel-width);
+    min-width: 200px;
+    flex-shrink: 0;
     border-left: 1px solid var(--app-border);
   }
 
@@ -931,7 +1173,7 @@ a {
     left: auto;
     flex: 0 0 196px;
     align-self: stretch;
-    margin: 12px 0 12px 12px;
+    margin: 0 0 0 12px;
   }
 
   .app-server-tabs-panel--collapsed {
@@ -946,14 +1188,16 @@ a {
     bottom: auto;
     left: 8px;
     width: auto;
-    max-height: 54px;
+    height: 38px;
+    max-height: 38px;
     flex-direction: row;
     align-items: center;
-    overflow: hidden;
+    overflow: visible;
+    margin-bottom: 0;
   }
 
   .app-server-tabs-panel--collapsed {
-    width: 52px;
+    width: auto;
   }
 
   .app-server-tabs-toggle {
@@ -962,16 +1206,72 @@ a {
 
   .app-server-tabs-list {
     flex-direction: row;
+    align-self: stretch;
     overflow-x: auto;
     overflow-y: hidden;
   }
 
   .app-server-tab {
+    flex: 0 0 auto;
+    max-width: min(36vw, 15rem);
+  }
+
+  .app-server-tab-row {
+    width: auto;
+    max-width: min(36vw, 15rem);
+  }
+
+  .app-server-tab-row .app-server-tab {
+    min-width: 0;
+    max-width: none;
+    flex: 1 1 auto;
+  }
+
+  .app-server-tab-menu-button {
+    opacity: 1;
+  }
+
+  .app-server-tab:not(.app-server-tab--add) > [aria-hidden='true'] {
+    display: none;
+  }
+
+  .app-server-tabs-panel[data-labels-collapsed='true']
+    .app-server-tab:not(.app-server-tab--add) {
+    width: 38px;
+    flex-basis: 38px;
+  }
+
+  .app-server-tabs-panel[data-labels-collapsed='true'] .app-server-tab-label {
+    display: none;
+  }
+
+  .app-server-tab--active {
+    align-self: stretch;
+    margin-bottom: 0;
+    padding: 6px 33px 0 9px;
+    border-width: 2px 2px 0;
+    border-radius: 7px 7px 0 0;
+  }
+
+  .app-server-tab-row--active .app-server-tab-menu-button {
+    top: 50%;
+    border-radius: 0;
+  }
+
+  .app-server-tabs-panel[data-labels-collapsed='true'] .app-server-tab-row {
+    width: 62px;
+    max-width: none;
+    flex-basis: 62px;
+  }
+
+  .app-server-tabs-panel[data-labels-collapsed='true']
+    .app-server-tab-row
+    .app-server-tab {
     flex: 0 0 38px;
   }
 
   .app-server-tabs-panel + .app-layout-row {
-    padding-top: 66px;
+    padding-top: 46px;
   }
 
   .app-mobile-panel-header {
@@ -1035,6 +1335,7 @@ a {
 
 .app-theme-toggle-group--stretch .app-theme-toggle-option {
   flex: 1 1 0;
+  min-width: 0;
   text-align: center;
 }
 
@@ -1057,7 +1358,54 @@ a {
 
 .app-theme-toggle-group--compact .app-theme-toggle-option {
   font-size: 11px;
-  padding: 5px 7px;
+  padding: 5px 4px;
+}
+
+.app-right-panel-controls {
+  container-type: inline-size;
+}
+
+@container (max-width: 220px) {
+  .app-theme-toggle-group--compact .app-theme-toggle-option {
+    font-size: 10px;
+    padding-right: 2px;
+    padding-left: 2px;
+  }
+}
+
+.app-invite-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
+  margin: 4px;
+}
+
+.app-invite-actions > button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.app-invite-action-short {
+  display: none;
+}
+
+@container (max-width: 230px) {
+  .app-invite-actions > button {
+    padding-right: 4px;
+    padding-left: 4px;
+  }
+
+  .app-invite-action-full {
+    display: none;
+  }
+
+  .app-invite-action-short {
+    display: inline;
+  }
 }
 
 .app-theme-toggle-option:hover {

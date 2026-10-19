@@ -7,8 +7,9 @@ import { loadKeysAsync } from '../../gpg';
 import { emitSignedMutation } from '../../socketAuth';
 import {
   getRoomIdByName,
+  getUserIdByUsername,
   requireRoomIdByName,
-  requireUserIdByUsername,
+  storeIdentityDirectories,
 } from '../../identityMap';
 import { sessionIdPreview } from '../../homeSession';
 import { loadRoomPrefs } from '../../roomPrefs';
@@ -30,17 +31,18 @@ const announcePublicKey = async (ctx: HomeSocketContext) => {
     return;
   }
 
-  const fromUserId = requireUserIdByUsername(username);
-  if (keys.userId && keys.userId !== fromUserId) {
-    console.warn(
-      '[Socket] ⚠ userId mismatch before CLIENT_SEND_PUBLIC_KEY: requireUserIdByUsername(username) returned',
-      fromUserId,
-      'but loadKeysAsync() says this account is',
-      keys.userId,
-      '— the local identity map is stale/out of sync with the account actually logged in. This will likely cause an "unauthorized" rejection.',
-    );
+  const fromUserId = keys.userId || getUserIdByUsername(username);
+  if (!fromUserId) {
+    console.warn('[Socket] Cannot announce public key without a stored identity');
+    return;
   }
-  void emitSignedMutation(socket, {
+  if (keys.userId) {
+    storeIdentityDirectories({
+      userDirectory: { [keys.userId]: username },
+      currentUserId: keys.userId,
+    });
+  }
+  await emitSignedMutation(socket, {
     event: SOCKET_EVENTS.CLIENT_SEND_PUBLIC_KEY,
     payload: {
       fromUserId,
@@ -59,6 +61,12 @@ const announcePublicKey = async (ctx: HomeSocketContext) => {
 
 const requestInitialData = async (ctx: HomeSocketContext) => {
   const { socket, username, authToken, session } = ctx;
+  const keys = await loadKeysAsync();
+  const userId = keys?.userId || getUserIdByUsername(username);
+  if (!userId) {
+    console.warn('[Socket] Cannot request initial data without a stored identity');
+    return;
+  }
   const prefs = await loadRoomPrefs(username);
   const requestedCurrentRoom = prefs.currentRoom || DEFAULT_ROOM;
   session.preferredRoomFromPrefs = requestedCurrentRoom;
@@ -76,7 +84,7 @@ const requestInitialData = async (ctx: HomeSocketContext) => {
 
   // Join messages are sent automatically by the server.
   socket.emit(SOCKET_EVENTS.CLIENT_REQUEST_INITIAL_DATA, {
-    userId: requireUserIdByUsername(username),
+    userId,
     sessionId: authToken,
     defaultRoom: DEFAULT_ROOM,
     currentRoom: requestedCurrentRoom,
@@ -111,7 +119,11 @@ export const registerConnectionHandlers = (
   on(SOCKET_EVENTS.DISCONNECTING, async () => {
     const keys = await loadKeysAsync();
     if (keys?.sessionId) {
-      const userId = requireUserIdByUsername(username);
+      const userId = keys.userId || getUserIdByUsername(username);
+      if (!userId) {
+        console.warn('[Socket] Cannot send disconnect notice without a stored identity');
+        return;
+      }
       const roomId = requireRoomIdByName(DEFAULT_ROOM);
       void emitSignedMutation(socket, {
         event: SOCKET_EVENTS.CLIENT_MESSAGE,

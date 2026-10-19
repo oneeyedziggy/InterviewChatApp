@@ -1,6 +1,6 @@
 import { SOCKET_EVENTS } from '../../../constants';
 import { loadKeysAsync } from '../../gpg';
-import { requireUserIdByUsername } from '../../identityMap';
+import { getUserIdByUsername } from '../../identityMap';
 import { sessionIdPreview } from '../../homeSession';
 import { type HomeSocketContext, type RegisterListener } from './context';
 
@@ -32,8 +32,8 @@ const logAuthDiagnostics = async (
       'keys.sessionId (from loadKeysAsync, per-server)': sessionIdPreview(
         keys?.sessionId,
       ),
-      'requireUserIdByUsername(username)': username
-        ? requireUserIdByUsername(username)
+      'userId mapping for username': username
+        ? keys?.userId || getUserIdByUsername(username) || '<unavailable>'
         : '<no username>',
       activeServerIdInUrl:
         typeof window !== 'undefined'

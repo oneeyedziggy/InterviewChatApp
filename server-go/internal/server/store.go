@@ -32,7 +32,7 @@ type StateStore interface {
 	UserJoinedAt() (map[string]int64, error)
 	SetInvitedBy(userID, invitedByUserID string) error
 	HasAnyUsers() (bool, error)
-	CreateInvite(codeHash, createdByUserID string, createdAt, expiresAt int64) error
+	CreateInvite(codeHash, createdByUserID string, createdAt, expiresAt int64) (string, error)
 	ListInvites() ([]InviteSummary, error)
 	RevokeInvite(inviteID string) error
 	ActiveInvitesByUser(userID string) (int, error)

@@ -1,14 +1,89 @@
 {
   "servers": [
     {
-      "id": "default",
-      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/chat-state.sqlite3",
-      "alias": "default"
+      "id": "d4de4397-d382-4c6d-97b0-a78515b73ee9",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/d4de4397-d382-4c6d-97b0-a78515b73ee9.sqlite3",
+      "alias": "crater-anchor-delta-granite"
+    },
+    {
+      "id": "598c138c-ec4f-40c2-a0ec-60e897359010",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/598c138c-ec4f-40c2-a0ec-60e897359010.sqlite3",
+      "alias": "delta-cable-berry-violet"
+    },
+    {
+      "id": "243f39c5-9a8a-4b23-b76b-935ecc4e6b43",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/243f39c5-9a8a-4b23-b76b-935ecc4e6b43.sqlite3",
+      "alias": "olive-otter-velvet-saffron"
+    },
+    {
+      "id": "a98be6d6-1ec1-4549-98be-d50da900b2d4",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/a98be6d6-1ec1-4549-98be-d50da900b2d4.sqlite3",
+      "alias": "panda-falcon-tiger-rocket"
+    },
+    {
+      "id": "204506a5-3504-49fc-b0c1-c2d8ea66cfbc",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/204506a5-3504-49fc-b0c1-c2d8ea66cfbc.sqlite3",
+      "alias": "crown-jasmine-sail-cobalt"
+    },
+    {
+      "id": "fc0df3b9-a8c5-4ec4-b3a1-12fc4e495efb",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/fc0df3b9-a8c5-4ec4-b3a1-12fc4e495efb.sqlite3",
+      "alias": "earth-pearl-clover-thistle"
+    },
+    {
+      "id": "b2711a29-e843-49a6-899b-ebf2d769b791",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/b2711a29-e843-49a6-899b-ebf2d769b791.sqlite3",
+      "alias": "earth-monarch-shadow-feather"
+    },
+    {
+      "id": "5369d45c-dde4-46ae-9428-b7411ac50e48",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/5369d45c-dde4-46ae-9428-b7411ac50e48.sqlite3",
+      "alias": "drift-carpet-heather-shell"
     },
     {
       "id": "41f6603d-7d9d-44de-a5a1-eb9aa73abc8f",
       "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/41f6603d-7d9d-44de-a5a1-eb9aa73abc8f.sqlite3",
       "alias": "cherry-star-lilac-forge"
+    },
+    {
+      "id": "af9ae96c-204b-4271-94e5-36721d88f393",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/af9ae96c-204b-4271-94e5-36721d88f393.sqlite3",
+      "alias": "heather-arrow-violet-flame"
+    },
+    {
+      "id": "d307e87d-7b0d-468a-ad54-777ae63e5e1c",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/d307e87d-7b0d-468a-ad54-777ae63e5e1c.sqlite3",
+      "alias": "charm-island-granite-otter"
+    },
+    {
+      "id": "6771bea1-5d7a-4b10-b647-999025499c25",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/6771bea1-5d7a-4b10-b647-999025499c25.sqlite3",
+      "alias": "granite-sable-saffron-plum"
+    },
+    {
+      "id": "default",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/chat-state.sqlite3",
+      "alias": "default"
+    },
+    {
+      "id": "d655c94e-3084-4922-9542-d8b9873f6eb4",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/d655c94e-3084-4922-9542-d8b9873f6eb4.sqlite3",
+      "alias": "jasmine-otter-lilac-marble"
+    },
+    {
+      "id": "61160516-fb8a-4f56-91ab-a9c2c1e48e66",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/61160516-fb8a-4f56-91ab-a9c2c1e48e66.sqlite3",
+      "alias": "cricket-trail-spruce-brass"
+    },
+    {
+      "id": "dded9fc5-90fc-4926-ba53-9613e4cd619a",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/dded9fc5-90fc-4926-ba53-9613e4cd619a.sqlite3",
+      "alias": "pearl-juniper-berry-raven"
+    },
+    {
+      "id": "28c37d74-886e-4c7f-a9e7-75f9de985f1b",
+      "dbPath": "/home/oneeyedziggy/codeStuff/InterviewChatApp/server-go/internal/server/servers/28c37d74-886e-4c7f-a9e7-75f9de985f1b.sqlite3",
+      "alias": "falcon-shell-forge-ivory"
     }
   ]
 }

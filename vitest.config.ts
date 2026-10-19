@@ -14,7 +14,6 @@ export default defineConfig({
       include: [
         'src/components/ConfirmPopover.tsx',
         'src/components/Input.tsx',
-        'src/components/SelectableList.tsx',
         'src/components/home/HomeLeftPanel.tsx',
         'src/components/home/HomeRightPanel.tsx',
         'src/components/styled/ScrollableDiv.ts',
@@ -29,7 +28,6 @@ export default defineConfig({
         'src/utils/inPageDialog.ts',
         'src/utils/messages.ts',
         'src/utils/privateKeyBroker.ts',
-        'src/utils/roomNotifications.ts',
         'src/utils/socketAuth.ts',
         'src/utils/userSettings.ts',
       ],

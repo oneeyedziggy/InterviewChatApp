@@ -3,9 +3,8 @@ import { SOCKET_EVENTS } from '../../../constants';
 import { loadKeysAsync, storeUserPublicKeys } from '../../gpg';
 import {
   getCurrentUserId,
-  getRoomIdByName,
   getRoomNameByRoomId,
-  requireUserIdByUsername,
+  getUserIdByUsername,
   storeIdentityDirectories,
 } from '../../identityMap';
 import { getBlockedUsers } from '../../userSettings';
@@ -35,7 +34,9 @@ import { type HomeSocketContext, type RegisterListener } from './context';
 const applyInitialMessages = async (ctx: HomeSocketContext, data: any) => {
   const { username, getRoomList, setChatValues } = ctx;
   const keys = await loadKeysAsync();
-  const currentUserId = username ? requireUserIdByUsername(username) : '';
+  const currentUserId = username
+    ? keys?.userId || getUserIdByUsername(username) || ''
+    : '';
   const decryptedMessages: Messages = {};
   const blockedUsers = new Set(getBlockedUsers());
   const scopedRoomsForFallback = normalizeRoomListEntries(
@@ -86,34 +87,45 @@ const applyInitialMessages = async (ctx: HomeSocketContext, data: any) => {
 const applyInitialRooms = (ctx: HomeSocketContext, rooms: string[]) => {
   const { username, session, getCurrentRoom, setRoomList, setCurrentRoom } =
     ctx;
-  const scopedRooms = filterRoomsForUser(rooms, username).map((room) =>
-    normalizeIncomingRoomKey(room, rooms),
+  const scopedRoomIds = normalizeRoomListEntries(
+    filterRoomsForUser(rooms, username),
   );
-  const normalizedRooms = normalizeRoomListEntries(scopedRooms).map(
+  const normalizedRooms = scopedRoomIds.map(
     (room) => getRoomNameByRoomId(room) || room,
   );
   console.log('[Socket] ✓ Setting room list:', normalizedRooms.length);
   setRoomList(normalizedRooms);
-  const resolvedCurrentRoom = resolvePersistedCurrentRoom(
-    normalizedRooms,
-    session.preferredRoomFromPrefs,
-    getCurrentRoom(),
-  );
+  const resolvedCurrentRoom =
+    normalizedRooms.length > 0
+      ? resolvePersistedCurrentRoom(
+          normalizedRooms,
+          session.preferredRoomFromPrefs,
+          getCurrentRoom(),
+        )
+      : '';
   const canonicalCurrentRoom =
     getRoomNameByRoomId(resolvedCurrentRoom) || resolvedCurrentRoom;
   if (canonicalCurrentRoom !== getCurrentRoom()) {
     setCurrentRoom(canonicalCurrentRoom);
   }
+  return canonicalCurrentRoom;
 };
 
 const requestCurrentRoomData = async (
   ctx: HomeSocketContext,
   currentUserIdHint: string | undefined,
+  currentRoom: string,
+  roomIdsFromServer: string[],
 ) => {
+  const scopedRoomIds = filterRoomsForUser(roomIdsFromServer, ctx.username);
+  const roomId =
+    scopedRoomIds.find((incomingId) => incomingId === currentRoom) ||
+    scopedRoomIds.find(
+      (incomingId) => getRoomNameByRoomId(incomingId) === currentRoom,
+    );
+  if (!currentRoom || !roomId) return;
   const keys = await loadKeysAsync();
-  const currentRoom = ctx.getCurrentRoom();
-  const roomId = getRoomIdByName(currentRoom);
-  const currentUserId = currentUserIdHint || getCurrentUserId();
+  const currentUserId = keys?.userId || currentUserIdHint || getCurrentUserId();
   if (keys?.sessionId && currentUserId && currentRoom && roomId) {
     ctx.socket.emit(SOCKET_EVENTS.CLIENT_REQUEST_ROOM_DATA, {
       username: ctx.username,
@@ -151,6 +163,10 @@ export const registerInitialDataHandler = (
       );
 
       if (data?.userPubKeys) {
+        storeUserPublicKeys(
+          data.userPubKeys,
+          (data.userPubKeysUpdatedAt as Record<string, number>) || undefined,
+        );
         await maybeSendIdentityDirectoryRefresh({
           socket,
           authToken,
@@ -163,12 +179,7 @@ export const registerInitialDataHandler = (
         storeIdentityDirectories({ currentUserId: data.currentUserId });
       }
 
-      if (data?.userPubKeys) {
-        storeUserPublicKeys(
-          data.userPubKeys,
-          (data.userPubKeysUpdatedAt as Record<string, number>) || undefined,
-        );
-      } else {
+      if (!data?.userPubKeys) {
         console.warn('[Socket] ✗ No userPubKeys in INITIAL_DATA');
       }
 
@@ -178,8 +189,14 @@ export const registerInitialDataHandler = (
         console.warn('[Socket] ✗ No messages in INITIAL_DATA');
       }
 
-      if (data?.rooms) {
-        applyInitialRooms(ctx, data.rooms as string[]);
+      const roomIdsFromServer = Array.isArray(data?.rooms)
+        ? data.rooms.filter(
+            (room: unknown): room is string => typeof room === 'string',
+          )
+        : [];
+      let selectedRoom = '';
+      if (Array.isArray(data?.rooms)) {
+        selectedRoom = applyInitialRooms(ctx, roomIdsFromServer);
       } else {
         console.warn('[Socket] ✗ No rooms in INITIAL_DATA');
       }
@@ -207,7 +224,12 @@ export const registerInitialDataHandler = (
         incomingUserPubKeys: data?.userPubKeys,
       });
 
-      await requestCurrentRoomData(ctx, data.currentUserId);
+      await requestCurrentRoomData(
+        ctx,
+        data?.currentUserId,
+        selectedRoom,
+        roomIdsFromServer,
+      );
 
       console.log('[Socket] ===== INITIAL_DATA PROCESSING COMPLETE =====');
     }),

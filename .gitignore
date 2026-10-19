@@ -5,6 +5,9 @@ node_modules/
 
 # Testing
 /coverage
+/playwright-report/
+/test-results/
+/.e2e-build-*/
 /performance/.data/
 /performance/results/
 /performance/bin/
@@ -61,4 +64,10 @@ server-go/cover
 chat-state.json.backup.*
 server-go/chat-state.json
 server-go/servers/*.sqlite3*
+server-go/internal/server/*.sqlite3
+server-go/internal/server/*.sqlite3-wal
+server-go/internal/server/*.sqlite3-shm
+server-go/internal/server/servers/*.sqlite3
+server-go/internal/server/servers/*.sqlite3-wal
+server-go/internal/server/servers/*.sqlite3-shm
 backupChatStateJson/

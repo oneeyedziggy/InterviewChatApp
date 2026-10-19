@@ -154,45 +154,54 @@ export function useHomePageActions(state: HomePageState) {
   };
 
   const makeNewRoom = async () => {
-    const socket = state.getSocket();
-    const roomName = state.newRoomName.trim();
-    if (
-      !socket ||
-      roomName === '' ||
-      !state.username ||
-      roomNameExists(roomName)
-    )
-      return;
-
-    const keys = await loadKeysAsync();
-    const sessionId = state.authToken || keys?.sessionId;
-    if (!keys || !sessionId) {
-      return;
-    }
-
-    const userId = requireUserIdByUsername(state.username);
-
-    const userPubKeys = loadUserPublicKeyEntries() || {};
-    const filteredPubKeys = filterPubKeysForEncryption(userPubKeys, {
-      blockedUsers: state.blockedUsers,
-    });
-
-    let roomNameCiphertext = '';
-    let normalizedRoomNameHash = '';
-    const roomDirectoryUpdatedAt = Date.now();
     try {
-      roomNameCiphertext = await encryptForAllUsers(
+      const socket = state.getSocket();
+      const roomName = state.newRoomName.trim();
+      if (!socket?.connected) {
+        alert('Unable to create room. Please reconnect and try again.');
+        return;
+      }
+      if (!roomName) {
+        alert('Please enter a room name and try again.');
+        return;
+      }
+      if (roomNameExists(roomName)) {
+        alert('A room with that name already exists. Please choose another name.');
+        return;
+      }
+      if (!state.username) {
+        alert('Unable to create room. Please log in again and retry.');
+        return;
+      }
+
+      const keys = await loadKeysAsync();
+      const sessionId = state.authToken || keys?.sessionId;
+      if (!keys?.privateKey || !keys.publicKey || !sessionId) {
+        alert('Unable to create room. Please log in again and retry.');
+        return;
+      }
+      const userId = keys.userId || getUserIdByUsername(state.username);
+      if (!userId) {
+        alert('Unable to create room. Please log in again and retry.');
+        return;
+      }
+
+      const userPubKeys = loadUserPublicKeyEntries() || {};
+      const filteredPubKeys = filterPubKeysForEncryption(userPubKeys, {
+        blockedUsers: state.blockedUsers,
+      });
+      const roomDirectoryUpdatedAt = Date.now();
+      const roomNameCiphertext = await encryptForAllUsers(
         roomName,
         filteredPubKeys,
         keys.publicKey,
       );
-      normalizedRoomNameHash = await roomNameHash(roomName);
-    } catch (error) {
-      console.error('[RoomCreate] Failed to encrypt room name', error);
-      return;
-    }
+      const normalizedRoomNameHash = await roomNameHash(roomName);
+      if (!socket.connected) {
+        alert('Unable to create room. Please reconnect and try again.');
+        return;
+      }
 
-    try {
       await emitSignedMutation(socket, {
         event: SOCKET_EVENTS.CLIENT_NEW_ROOM,
         payload: {
@@ -213,6 +222,7 @@ export function useHomePageActions(state: HomePageState) {
       state.setNewRoomName('');
     } catch (error) {
       console.error('[RoomCreate] Failed to submit room creation', error);
+      alert('Unable to create room. Please try again. If the problem continues, log in again.');
     }
   };
 

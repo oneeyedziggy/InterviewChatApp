@@ -251,6 +251,7 @@ export const HomeCenterPanel = () => {
           )}
           <PrimaryButton
             type="button"
+            className="app-composer-send"
             onClick={() => void doSend()}
             disabled={isOverLimit}
           >

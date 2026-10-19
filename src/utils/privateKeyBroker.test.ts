@@ -109,6 +109,57 @@ describe('privateKeyBroker', () => {
     await expect(broker.brokerGetPrivateKey('bob')).resolves.toBeNull();
   });
 
+  it('restores from the registered active broker without waiting for page control', async () => {
+    const worker = createWorkerMock(() => ({ ok: true, privateKey: 'unlocked-key' }));
+    Object.defineProperty(globalThis.navigator, 'serviceWorker', {
+      value: {
+        register: vi.fn(async () => ({ active: worker })),
+        ready: new Promise(() => {}),
+      },
+      configurable: true,
+    });
+
+    const broker = await import('./privateKeyBroker');
+    await expect(broker.brokerGetPrivateKey('alice')).resolves.toBe('unlocked-key');
+  });
+
+  it('waits for the installing broker to activate before storing a key', async () => {
+    vi.useFakeTimers();
+    const events = new EventTarget();
+    const worker = Object.assign(events, {
+      state: 'installing',
+      postMessage: createWorkerMock(() => ({ ok: true })).postMessage,
+    });
+    Object.defineProperty(globalThis.navigator, 'serviceWorker', {
+      value: { register: vi.fn(async () => ({ installing: worker })) },
+      configurable: true,
+    });
+    const broker = await import('./privateKeyBroker');
+    const pending = broker.brokerSetPrivateKey('alice', 'key');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(worker.postMessage).not.toHaveBeenCalled();
+    worker.state = 'activated';
+    worker.dispatchEvent(new Event('statechange'));
+    await expect(pending).resolves.toBe(true);
+  });
+
+  it('fails closed if activation never completes', async () => {
+    vi.useFakeTimers();
+    const worker = Object.assign(new EventTarget(), {
+      state: 'installing',
+      postMessage: vi.fn(),
+    });
+    Object.defineProperty(globalThis.navigator, 'serviceWorker', {
+      value: { register: vi.fn(async () => ({ installing: worker })) },
+      configurable: true,
+    });
+    const broker = await import('./privateKeyBroker');
+    const pending = broker.brokerGetPrivateKey('alice');
+    await vi.advanceTimersByTimeAsync(2000);
+    await expect(pending).resolves.toBeNull();
+    expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
   it('handles registration with no active/waiting/installing worker', async () => {
     Object.defineProperty(globalThis.navigator, 'serviceWorker', {
       value: {

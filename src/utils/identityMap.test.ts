@@ -80,4 +80,13 @@ describe('identityMap', () => {
       'Missing roomId mapping for room: missing',
     );
   });
+
+  it('uses an opaque server room id before its name can be decrypted', async () => {
+    const identityMap = await loadIdentityMap();
+    const roomId = '204506a5-3504-49fc-b0c1-c2d8ea66cfbc';
+
+    expect(identityMap.requireRoomIdByName(roomId)).toBe(roomId);
+    expect(identityMap.getRoomDirectorySnapshot()).toEqual({});
+    expect(() => identityMap.requireRoomIdByName('unresolved-name')).toThrow();
+  });
 });

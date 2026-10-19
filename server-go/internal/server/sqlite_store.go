@@ -1500,25 +1500,26 @@ func (s *SQLiteStore) HasAnyUsers() (bool, error) {
 // CreateInvite persists only a hash of the invite code (never the plaintext)
 // alongside its expiry and creator, mirroring the existing username-hash
 // pattern used elsewhere in this file.
-func (s *SQLiteStore) CreateInvite(codeHash, createdByUserID string, createdAt, expiresAt int64) error {
+func (s *SQLiteStore) CreateInvite(codeHash, createdByUserID string, createdAt, expiresAt int64) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var activeCount int
 	if err := s.db.QueryRow(`SELECT COUNT(1) FROM invites WHERE created_by_user_id = ? AND status = 'active'`, createdByUserID).Scan(&activeCount); err != nil {
-		return fmt.Errorf("count active invites before create: %w", err)
+		return "", fmt.Errorf("count active invites before create: %w", err)
 	}
 	if activeCount >= 20 {
-		return fmt.Errorf("active invite limit reached")
+		return "", fmt.Errorf("active invite limit reached")
 	}
 
+	inviteID := uuid.NewString()
 	if _, err := s.db.Exec(
 		`INSERT INTO invites (invite_id, code_hash, created_by_user_id, created_at, expires_at, status, max_uses, used_count)
 		 VALUES (?, ?, ?, ?, ?, 'active', 1, 0)`,
-		uuid.NewString(), codeHash, createdByUserID, createdAt, expiresAt,
+		inviteID, codeHash, createdByUserID, createdAt, expiresAt,
 	); err != nil {
-		return fmt.Errorf("create invite: %w", err)
+		return "", fmt.Errorf("create invite: %w", err)
 	}
-	return nil
+	return inviteID, nil
 }
 
 func (s *SQLiteStore) ListInvites() ([]InviteSummary, error) {

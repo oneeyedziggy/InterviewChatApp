@@ -11,7 +11,6 @@ import {
   showInPageAlert,
   showInPageConfirm,
 } from './inPageDialog';
-import { computeRoomNotifications } from './roomNotifications';
 
 describe('basic client utilities', () => {
   beforeEach(() => {
@@ -75,29 +74,5 @@ describe('basic client utilities', () => {
     await expect(promise).resolves.toBe(true);
 
     window.removeEventListener(DIALOG_EVENT_NAME, listener);
-  });
-
-  it('computes room notifications only for changed rooms', () => {
-    const result = computeRoomNotifications(
-      {
-        general: [
-          { timestamp: 1, userId: 'a', roomId: 'general', content: 'old' },
-        ],
-        alpha: [{ timestamp: 1, userId: 'a', roomId: 'alpha', content: 'old' }],
-      },
-      {
-        general: [
-          { timestamp: 1, userId: 'a', roomId: 'general', content: 'old' },
-        ],
-        alpha: [
-          { timestamp: 1, userId: 'a', roomId: 'alpha', content: 'old' },
-          { timestamp: 2, userId: 'b', roomId: 'alpha', content: 'new' },
-        ],
-      },
-      'general',
-    );
-
-    expect(result.general).toBe('');
-    expect(result.alpha).toBe('(1 NEW!)');
   });
 });

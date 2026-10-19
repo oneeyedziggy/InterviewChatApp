@@ -1,6 +1,5 @@
 import { UserListPanel } from '../UserListPanel';
 import { ThemeToggleStretch } from '../ThemeToggle';
-import Link from 'next/link';
 import {
   SidePanel,
   PrimaryButton,
@@ -51,17 +50,26 @@ export const HomeRightPanel = () => {
         defaultTopSize={82}
         top={
           <div className="flex h-full min-h-0 flex-col">
-            <div className="mb-2 flex items-center gap-2 pr-1">
-              <span style={rightSidebarSectionTitleStyle}>Theme</span>
-              <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="app-right-panel-controls mb-3 min-w-0 pb-2">
+              <div className="mb-3">
+                <div
+                  style={{
+                    ...rightSidebarSectionTitleStyle,
+                    marginBottom: '5px',
+                  }}
+                >
+                  Theme
+                </div>
                 <ThemeToggleStretch compact />
               </div>
+              <div>
+                <InviteDialog />
+              </div>
             </div>
-            <div style={{ marginBottom: '5px' }}>
-              <span style={rightSidebarSectionTitleStyle}>Users</span>
-            </div>
-            <div className="mb-2">
-              <InviteDialog />
+            <div
+              style={{ ...rightSidebarSectionTitleStyle, marginBottom: '2px' }}
+            >
+              Users
             </div>
             <UserListPanel
               currentUsername={username}
@@ -189,12 +197,14 @@ export const HomeRightPanel = () => {
               Build: {BUILD_STAMP}
             </div>
             <div className="flex justify-end">
-              <Link
+              <a
                 href={withBasePath('/diagrams/')}
-                className="inline-flex items-center rounded-md border border-app-border bg-app-surface px-2 py-1 text-[11px] font-semibold text-app-muted transition-colors duration-150 hover:bg-app-panel hover:text-app-fg"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center rounded-md border border-app-border bg-app-surface px-[9px] py-[5px] text-[13px] font-semibold text-app-muted transition-colors duration-150 hover:bg-app-panel hover:text-app-fg"
               >
                 Architecture diagrams
-              </Link>
+              </a>
             </div>
           </div>
         }
